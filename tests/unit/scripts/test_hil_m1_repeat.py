@@ -139,6 +139,23 @@ def test_recovery_hits_name_the_marker_not_invent_a_type():
     assert "spin" not in topics.recovery_hits(log)
 
 
+def test_trans_stopped_overlay_is_opt_in():
+    """0.005 пишет строку; пусто — нет (боевой 0.03); 0 и нечисло — ошибка."""
+    diag = topics.dwb_publish_overlay_yaml(short_circuit=False, trans_stopped=0.005)
+    assert "trans_stopped_velocity: 0.005" in diag
+    assert "short_circuit_trajectory_evaluation: false" in diag
+    assert "max_vel_x" not in diag
+    combat = topics.dwb_publish_overlay_yaml()
+    assert "trans_stopped_velocity" not in combat
+    assert topics.trans_stopped_from_env(None) is None
+    assert topics.trans_stopped_from_env("") is None
+    assert topics.trans_stopped_from_env("0.005") == 0.005
+    with pytest.raises(ValueError, match="M1_REPEAT_TRANS_STOPPED"):
+        topics.trans_stopped_from_env("0")
+    with pytest.raises(ValueError, match="M1_REPEAT_TRANS_STOPPED"):
+        topics.trans_stopped_from_env("nope")
+
+
 def test_short_circuit_overlay_is_opt_in():
     """false добавляет строку; true и default — нет. Боевой yaml не открывается."""
     full = topics.dwb_publish_overlay_yaml(short_circuit=False)
@@ -189,6 +206,8 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "nav2tune.compose.yaml" in script
     assert "publish_evaluation" in script
     assert "M1_REPEAT_SHORT_CIRCUIT" in script
+    assert "M1_REPEAT_TRANS_STOPPED" in script
+    assert "trans_stopped_from_env" in script
     assert "short_circuit_from_env" in script
     code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
     assert "nav2_params.yaml" not in code

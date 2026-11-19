@@ -275,7 +275,24 @@ RECOVERY_MARKERS: Tuple[Tuple[str, str], ...] = (
 )
 
 
-def dwb_publish_overlay_yaml(short_circuit: bool = True) -> str:
+def trans_stopped_from_env(value: str | None) -> float | None:
+    """``M1_REPEAT_TRANS_STOPPED``: пусто — боевой 0.03, строку не пишем.
+
+    Число > 0 — порог защёлки ``rotating_`` для диагностического прогона.
+    0, отрицательное и нечисло — ошибка, не молчаливый боевой порог.
+    """
+    if value is None or not str(value).strip():
+        return None
+    try:
+        number = float(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"M1_REPEAT_TRANS_STOPPED={value!r} — нужно число > 0") from exc
+    if not number > 0:
+        raise ValueError(f"M1_REPEAT_TRANS_STOPPED={value!r} — нужно число > 0")
+    return number
+
+
+def dwb_publish_overlay_yaml(short_circuit: bool = True, trans_stopped: float | None = None) -> str:
     """Оверлей Nav2 только для HIL-повтора. Боевой файл не меняет, скорости не задаёт.
 
     Публикация ``/evaluation`` не входит в выбор траектории. ``short_circuit=False``
@@ -301,6 +318,9 @@ def dwb_publish_overlay_yaml(short_circuit: bool = True) -> str:
     )
     if not short_circuit:
         lines.append("      short_circuit_trajectory_evaluation: false")
+    if trans_stopped is not None:
+        # Не боевой 0.03: порог, ниже которого RotateToGoal считает корпус стоящим.
+        lines.append(f"      trans_stopped_velocity: {trans_stopped}")
     return "\n".join(lines) + "\n"
 
 
