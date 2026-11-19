@@ -226,6 +226,7 @@ def run(
     origin_release: str,
     switch,
     *,
+    digests: dict[str, dict[str, str]] | None = None,
     hil_lock: Path | None = None,
     dirty_flag: Path | None = None,
 ) -> dict[str, Any]:
@@ -248,7 +249,7 @@ def run(
     while record.get("status") == STATUS_RUNNING:
         role = record["current_role"]
         try:
-            outcome = switch(role, record["target_release"])
+            outcome = _call_switch(switch, role, record["target_release"], digests)
         except TimeoutError as exc:
             record = report_role_failed(
                 state_dir, role, operation_id, detail=str(exc), outcome=OUTCOME_UNCERTAIN
@@ -262,12 +263,17 @@ def run(
             else:
                 record = report_role_failed(state_dir, role, operation_id, detail=str(exc))
             break
+        if outcome == "unhealthy":
+            record = report_role_failed(
+                state_dir, role, operation_id, detail="health: unhealthy", outcome=OUTCOME_SWITCHED
+            )
+            break
         if outcome != OUTCOME_SWITCHED:
             record = report_role_failed(state_dir, role, operation_id, detail=repr(outcome))
             break
         record = report_role_ok(state_dir, role, operation_id)
 
-    record = _apply_rollback(state_dir, record, switch)
+    record = _apply_rollback(state_dir, record, switch, digests)
     st.save(journal_path(state_dir), record)
     return record
 
@@ -277,7 +283,21 @@ def outcome_started(exc: BaseException) -> bool:
     return "boom" in str(exc)
 
 
-def _apply_rollback(state_dir: Path, record: dict[str, Any], switch) -> dict[str, Any]:
+def _digest_of(digests: dict[str, dict[str, str]] | None, role: str, release: str) -> str | None:
+    if not digests:
+        return None
+    return (digests.get(role) or {}).get(release)
+
+
+def _call_switch(switch, role: str, release: str, digests: dict[str, dict[str, str]] | None):
+    """Mock с digest получает третий аргумент; старый mock двух аргументов — как раньше."""
+    digest = _digest_of(digests, role, release)
+    if digest is None:
+        return switch(role, release)
+    return switch(role, release, digest)
+
+
+def _apply_rollback(state_dir: Path, record: dict[str, Any], switch, digests=None) -> dict[str, Any]:
     """Поднять точный предыдущий релиз из плана и проверить ответ mock. Не врать успех."""
     if record.get("status") == STATUS_COMPLETED:
         record["pult"] = {"result": "updated", "current": record["target_release"], "verified": True}
@@ -285,7 +305,7 @@ def _apply_rollback(state_dir: Path, record: dict[str, Any], switch) -> dict[str
     verified = True
     for step in record.get("rollback") or []:
         try:
-            outcome = switch(step["role"], step["release"])
+            outcome = _call_switch(switch, step["role"], step["release"], digests)
         except Exception as exc:  # noqa: BLE001 — отказ отката виден пульту
             verified = False
             record["pult"] = {"result": "rollback_failed", "current": None, "verified": False, "detail": str(exc)}
@@ -294,7 +314,7 @@ def _apply_rollback(state_dir: Path, record: dict[str, Any], switch) -> dict[str
             verified = False
             break
     record["pult"] = {
-        "result": "rolled_back" if verified else "rollback_failed",
+        "result": ("error" if digests else "rolled_back") if verified else "rollback_failed",
         "current": record["origin_release"] if verified else None,
         "verified": verified,
     }
