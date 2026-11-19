@@ -21,7 +21,8 @@ docker exec -d $G /entrypoint.sh python3 -m rob_box_sim.map_recorder --out /sim_
 sleep "$SETTLE_S"
 date -u +%FT%TZ > $D/out/run_start.txt
 # ROUTE_GOALS_FILE (путь в контейнере, напр. /sim_worlds/building.goals.yaml) — цели из файла точек мира
-docker exec ${ROUTE_GOALS_FILE:+-e ROUTE_GOALS_FILE="$ROUTE_GOALS_FILE"} $G /entrypoint.sh python3 -u /route.py "$@" 2>&1 | grep -v -i -E "zenoh|^\s*$" > $D/out/route.log
+# ROUTE_LOG — файл этого run_id. Пусто — прежний общий out/route.log.
+docker exec ${ROUTE_GOALS_FILE:+-e ROUTE_GOALS_FILE="$ROUTE_GOALS_FILE"} $G /entrypoint.sh python3 -u /route.py "$@" 2>&1 | grep -v -i -E "zenoh|^\s*$" > "${ROUTE_LOG:-$D/out/route.log}"
 date -u +%FT%TZ > $D/out/run_end.txt
 docker exec $G pkill -INT -f rob_box_sim.map_recorder
 sleep "$STOP_S"

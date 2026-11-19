@@ -129,7 +129,7 @@ cleanup() {
     local art_rc=0 off_rc=0
     stop_route
     stop_resource_samplers
-    if [ "$ON_ATTEMPTED" = 1 ]; then
+    if [ "$LOCK_OWNED" = 1 ]; then
         pull_before_off || art_rc=1
         # hil off пересоздаёт nav2 без nav2tune.compose.yaml — оверлей публикации уходит
         # вместе с HIL. Файл на Main удаляем, чтобы следующий on его не подхватил.
@@ -364,22 +364,45 @@ main "test -s /tmp/hil/nav2tune/dwb_publish.yaml && test -s /tmp/hil/nav2tune.co
 # Здесь on ещё не взят: кладём compose-оверлей, on его не знает. Поэтому после on
 # пересоздаём только nav2 с тем же HIL_MAPS_DIR, что возьмёт замок.
 ON_ATTEMPTED=1
+LOCK_OWNED=0
 CLEANED=0
-# Half2 101529Z: сторож отказал «не видно /robot_state_publisher» через 5 с
-# после off предыдущей половины. Одна повторная попытка, не бесконечный on.
-on_rc=1
-for on_try in 1 2; do
-    bash "$HIL_CMD" on >"$ART/hil_on.log" 2>&1 && { on_rc=0; break; }
-    log "HIL_ON_TRY_$on_try FAIL"
-    if [ "$on_try" = 1 ]; then
-        bash "$HIL_CMD" off >"$ART/hil_on_retry_off.log" 2>&1 || true
-        sleep 20
-    fi
-done
+# Один retry только если ЭТОТ запуск взял замок и отказ — «не видно RSP»,
+# и hil off этого запуска завершился 0. Отказ до замка: ни retry, ни off.
+bash "$HIL_CMD" on >"$ART/hil_on_attempt1.log" 2>&1
+on_rc=$?
+cp "$ART/hil_on_attempt1.log" "$ART/hil_on.log"
 if [ "$on_rc" != 0 ]; then
-    log "HIL_ON_FAIL"
-    exit 24
+    log "HIL_ON_TRY_1 FAIL rc=$on_rc"
+    if grep -q 'HIL уже включён\|замок' "$ART/hil_on_attempt1.log"; then
+        log "HIL_ON_FAIL before_lock"
+        LOCK_OWNED=0
+        exit 24
+    fi
+    if ! grep -q 'robot_state_publisher' "$ART/hil_on_attempt1.log"; then
+        log "HIL_ON_FAIL not_rsp"
+        LOCK_OWNED=1
+        exit 24
+    fi
+    bash "$HIL_CMD" off >"$ART/hil_on_retry_off.log" 2>&1
+    off_retry=$?
+    if [ "$off_retry" != 0 ]; then
+        log "HIL_ON_FAIL retry_off_rc=$off_retry"
+        LOCK_OWNED=1
+        exit 24
+    fi
+    LOCK_OWNED=0
+    sleep 20
+    bash "$HIL_CMD" on >"$ART/hil_on_attempt2.log" 2>&1
+    on_rc=$?
+    cat "$ART/hil_on_attempt2.log" >>"$ART/hil_on.log"
+    if [ "$on_rc" != 0 ]; then
+        log "HIL_ON_FAIL attempt2 rc=$on_rc"
+        LOCK_OWNED=1
+        exit 24
+    fi
 fi
+LOCK_OWNED=1
+log "HIL_ON_OK"
 main "cd /home/ros2/rob_box_project/docker/main && HIL_MAPS_DIR='$MAPS_DIR' HIL_RTABMAP_MODE='${HIL_RTABMAP_MODE:-mapping}' NAV2TUNE_OVERLAYS='/nav2tune/dwb_publish.yaml' docker compose -f docker-compose.yaml -f /tmp/hil/main.images.yaml -f /tmp/hil/main.hil.yaml -f /tmp/hil/nav2tune.compose.yaml up -d --no-deps --pull never --force-recreate nav2" \
     >"$ART/dwb_overlay_up.log" 2>&1 || { log "DWB_OVERLAY_UP_FAIL"; exit 30; }
 # Оверлей должен быть внутри контейнера, не только на хосте Main.
@@ -430,6 +453,8 @@ sleep 5
 sandbox "test -d '$REMOTE_OUT/bag' && echo BAG_RECORDING_DIRECTORY_PRESENT" >"$ART/bag_start.log" 2>&1 \
     || { log "BAG_DIR_ABSENT"; exit 31; }
 
+# Сэмплеры до ожидания ready: сбой TF должен оставить метрики обоих хостов.
+start_resource_samplers || log "SAMPLERS_START_FAILED"
 # Готовность навигатора — как route.py: не шлём цель, пока bt_navigator не active.
 ready=0
 for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5))); do
@@ -468,8 +493,6 @@ if [ "$cs_ready" != 1 ]; then
     log "CONTROLLER_NOT_READY M1_NOT_SENT"
     exit 34
 fi
-# Сэмплеры до ожидания ready: half1 умер на TF, логи остались 0 байт.
-start_resource_samplers || log "SAMPLERS_START_FAILED"
 # Граф до цели. detach: twist_mux не в подписчиках /cmd_vel_yaw. Иначе — есть.
 if [ "${YAW_MODE:-off}" = detach ]; then
     main "docker exec $(printf '%q' "$NAV2_CONTAINER") /ros_scripts/ros_with_namespace.sh bash -c 'source /opt/ros/humble/setup.bash; timeout 20 ros2 topic info /cmd_vel_yaw --verbose'" \
@@ -482,11 +505,10 @@ if [ "${YAW_MODE:-off}" = detach ]; then
 fi
 capture_params_after_ready || { log "PARAMS_INCOMPLETE M1_NOT_SENT"; exit 35; }
 log "GOAL_SEND run_id=$RUN_ID M1 target=(-3.7,4.0,0) after BEFORE_GOAL_OK and PARAMS_NUMERIC"
-# route.py пишет в общий out/route.log. Перед целью очищаем, после — копируем
-# в каталог этого run_id. Иначе pull забирает GOAL прошлого прогона.
-sandbox "rm -f '$SANDBOX_REPO/out/route.log'; mkdir -p '$REMOTE_OUT'"
-sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 VIDEO_DIR='$SANDBOX_REPO' ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
-sandbox "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" || log "ROUTE_COPY_TO_RUN_FAIL"
+# route.py читает ROUTE_LOG. Путь — файл этого run_id, не общий out/route.log.
+# Старый общий лог с GOAL_START рядом не трогаем и не копируем.
+sandbox "mkdir -p '$REMOTE_OUT'; rm -f '$REMOTE_OUT/route.log'"
+sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ROUTE_LOG='$REMOTE_OUT/route.log' ./runvideo.sh M1" >"$ART/runvideo.log" 2>&1 || true
 log "ROUTE_DONE"
 # pull_before_off — в cleanup, до hil off.
 exit 0

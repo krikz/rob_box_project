@@ -314,7 +314,9 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "M1_REPEAT_TRANS_STOPPED" in script
     assert "capture_params_after_ready" in script
     assert "timeout 15 ros2 param get" in script
-    assert "start_resource_samplers" in script
+    ready_at = script.index("for _ in $(seq 1 $((NAV_READY_TIMEOUT / 5)))")
+    sampler_at = script.index("start_resource_samplers || log")
+    assert sampler_at < ready_at
     assert "sandbox_resources.log" in script
     assert "main_resources.log" in script
     code_only = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
@@ -336,7 +338,7 @@ def test_script_uses_world_gate_and_pulls_before_off():
     assert "OFF_FAILED" in code
     assert "return 51" in code
     assert "return 52" in code
-    assert "CAMERAS=0 VIDEO_DIR=" in script and "./runvideo.sh M1" in script
+    assert "CAMERAS=0 ROUTE_LOG=" in script and "./runvideo.sh M1" in script
     assert "/tmp/hil.lock" in script
     assert "NAV2_PARAMS_OVERLAYS" in script
     # Гейт не переписываем: сценарий только вызывает существующий world_check.
@@ -399,12 +401,32 @@ def test_loop_flag_writes_a_line(tmp_path, monkeypatch):
     assert "unrecognized arguments" not in out.read_text(encoding="utf-8")
 
 
+def test_early_exit_does_not_keep_foreign_goal_start(tmp_path):
+    """Рядом старый route.log с GOAL_START. Ранний выход нового прогона его не копирует."""
+    old = tmp_path / "shared" / "route.log"
+    old.parent.mkdir()
+    old.write_text("07:28:09 GOAL_START M1 target=(-3.7,4.0,0)\n", encoding="utf-8")
+    art = tmp_path / "new_run"
+    art.mkdir()
+    # Как pull после M1_NOT_SENT: своего route нет — чужой не подставляем.
+    own = art / "route.log"
+    assert not own.exists()
+    assert "GOAL_START" in old.read_text(encoding="utf-8")
+    assert "GOAL_START" not in (own.read_text(encoding="utf-8") if own.exists() else "")
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    assert "ROUTE_LOG=" in script
+    assert "rm -f '$SANDBOX_REPO/out/route.log'" not in script
+
+
 def test_stale_route_is_not_the_shared_out_log():
     """route.log прогона — файл run_id, не общий out/route.log прошлого заезда."""
     script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
     code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
     assert "cp '$SANDBOX_REPO/out/route.log' '$REMOTE_OUT/route.log'" not in code.split("GOAL_SEND")[0]
-    assert "rm -f '$SANDBOX_REPO/out/route.log'" in code
+    assert "ROUTE_LOG=" in code
+    assert "hil_on_attempt1.log" in code
+    assert "hil_on_attempt2.log" in code
+    assert "before_lock" in code
     assert "NAV_NOT_READY tf_odom_missing" in code
     assert "HIL_ON_TRY_" in code
 
@@ -474,9 +496,11 @@ def _cleanup_harness(tmp_path: Path, pull_rc: int, off_rc: int) -> subprocess.Co
         "log() { printf '%s\\n' \"$*\" | tee -a \"$SUMMARY\"; }\n"
         "main() { return 0; }\n"
         "stop_route() { :; }\n"
+        "stop_resource_samplers() { :; }\n"
         f"pull_before_off() {{ return {pull_rc}; }}\n"
         "CLEANED=0\n"
         "ON_ATTEMPTED=1\n"
+        "LOCK_OWNED=1\n"
         + _fn_body("cleanup")
         + "\ncleanup\nexit $?\n",
         encoding="utf-8",
