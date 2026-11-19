@@ -28,7 +28,9 @@ class _Executor:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, release, role, *, docker, project_dir, state_dir, previous=None, health_after=None):
+    def __call__(
+        self, release, role, *, docker, project_dir, state_dir, previous=None, health_after=None, previous_release=None
+    ):
         self.calls.append(
             {
                 "release": release["release"],
@@ -339,3 +341,30 @@ def test_cli_execute_reaches_compose_once_the_adapter_is_verified(tmp_path, monk
     )
 
     assert "compose_down" in docker.compose_calls and "compose_up" in docker.compose_calls
+
+
+def test_activation_hands_the_previous_release_to_the_executor(tmp_path, monkeypatch):
+    """Активация обязана передать исполнителю прежний релиз, иначе откат поднимет упавший бандл."""
+    from chuangong.role_switch import execute_role
+
+    cfg = _cfg(tmp_path)
+    seen = {}
+
+    def _spy(release, role, **kwargs):
+        seen.setdefault("previous_release", kwargs.get("previous_release"))
+        return {"state": "role_switched", "execute": True, "role": role, "release": release["release"]}
+
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *a, **k: _release(k.get("ref") or a[2]))
+    monkeypatch.setattr(
+        "chuangong.activation.ActivationMachine._preflight", lambda self, record, release: (object(), {})
+    )
+    cfg.state_dir.mkdir()
+    (cfg.state_dir / "state.json").write_text(
+        json.dumps({"current": "2026.11.08-1", "previous": None}), encoding="utf-8"
+    )
+
+    _machine(cfg, _spy).activate("2026.11.09-1", execute=True)
+
+    assert seen["previous_release"] is not None, "активация не передала прежний релиз"
+    assert seen["previous_release"]["release"] == "2026.11.08-1"
+    assert execute_role  # исполнитель #4911 остаётся точкой вызова
