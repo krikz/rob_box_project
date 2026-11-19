@@ -8,6 +8,7 @@
 | #4435, #4456 | после провала или отмены NavigateToPose FollowPath погашен и выход twist_mux = 0 | `nav_aborted`, `stop_active` (вердикт `tool_halt`), `orphan_natural` |
 | #4458 | сторож сирот гасит FollowPath, если родительскую цель (NavigateToPose или NavigateThroughPoses) прислал не наш тул | `orphan` |
 | #4770 | abort контроллера: FollowPath уже принят, progress checker абортит (`terminate_all`), mux = 0, нет ложного «приехал» | `controller_abort` |
+| #4435 | kill клиента без `cancel_goal`; `ros2 action cancel` с хоста. Робот стоит, нет ложного «приехал» | `client_kill`, `host_cancel` |
 | #4365 | в движении у препятствия: стоп, писк, «Осторожно!», маячок вместе | `zone` |
 | #4470 | умолчание `HIL_GUARD_SOUND=off`: только строка в журнале, стоп и маячок; явно `on`: писк на настоящего робота | `zone` (on), `guard_off` (off) |
 
@@ -35,7 +36,7 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh            # все
 HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # выборочно
 ```
 
-Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort`.
+Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel`.
 `orphan_natural` без `ORPHAN_GOAL` пропускается со строкой `NOT_TRIGGERED`: цель зависит от мира.
 
 Переменные (умолчания — в шапке `run_checks.sh`):
@@ -74,6 +75,13 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_checks.sh zone orphan   # в�
   allowance + grace; через `ORPHAN_GRACE_S` нет активного FollowPath и mux = 0; SUCCEEDED нет. Счётчик — только
   цели FollowPath, которые в этой пробе были ACTIVE. FollowPath не принят или мало места — `NOT_TRIGGERED`, не PASS.
   Второй `Aborting handle` (pending снова дал 30 с) — FAIL: `terminate_all` не сработал.
+- **`client_kill`** (#4435). Проба `leave` шлёт цель и выходит без `cancel_goal`, записав `CLIENT_PID`.
+  Оркестр убивает этот pid (`SIGTERM`) и кладёт маркер, слушатель пишет `CLIENT_KILLED` со своим sim.
+  PASS: родительская цель после маркера терминальна, принятый FollowPath погашен, через grace mux = 0,
+  SUCCEEDED нет. Нет pid или FollowPath не был ACTIVE — `NOT_TRIGGERED`, не PASS. Если родитель остался
+  EXECUTING (сервер не узнал о смерти клиента) — тоже `NOT_TRIGGERED`: сторож по коду такого не гасит.
+- **`host_cancel`** (#4435). Та же цель, затем `ros2 action cancel /navigate_to_pose` из контейнера gazebo
+  (все цели, нулевой GoalInfo — не наш тул). PASS по тем же правилам. FollowPath не принят — `NOT_TRIGGERED`.
 - **`zone`** (#4365, #4470 on). Сначала `proximity-guard` пересоздаётся с явным `HIL_GUARD_SOUND=on` (умолчание HIL —
   off). Проба поворачивается по правде Gazebo к ближайшему препятствию (до 3.5 м) и едет на него телеопом
   `/cmd_vel_web` 0.1 м/с. После `EM_ON` она толкает ещё 4 с. PASS для #4365: защита вошла в `stop`, робот за

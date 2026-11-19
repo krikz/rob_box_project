@@ -498,6 +498,70 @@ def v_controller_abort(
     return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с FollowPath нет и mux = 0"]))
 
 
+def _drop_facts(probe: Sequence[Event], mark: str) -> Tuple[List[str], Optional[Event], List[str]]:
+    """Общее для kill и host-cancel: маркер, наблюдавшиеся цели, терминал NavigateToPose."""
+    observed = observed_follow_goals(probe)
+    marks = kinds(probe, mark)
+    facts = [f"наблюдавшихся целей FollowPath: {len(observed)}"]
+    return facts, (marks[0] if marks else None), observed
+
+
+def _drop_verdict(sc, probe: Sequence[Event], grace_s: float, mark: str, missing: str) -> Verdict:
+    """После маркера: родитель терминален, FollowPath погашен, mux=0, нет SUCCEEDED.
+
+    Маркера нет или FollowPath не был ACTIVE — NOT_TRIGGERED, не PASS (#4647).
+    """
+    if not probe:
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
+    facts, mark_ev, observed = _drop_facts(probe, mark)
+    if mark_ev is None or not observed:
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + [missing]))
+    t_mark = _sim(mark_ev)
+    parent_end = [
+        e
+        for e in kinds(probe, "NAV_STATUS")
+        if e.fields.get("status") in TERMINAL_FAIL and _sim(e) >= t_mark - 0.05
+    ]
+    if not parent_end:
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + ["родительская цель после маркера не терминальна"]))
+    abort_at = _sim(parent_end[0])
+    bad = _after_abort_bad(probe, abort_at, grace_s)
+    still_fp = [
+        e
+        for e in kinds(probe, "FP_STATUS")
+        if e.fields.get("goal") in observed and e.fields.get("status") in ACTIVE and _sim(e) > abort_at + grace_s
+    ]
+    if still_fp:
+        bad.append("принятый FollowPath жив после grace")
+    facts.append(f"родитель {parent_end[0].fields.get('status')} sim={abort_at:.2f}")
+    facts.append(f"проверок: {len(parent_end)}")
+    if bad:
+        return Verdict(*sc, FAIL, tuple(bad + facts))
+    return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с FollowPath нет и mux = 0"]))
+
+
+def v_client_kill(probe: Sequence[Event], grace_s: float) -> Verdict:
+    """#4435: клиент убит без cancel_goal. Успех только если робот всё равно встал."""
+    return _drop_verdict(
+        ("#4435", "client_kill"),
+        probe,
+        grace_s,
+        "CLIENT_KILLED",
+        "нет CLIENT_KILLED или FollowPath не был принят — kill не проверен",
+    )
+
+
+def v_host_cancel(probe: Sequence[Event], grace_s: float) -> Verdict:
+    """#4435: ``ros2 action cancel`` с хоста, не наш тул. Дерево или сторож должны снять FollowPath."""
+    return _drop_verdict(
+        ("#4435", "host_cancel"),
+        probe,
+        grace_s,
+        "HOST_CANCEL",
+        "нет HOST_CANCEL или FollowPath не был принят — отмена с хоста не проверена",
+    )
+
+
 def v_tool_halt(probe: Sequence[Event], grace_s: float) -> Verdict:
     """#4435/#4456: после провала цели тула навигации (из диалога) через ``grace_s`` нет FollowPath и mux = 0."""
     sc = ("#4435", "tool_halt")
@@ -806,6 +870,10 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
         return v_tool_halt(probe, args.grace)
     if scenario == "controller_abort":
         return v_controller_abort(probe, parse_docker(_read(d, "nav2.log")), args.grace, args.allowance)
+    if scenario == "client_kill":
+        return v_client_kill(probe, args.grace)
+    if scenario == "host_cancel":
+        return v_host_cancel(probe, args.grace)
     voice = parse_docker(_read(d, "voice.log"))
     if scenario == "nav_aborted":
         return v_nav_aborted(voice, load_phrases())
