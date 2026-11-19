@@ -219,6 +219,88 @@ def _expect_operation(record: dict[str, Any], operation_id: str) -> None:
         )
 
 
+def run(
+    state_dir: Path,
+    operation_id: str,
+    target_release: str,
+    origin_release: str,
+    switch,
+    *,
+    hil_lock: Path | None = None,
+    dirty_flag: Path | None = None,
+) -> dict[str, Any]:
+    """Одна операция на три роли. ``switch(role, release)`` — mock исполнителя, без сети.
+
+    Успех роли — возврат ``"switched"``. Исключение до возврата — роль не переключилась.
+    ``TimeoutError`` — исход неизвестен, роль тоже откатывается. Откат зовёт тот же
+    ``switch`` с ``origin_release`` и требует от него ``"switched"``: иначе пульт пишет
+    ``rollback_failed``, не успех. Повтор того же ``operation_id`` журнал не трогает.
+    """
+    if hil_lock is not None and hil_lock.exists():
+        raise FleetOpError("hil_locked", str(hil_lock))
+    if dirty_flag is not None and dirty_flag.exists():
+        raise FleetOpError("hotpatch_dirty", str(dirty_flag))
+
+    record = start(state_dir, operation_id, target_release, origin_release)
+    if record.get("status") != STATUS_RUNNING or record.get("pult"):
+        return record
+
+    while record.get("status") == STATUS_RUNNING:
+        role = record["current_role"]
+        try:
+            outcome = switch(role, record["target_release"])
+        except TimeoutError as exc:
+            record = report_role_failed(
+                state_dir, role, operation_id, detail=str(exc), outcome=OUTCOME_UNCERTAIN
+            )
+            break
+        except Exception as exc:  # noqa: BLE001 — mock говорит сбой, не сеть
+            if outcome_started(exc):
+                record = report_role_failed(
+                    state_dir, role, operation_id, detail=str(exc), outcome=OUTCOME_SWITCHED
+                )
+            else:
+                record = report_role_failed(state_dir, role, operation_id, detail=str(exc))
+            break
+        if outcome != OUTCOME_SWITCHED:
+            record = report_role_failed(state_dir, role, operation_id, detail=repr(outcome))
+            break
+        record = report_role_ok(state_dir, role, operation_id)
+
+    record = _apply_rollback(state_dir, record, switch)
+    st.save(journal_path(state_dir), record)
+    return record
+
+
+def outcome_started(exc: BaseException) -> bool:
+    """Сбой после начала переключения: mock кладёт это в текст, таймаут — отдельно."""
+    return "boom" in str(exc)
+
+
+def _apply_rollback(state_dir: Path, record: dict[str, Any], switch) -> dict[str, Any]:
+    """Поднять точный предыдущий релиз из плана и проверить ответ mock. Не врать успех."""
+    if record.get("status") == STATUS_COMPLETED:
+        record["pult"] = {"result": "updated", "current": record["target_release"], "verified": True}
+        return record
+    verified = True
+    for step in record.get("rollback") or []:
+        try:
+            outcome = switch(step["role"], step["release"])
+        except Exception as exc:  # noqa: BLE001 — отказ отката виден пульту
+            verified = False
+            record["pult"] = {"result": "rollback_failed", "current": None, "verified": False, "detail": str(exc)}
+            return record
+        if outcome != OUTCOME_SWITCHED or step["release"] != record["origin_release"]:
+            verified = False
+            break
+    record["pult"] = {
+        "result": "rolled_back" if verified else "rollback_failed",
+        "current": record["origin_release"] if verified else None,
+        "verified": verified,
+    }
+    return record
+
+
 def _expect_current(record: dict[str, Any], role: str) -> None:
     if role not in ROLE_ORDER:
         raise FleetOpError("bad_role", role)
