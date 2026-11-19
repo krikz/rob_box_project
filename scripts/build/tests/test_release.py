@@ -30,6 +30,7 @@ release_py = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(release_py)
 
 from chuangong import minisign  # noqa: E402
+from chuangong import registry as registry_module  # noqa: E402
 from chuangong import release_format as rf  # noqa: E402
 from chuangong.agent import Config, Deps, tick  # noqa: E402
 from chuangong.registry import Registry  # noqa: E402
@@ -453,6 +454,83 @@ def test_cli_build_sign_verify(tmp_path):
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    ("external_failure", "expected_error"),
+    [
+        (None, None),
+        ("registry unavailable", "registry unavailable"),
+        ("invalid digest", "invalid digest"),
+        ("missing root digest", "Digest верхнего уровня: 0"),
+        ("ambiguous root digest", "Digest верхнего уровня: 2"),
+    ],
+)
+def test_cli_resolves_local_tags_and_external_refs(tmp_path, monkeypatch, capsys, external_failure, expected_error):
+    registry = "http://localhost:5000"
+    repo = PREFIX.split("/", 1)[1]
+    transport = FakeTransport()
+    manifest = release_py.GBM.load_manifest(REPO_ROOT / release_py.BUILD_MANIFEST)
+    for name, spec in release_py.all_services(manifest).items():
+        tag = release_py.image_tag_for(name, spec, "dev-b704404", "dev", "humble")
+        transport.manifests[(repo, tag)] = f'{{"tag":"{tag}"}}'.encode()
+    monkeypatch.setattr(registry_module.UrllibTransport, "open", lambda self, *args: transport.open(*args))
+
+    external_commands = []
+    run = release_py.subprocess.run
+
+    def inspect_manifest(command, *args, **kwargs):
+        if command[0] != "docker":
+            return run(command, *args, **kwargs)
+        external_commands.append(command)
+        ref = command[-1]
+        if external_failure == "registry unavailable":
+            return release_py.subprocess.CompletedProcess(command, 1, "", external_failure)
+        child_digest = _fake_digest("linux/arm64")
+        root_digest = external_failure if external_failure == "invalid digest" else _fake_digest(ref)
+        root_lines = {
+            "missing root digest": [],
+            "ambiguous root digest": [f"Digest:      {root_digest}", f"Digest:      {child_digest}"],
+        }.get(external_failure, [f"Digest:      {root_digest}"])
+        stdout = "\n".join(
+            [
+                f"Name:       docker.io/{ref}",
+                "MediaType:  application/vnd.oci.image.index.v1+json",
+                *root_lines,
+                "",
+                "Manifests:",
+                f"  Name:       docker.io/{ref}@{child_digest}",
+                f"  Digest:     {child_digest}",
+                "  Platform:   linux/arm64",
+            ]
+        )
+        return release_py.subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(release_py.subprocess, "run", inspect_manifest)
+    result = release_py.main(
+        [
+            "build", "--release", "r1", "--image-tag", "dev-b704404", "--git", "b704404",
+            "--out", str(tmp_path), "--resolve-registry", registry,
+        ]
+    )
+    ref = "eclipse/zenoh:1.6.2"
+    assert [command[-1] for command in external_commands].count(ref) == 1
+    assert all(url.startswith(f"{registry}/v2/{repo}/manifests/") for _, url, _ in transport.calls)
+    assert all(":" not in url.rsplit("/", 1)[1] for _, url, _ in transport.calls)
+    output = tmp_path / rf.RELEASE_FILE
+    if expected_error is not None:
+        assert result == 1
+        assert expected_error in capsys.readouterr().err
+        assert not output.exists()
+        return
+
+    assert result == 0
+    assert all(command[:-1] == ["docker", "buildx", "imagetools", "inspect", "--"] for command in external_commands)
+    release = rf.loads(output.read_bytes())
+    assert f"{ref}@{_fake_digest(ref)}" in release["roles"]["main"]["external_images"]
+    tag = "nav2-humble-dev-b704404"
+    digest = hashlib.sha256(transport.manifests[(repo, tag)]).hexdigest()
+    assert release["roles"]["main"]["images"]["nav2"] == f"{PREFIX}@sha256:{digest}"
 
 
 def test_publish_then_agent_sees_release(tmp_path, built):
