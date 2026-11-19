@@ -48,7 +48,7 @@ pytestmark = pytest.mark.skipif(
     reason="running outside a source checkout (installed package): tools/gen_tool_catalog.py unavailable",
 )
 
-#: Tools intentionally exempt from dialogue_node slice coverage, with the
+#: Tools intentionally exempt from dialog_node slice coverage, with the
 #: reason recorded inline. Empty today — every SKILL_TOOLS entry is expected
 #: to be reachable by the personality that is offered the skill it lives in.
 #: If a future skill is TARS-only or operator-only, add its tools here with a
@@ -82,7 +82,7 @@ def _all_skill_tool_names(skill_tools: dict[str, tuple[str, ...]]) -> set[str]:
 def test_every_skill_tool_is_allowed_for_dialogue_node(skill_tools):
     """No ``SKILL_TOOLS`` entry may be invisible to the sender it is offered to.
 
-    ``dialogue_node`` is the sender that actually drives the LLM personality
+    ``dialog_node`` is the sender that actually drives the LLM personality
     at runtime (see ``mcp_server.on_execute_request``'s slice guard); every
     tool a skill advertises to it must resolve against the *bundled*
     ``slice_policy.yaml``, not a test-only synthetic policy.

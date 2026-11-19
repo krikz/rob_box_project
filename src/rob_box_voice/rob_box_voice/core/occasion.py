@@ -16,7 +16,7 @@ Issue #2536, ADR-0101 §3.1, ADR-0102 §5. PR-A: каркас + регресси
 (Main Pi / vision-hailo), которого НЕТ в voice-assistant образе; cross-service
 связь voice↔perception — только по топикам, не по Python-импорту (ADR-0103 §3.1 п.6).
 Первый черновик PR-A импортировал ``rob_box_perception.core.event_detector``
-на уровне модуля → dialogue_node падал на старте voice-образа
+на уровне модуля → dialog_node падал на старте voice-образа
 (ModuleNotFoundError). Гейт ведёт собственный ``_last_any_at`` (см. __init__).
 """
 

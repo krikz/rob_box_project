@@ -222,7 +222,7 @@ class TestRespeakerRoute:
         """
         node = _make_node()
         _run_route(node, "respeaker", "тарс поверни камеру")
-        # личность получает фразу как есть (дальше dialogue_node сам решит —
+        # личность получает фразу как есть (дальше dialog_node сам решит —
         # там вейк-список только personality, «тарс» не адресует)
         node.publish_result.assert_called_once()
         assert node.publish_result.call_args.args[0] == "тарс поверни камеру"

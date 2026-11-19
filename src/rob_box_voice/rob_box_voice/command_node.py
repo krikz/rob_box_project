@@ -6,7 +6,7 @@ CommandNode - распознавание голосовых команд для 
 Action Clients: NavigateToPose, FollowPath
 
 Реплики сам не читает и не разбирает (ADR-0150 PR-5 #3694): адресацию, тишину и Tier-1 решает
-dialogue_node, сюда приходит только команда движения/статуса после допуска (``stop_motion``, ``move``…).
+dialog_node, сюда приходит только команда движения/статуса после допуска (``stop_motion``, ``move``…).
 
 The in-process cancel bridge that used to live here was removed by
 ADR-0086 (2026-09-09). ``handle_stop()`` cancels Nav2 goals via

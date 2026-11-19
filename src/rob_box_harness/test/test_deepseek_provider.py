@@ -260,7 +260,7 @@ async def test_aclose_is_idempotent(deepseek_env: None) -> None:
 async def test_stream_cancel_closes_inner_stream() -> None:
     """Issue #1280 — cancelling the consumer must abort the HTTP stream.
 
-    When the user barges in (new STT input), ``dialogue_node`` cancels
+    When the user barges in (new STT input), ``dialog_node`` cancels
     the run task. ``DeepSeekProvider.stream`` must then cancel its
     background drain task AND close the inner stream. Before the fix the
     drain task was only cancelled without awaiting — if it sat between

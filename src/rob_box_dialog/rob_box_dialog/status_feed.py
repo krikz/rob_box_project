@@ -1,6 +1,6 @@
 """Статус LLM и wake-слов для экрана ТАРС 1 (Ш3б): перенос v1 ``core/tars_status_feed.py``.
 
-Два latched-топика (их публикует хост: ``dialog_node`` v2 или ``dialogue_node`` v1), чтобы поздний подписчик
+Два latched-топика (их публикует хост: ``dialog_node`` v2 или ``dialog_node`` v1), чтобы поздний подписчик
 (quest_node → шлем) получил значение:
 
 * ``/voice/llm_status``  — ``{"provider", "model"?, "chain", "source"}``

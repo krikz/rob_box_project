@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unit tests for wake-word sync across stt_node / dialogue_node (issue #1252).
+"""Unit tests for wake-word sync across stt_node / dialog_node (issue #1252).
 
-The bug: stt_node had 3 wake words, dialogue_node had 12 — the accept was
+The bug: stt_node had 3 wake words, dialog_node had 12 — the accept was
 unreliable because STT heard variants («роберт», «рыбок», «роботс») that
-stt_node (barge-in) or dialogue_node (wake gate) did not match.
+stt_node (barge-in) or dialog_node (wake gate) did not match.
 
 These tests pin the *invariant*: the canonical list (code defaults, YAMLs,
 harness DSM) must contain every known STT variant and match 1:1.
@@ -55,12 +55,12 @@ def _yaml_wake_words(path: str) -> list[str]:
     if not full.exists():
         return []
     data = yaml.safe_load(full.read_text(encoding="utf-8"))
-    node = next(iter(data))  # stt_node / dialogue_node
+    node = next(iter(data))  # stt_node / dialog_node
     return list(data[node]["ros__parameters"].get("wake_words", []))
 
 
 class TestWakeWordSync:
-    """stt_node (код+yaml) = dialogue_node (все варианты) — issue #1252."""
+    """stt_node (код+yaml) = dialog_node (все варианты) — issue #1252."""
 
     @pytest.mark.parametrize("word", CANONICAL_WAKE_WORDS)
     def test_every_canonical_variant_is_accepted(self, word: str) -> None:

@@ -202,7 +202,7 @@ class _Policy:
 def _qos_module() -> types.SimpleNamespace:
     """``rclpy.qos`` — every policy the voice nodes actually import.
 
-    ``DurabilityPolicy`` is required by ``dialogue_node`` (latched
+    ``DurabilityPolicy`` is required by ``dialog_node`` (latched
     ``/voice/providers/state``), ``sound_node`` and the latched
     ``/mcp/tools`` catalog. Missing it is an ImportError at module scope, so
     it takes out every test in the directory rather than one assertion.

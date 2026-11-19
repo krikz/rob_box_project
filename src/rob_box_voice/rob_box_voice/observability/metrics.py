@@ -493,7 +493,7 @@ def record_speaker_recognize(
 def record_barge_in() -> None:
     """Учёт barge-in — пользователь прервал TTS голосом.
 
-    Вызывается из audio_node/dialogue_node, когда wake-word детектируется
+    Вызывается из audio_node/dialog_node, когда wake-word детектируется
     в момент, когда TTS ещё говорит (issue #993).
     """
     counter = get_metric(

@@ -4,7 +4,7 @@ ADR-0150 PR-0 (#3684). Только чтение лога: рантайм роб
 
 Формат строки лога::
 
-    [dialogue_node-4] [INFO] [1792499438.750290025] [dialogue_node]: 📥 LLM INPUT: '...'
+    [dialog_node-4] [INFO] [1792499438.750290025] [dialog_node]: 📥 LLM INPUT: '...'
 
 Строки без метки времени (дамп ``🔎 LLM REQUEST``, ``tools(48): ...``) тоже читаются: ts = None.
 

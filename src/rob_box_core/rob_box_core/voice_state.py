@@ -1,7 +1,7 @@
 """voice_state - состояние голоса робота для читателей (шлем Quest, арбитр, кольцо) из контрактов диалога v2.
 
 Раньше его отдавал один топик ``/voice/dialogue/state`` (String ``IDLE|LISTENING|DIALOGUE|SILENCED``) - писал только
-``dialogue_node`` v1. При ``dialog_engine: v2`` топик пуст (issue #3911): ``SessionState`` его заменяет только по
+``dialog_node`` v1. При ``dialog_engine: v2`` топик пуст (issue #3911): ``SessionState`` его заменяет только по
 сценам, а ходу и речи состояния в нём нет. Здесь состояние складывается из трёх контрактов v2, одна таблица на всех:
 
 * ``TurnEvent`` (``/dialog/turn_event``) - ход: ``addressed`` слушает, ``thinking``/``executing`` думает;
@@ -15,7 +15,7 @@ speaking`` и ``detail="silenced"`` в тишине. ``VoiceStateTracker`` - ч�
 
 Итог - наибольшая из активностей по источникам (``idle < listening < thinking < speaking``), тишина - если молчит
 любой источник. Адаптер строки v1 (``on_legacy``/``LEGACY_STATE``) удалён вместе с подписками на старый топик
-(#4354 A2): издателя у ``/voice/dialogue/state`` нет с удаления ``dialogue_node``.
+(#4354 A2): издателя у ``/voice/dialogue/state`` нет с удаления ``dialog_node``.
 
 Агент и сцена продублированы литералами (``rob_box_dialog`` есть не во всех образах - quest его не несёт); drift
 держит ``test_voice_state.py`` (сверка с ``rob_box_dialog.knowledge``).

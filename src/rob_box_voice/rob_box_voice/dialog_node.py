@@ -110,7 +110,7 @@ _LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPol
 
 
 def declare_params(node: Any) -> None:
-    """Параметры ноды (``dialog_node.yaml``; ключи API — из окружения, как у ``dialogue_node``)."""
+    """Параметры ноды (``dialog_node.yaml``; ключи API — из окружения, как у ``dialog_node``)."""
     node.declare_parameter("metrics_port", 9100)  # Prometheus-экспортер (#4328); 0 - выключен
     node.declare_parameter("llm_providers", "deepseek,minimax")
     # Профиль продукта (ADR-0167 Ш1б): робот без своего профиля не стартует - нейтральных умолчаний ядра (вейк

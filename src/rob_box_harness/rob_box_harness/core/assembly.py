@@ -214,7 +214,7 @@ def _default_balance_checkers(
     задано явно и в ``provider_chain`` есть ``deepseek`` (у него
     единственного в registry есть ``has_balance_api=True`` — см.
     ``rob_box_harness.providers.catalog``). Это сохраняет поведение
-    dialogue_node, где deepseek-пробер жил прямо в ``_build_llm``.
+    dialog_node, где deepseek-пробер жил прямо в ``_build_llm``.
     """
     if spec.health_balance_checkers:
         return dict(spec.health_balance_checkers)

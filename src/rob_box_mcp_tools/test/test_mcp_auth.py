@@ -209,7 +209,7 @@ class TestFromEnv:
         assert _server().verify(auth.sign(_request()))[0] is True
 
     def test_two_nodes_share_the_file_secret(self, tmp_path, monkeypatch):
-        """dialogue_node и mcp_server живут в одном контейнере (см. compose)."""
+        """dialog_node и mcp_server живут в одном контейнере (см. compose)."""
         monkeypatch.delenv(ENV_TOKEN, raising=False)
         monkeypatch.delenv(ENV_ALLOW_UNAUTH, raising=False)
         monkeypatch.setenv(ENV_TOKEN_FILE, str(tmp_path / ".mcp_token"))

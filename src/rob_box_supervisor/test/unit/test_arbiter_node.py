@@ -676,7 +676,7 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
 
 
 class TestAvatarArbiterDoesNotMutateExternalState(unittest.TestCase):
-    """Monitor-режим НЕ меняет twist_mux / dialogue_node (ADR-0028 §4.5)."""
+    """Monitor-режим НЕ меняет twist_mux / dialog_node (ADR-0028 §4.5)."""
 
     def setUp(self) -> None:
         self.node = AvatarArbiter()
@@ -692,9 +692,9 @@ class TestAvatarArbiterDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue(self) -> None:
-        """Нода в Phase 1 НЕ правит параметры dialogue_node (нет service-client'а)."""
+        """Нода в Phase 1 НЕ правит параметры dialog_node (нет service-client'а)."""
         # Доказательство: нода не создаёт service-client'ов, только service-servers.
-        # Это структурная гарантия — никаких side-effects на dialogue_node.
+        # Это структурная гарантия — никаких side-effects на dialog_node.
         # (Phase 2 active-режим может добавить, но только под mode=active.)
         self.assertEqual(self.node._publishers, self.node._publishers)  # smoke
         # На всякий случай: нет ни одного publisher-а на /voice/ или /dialogue/

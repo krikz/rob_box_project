@@ -2283,7 +2283,7 @@ class SpeakerIdNode(Node):
         закрывается коллизия тёзок: кандидат не может совпасть ни с одной
         уже выданной кличкой. Кличку от LLM (слой 2, топики
         ``/voice/speaker/{epithet_request,epithet}``) просил и присылал только
-        ``dialogue_node`` v1 — цепочка удалена (#4354 A2).
+        ``dialog_node`` v1 — цепочка удалена (#4354 A2).
         """
         candidate = epithets.choose_epithet(
             tags,

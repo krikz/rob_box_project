@@ -14,10 +14,10 @@ TTS озвучивал эту метаинструкцию через Yandex→M
 слышал «получатель ответа забыл указать антропоморфные атрибуты»
 поверх только что сменённого голоса.
 
-Ретрай LLM в dialogue_node (``_check_system_template_regurgitate_and_retry``)
+Ретрай LLM в dialog_node (``_check_system_template_regurgitate_and_retry``)
 удалён в ADR-0150 PR-7 ч.7d-2 (#3698). Защита одна (эти тесты) —
 ``TTSNode.dialogue_callback`` ОТКАЗЫВАЕТСЯ синтезировать regurgitated
-template, откуда бы ни пришёл запрос (ответ хода dialogue_node или MCP
+template, откуда бы ни пришёл запрос (ответ хода dialog_node или MCP
 ``speak_text``). Результат:
 
 * ``_submit_synthesis`` НЕ вызывается;

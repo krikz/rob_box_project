@@ -387,7 +387,7 @@ class TestSpeechPrefetchWindow:
         round-46/47/48 через стену/динамик латентность вырастает до
         800-1100ms (тихое «р» в «робот» < 3.5dB VAD-порога), и 1.0s
         окно обрезает начало «робот» → STT слышит «меня зовут саша»
-        без wake word → dialogue_node игнорирует (no_wake_word).
+        без wake word → dialog_node игнорирует (no_wake_word).
 
         Фикс #1117: 1.0s → 1.5s. Тест подтверждает что 800ms VAD-латентность
         + 512ms тихой речи сохраняются в начале фразы в правильном порядке.
@@ -414,7 +414,7 @@ class TestSpeechPrefetchWindow:
         # порядке: first идёт после хвостовой тишины pre-roll, second — после
         # first, third — после second. STT услышит «тишина + р + о + б» = «роб».
         # Главное — wake word НЕ выпал из окна (раньше при 1.0s — выпадал,
-        # STT слышал «обот» → dialogue_node отбрасывал как no_wake_word).
+        # STT слышал «обот» → dialog_node отбрасывал как no_wake_word).
         assert (first + second + third) in audio_node.speech_audio_buffer
         assert audio_node.speech_audio_buffer.index(first) < audio_node.speech_audio_buffer.index(second)
         assert audio_node.speech_audio_buffer.index(second) < audio_node.speech_audio_buffer.index(third)

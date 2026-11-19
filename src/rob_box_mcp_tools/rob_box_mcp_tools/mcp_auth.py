@@ -26,7 +26,7 @@ ROS2 на транспортном уровне не даёт identity отпр�
 
 Секрет по умолчанию
 -------------------
-``dialogue_node`` и ``mcp_server`` живут в одном контейнере (см.
+``dialog_node`` и ``mcp_server`` живут в одном контейнере (см.
 ``docker/vision/docker-compose.yaml``), поэтому общий секрет берётся из
 файла на локальной ФС: первый стартовавший процесс создаёт его атомарно,
 остальные читают. Ничего не нужно добавлять в ``.env.secrets``, а пир на
@@ -73,7 +73,7 @@ _REPLAY_CACHE_SIZE = 1024
 #: действительно публикуют в ``/mcp/execute`` (см. llm_adapter.py,
 #: async_executor.py).
 #:
-#: Исторически здесь были только ``dialogue_node`` и ``harness`` — это
+#: Исторически здесь были только ``dialog_node`` и ``harness`` — это
 #: ломалось для ``avatar_supervisor`` (ТАРС): HMAC-подпись была валидной
 #: (``RequestAuthenticator`` создавался с секретом), но ``verify()``
 #: отклонял запрос на этапе ``sender not in allowed_senders`` ещё до
@@ -81,7 +81,7 @@ _REPLAY_CACHE_SIZE = 1024
 #: ``avatar_supervisor`` подписывает свои запросы как
 #: ``avatar_supervisor`` — поэтому он должен быть в whitelist.
 #: Имя LLM-личности в MCP: так подписываются запросы и по этому имени выбирается срез в ``slice_policy.yaml``. Не
-#: имя ROS-ноды: личность одна, а нод у неё две (v1 ``dialogue_node``, v2 ``dialog_node``) — одна запись знания (#3853).
+#: имя ROS-ноды: личность одна, а нод у неё две (v1 ``dialog_node``, v2 ``dialog_node``) — одна запись знания (#3853).
 PERSONALITY_SENDER = "dialogue_node"
 
 #: Имя агента чата Telegram в MCP (PR-12b): срез ``telegram`` (``say_aloud``) доступен только ему.

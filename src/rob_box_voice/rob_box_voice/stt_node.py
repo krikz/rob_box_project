@@ -682,7 +682,7 @@ class STTNode(Node):
         self.avatar_stt_result_pub = self.create_publisher(String, "/avatar/stt/result", 10)
         self.state_pub = self.create_publisher(String, "/voice/stt/state", 10)
         # Issue #1077 — speaker_tag Yandex едет полем Utterance.speaker_tag; отдельный топик
-        # /voice/stt/speaker читал только dialogue_node v1 — снят (#4354 A2).
+        # /voice/stt/speaker читал только dialog_node v1 — снят (#4354 A2).
         # Фраза «не расслышал» (issue #979) — клиентом речи (ADR-0150 PR-3).
         speech_client.prepare(self, "request")
         # Ранний сигнал «услышал» больше не звук stt_node: сегмент с вейком уходит в /dialog/interrupt_request,

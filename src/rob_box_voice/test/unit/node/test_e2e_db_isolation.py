@@ -16,7 +16,7 @@ embeddings; DELETE FROM speakers``, подтверждено владельце�
 ``scripts/ci/e2e/e2e_voice_test.sh`` (bash, Python-сканер топиков
 под ``src/`` его не видит), и топик, которым можно стереть БД одним
 безответным сообщением, — слабая конструкция сама по себе. Параметр —
-тот же паттерн, что ``e2e_session_reset_token`` у ``dialogue_node`` и
+тот же паттерн, что ``e2e_session_reset_token`` у ``dialog_node`` и
 ``volume_db``/voice-параметры у ``tts_node``: синхронный побочный эффект
 внутри валидирующего колбэка, успех/провал виден в exit-коде
 ``ros2 param set`` вызывающему.

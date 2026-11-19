@@ -26,7 +26,7 @@ auth-отказ помечался транзиентным 30с вместо д
 ``test_stt_dead_cache.py`` (issue #2365 Phase 2): чистые bare-стабы вместо
 ``TTSNode()`` (rclpy не поднимаем), реальный ``HealthCache`` из
 ``rob_box_harness.health`` вместо мока (это ровно тот класс, который делят
-dialogue_node/supervisor — если его контракт изменится, эти тесты должны
+dialog_node/supervisor — если его контракт изменится, эти тесты должны
 это заметить).
 """
 from __future__ import annotations

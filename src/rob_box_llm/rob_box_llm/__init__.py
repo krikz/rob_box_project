@@ -1,7 +1,7 @@
 """rob_box_llm — shared LLM + TTS provider abstraction.
 
 P0 foundation per ADR-0001. Replaces the duplicated LLM-client code that
-historically lived in rob_box_voice.dialogue_node, rob_box_telegram.llm_chat,
+historically lived in rob_box_voice.dialog_node, rob_box_telegram.llm_chat,
 rob_box_telegram.mcp_bridge and rob_box_mcp_tools.llm_adapter.
 
 LLM public surface:

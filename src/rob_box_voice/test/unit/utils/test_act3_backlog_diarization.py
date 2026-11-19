@@ -44,9 +44,9 @@ e2e-process потом прогонит voice-сценарий на hardware и 
 маркеры ``[backlog] accumulated ... speaker='Саша'/'Борис'/'незнакомец'``
 реально появляются в ``docker logs voice-assistant``.
 
-Сценарий НЕ прогоняет сам ``dialogue_node`` — мы тестируем поведение
+Сценарий НЕ прогоняет сам ``dialog_node`` — мы тестируем поведение
 ``SpeakerDatabase`` (низкий уровень, чистый модуль), потому что:
-  1. dialogue_node требует ROS2 (rclpy, sounddevice, opt deps);
+  1. dialog_node требует ROS2 (rclpy, sounddevice, opt deps);
   2. logи маркера ``[backlog] accumulated ...`` проверяет e2e harness
      (см. ``pr-acceptance``, ``regression-acceptance`` в e2e-process);
   3. этот файл покрывает AC, которые не зависят от LLM-инференса.
@@ -575,7 +575,7 @@ class TestAct3N304N305Unknown:
 class TestAct3FullScenario:
     """Полный сценарий act3 — проверка всего пути в одном тесте.
 
-    Имитирует работу dialogue_node: для каждой реплики act3 вызывается
+    Имитирует работу dialog_node: для каждой реплики act3 вызывается
     identify() (как в speaker_id_node) и проверяется, что атрибуция
     корректна. Плюс считается статистика speakers.db до/после.
 
