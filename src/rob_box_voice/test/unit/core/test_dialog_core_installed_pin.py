@@ -58,7 +58,7 @@ _PROBE = textwrap.dedent(
     ]
     if ahead:
         raise SystemExit("подмена: src на sys.path раньше пакета: " + ", ".join(ahead))
-    # Версия в metadata тега может не совпасть с именем тега (v0.7.9 несёт 0.7.8).
+    # Версия в metadata тега может не совпасть с именем тега (v0.7.9 нёс 0.7.8; v0.7.10 несёт 0.7.10).
     # Сверяем direct_url: pip пишет туда запрошенный тег.
     from importlib.metadata import distribution
 
