@@ -9,6 +9,7 @@
 #   zone            #4365 + #4470(on)  явно HIL_GUARD_SOUND=on, телеоп в препятствие: стоп, писк, «Осторожно!», маячок
 #   guard_off       #4470(off)  умолчание/явный off: тот же наезд без писка, затем назад off (умолчание HIL)
 #   corner          #4631  угол корпуса на пути: стенка перекрывает только левый угол; стоп до 0.20 м внутри коридора
+#   doorway         #4365  регресс проёма 0.90 м (мир polygon, x=2): подъезд по оси, в проёме нет стопа
 #   nav_aborted     #3789 + #4435  «поезжай на …» в недостижимую точку → фраза по ABORTED; после провала mux = 0
 #   stop_idle       #3789  «отмени навигацию» без цели → «Я и так стою.»
 #   stop_active     #3789 + #4435  то же во время поездки из скрипта → «Останавливаюсь.»; после отмены mux = 0
@@ -53,6 +54,9 @@ fi
 # sim-секунд после провала цели, за которые FollowPath должен погаснуть и mux обнулиться (orphan_timeout_s 1.5 + такт).
 : "${ORPHAN_GRACE_S:=2.0}"
 : "${WALL_SPEED:=0.1}"
+# Регресс проёма 0.90 м: цель за проёмом x=2 мира polygon, участок проёма по x правды Gazebo.
+: "${DOOR_GOAL:=3,0,0}"
+: "${DOOR_OPENING:=1.2,2.8}"
 # #4770: боевой movement_time_allowance (nav2_params.yaml). Сценарий его не укорачивает.
 : "${PROGRESS_ALLOWANCE_S:=30}"
 : "${HOLD_AHEAD_M:=1.5}"
@@ -61,7 +65,7 @@ OUT="$HIL_CHECKS_OUT"
 GZ="$HIL_SIM_PREFIX-gazebo"
 REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-ALL=(orphan zone guard_off corner nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel)
+ALL=(orphan zone guard_off corner doorway nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
 GUARD_SOUND_CHANGED=0
 
@@ -242,6 +246,19 @@ sc_corner() {
 
 # ── фразы тулов движения ────────────────────────────────────────────────────────────────
 
+sc_doorway() {
+    # #4365: проём 0.90 м мира polygon (x=2, коробки pose 2.000 ±1.725, размер 0.100×2.550).
+    # Подъезд по оси к цели за проёмом. PASS — доехала и в проёме нет входа в stop.
+    local d="$OUT/doorway" t0 lo hi
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" nav --goal "$DOOR_GOAL" --timeout 180
+    sleep 2
+    dlogs "$HIL_MAIN_HOST" proximity-guard "$t0" "$d/guard.log"
+    lo=${DOOR_OPENING%,*}
+    hi=${DOOR_OPENING#*,}
+    verdict doorway "$d" --opening-lo "$lo" --opening-hi "$hi"
+}
 sc_nav_aborted() {
     local d="$OUT/nav_aborted" t0 ppid
     mkdir -p "$d"
