@@ -246,6 +246,15 @@ capture_params_after_ready() {
     if grep -q '=missing$' "$ART/params_values.txt"; then
         return 1
     fi
+    # Оверлей читается на configure. Если просили false, а узел ответил не false —
+    # yaml лёг мимо (пара run1: True при файле false). Цель не шлём.
+    if [ "${M1_REPEAT_SHORT_CIRCUIT:-true}" = false ]; then
+        if ! grep -qx 'FollowPath.short_circuit_trajectory_evaluation=[Ff]alse' "$ART/params_values.txt"; then
+            log "SHORT_CIRCUIT_NOT_APPLIED $(grep short_circuit "$ART/params_values.txt" || true)"
+            return 1
+        fi
+        log "SHORT_CIRCUIT_APPLIED false"
+    fi
     log "PARAMS_NUMERIC $(wc -l <"$ART/params_values.txt") values"
 }
 
@@ -359,7 +368,10 @@ TOPICS="$(topics_line)"
 log "BAG_TOPICS $TOPICS"
 sandbox "mkdir -p '$REMOTE_OUT'" || { log "REMOTE_OUT_FAIL"; exit 31; }
 # shellcheck disable=SC2086
-sandbox "docker exec -d $(printf '%q' "$G") /entrypoint.sh bash -c 'echo \$\$ >$(printf '%q' "$CONTAINER_OUT")/recorder.pid; exec ros2 bag record -o $(printf '%q' "$CONTAINER_OUT")/bag $TOPICS >$(printf '%q' "$CONTAINER_OUT")/bag.log 2>&1'" \
+python3 -X utf8 -c 'import sys; sys.path.insert(0, sys.argv[1]); from m1_topics import bag_qos_overrides_yaml; open(sys.argv[2], "w", encoding="utf-8").write(bag_qos_overrides_yaml())' \
+    "$HERE" "$ART/bag_qos.yaml"
+scp -q -o BatchMode=yes "$ART/bag_qos.yaml" "$SANDBOX:$REMOTE_OUT/bag_qos.yaml" || { log "BAG_QOS_SCP_FAIL"; exit 31; }
+sandbox "docker exec -d $(printf '%q' "$G") /entrypoint.sh bash -c 'echo \$\$ >$(printf '%q' "$CONTAINER_OUT")/recorder.pid; exec ros2 bag record --qos-profile-overrides-path $(printf '%q' "$CONTAINER_OUT")/bag_qos.yaml -o $(printf '%q' "$CONTAINER_OUT")/bag $TOPICS >$(printf '%q' "$CONTAINER_OUT")/bag.log 2>&1'" \
     || { log "BAG_RECORD_FAIL"; exit 31; }
 sleep 5
 sandbox "test -d '$REMOTE_OUT/bag' && echo BAG_RECORDING_DIRECTORY_PRESENT" >"$ART/bag_start.log" 2>&1 \

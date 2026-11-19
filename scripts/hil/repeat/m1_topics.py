@@ -138,6 +138,22 @@ def repeat_bag_topics(extra: Sequence[str] | None = None) -> List[str]:
     return out
 
 
+def bag_qos_overrides_yaml(topics: Sequence[str] | None = None) -> str:
+    """QoS подписки bag. DWB публикует /evaluation depth 1, reliable.
+
+    ``ros2 bag record`` без оверлея подписывается best-effort и теряет тики
+    (пара run1: 6 с дыры, защёлка встала в дырке). reliability 1 = reliable.
+    """
+    names = list(topics) if topics is not None else repeat_bag_topics()
+    lines = []
+    for name in names:
+        lines.append(f"{name}:")
+        lines.append("  reliability: reliable")
+        lines.append("  history: keep_last")
+        lines.append("  depth: 10")
+    return "\n".join(lines) + "\n"
+
+
 def record_argv(out_dir: str, topics: Sequence[str] | None = None) -> List[str]:
     """Аргументы ``ros2 bag record -o <out> <topics...>``. Без живого ros2."""
     names = list(topics) if topics is not None else repeat_bag_topics()
@@ -334,19 +350,23 @@ def dwb_publish_overlay_yaml(short_circuit: bool = True, trans_stopped: float | 
         lines.append("# short_circuit false: полный список оценок, выбор траектории тот же.")
     lines.extend(
         [
+            # Вложенность как в nav2_params.yaml: controller_server.ros__parameters.FollowPath.
+            # Плоский FollowPath: под controller_server не перебивает вложенный ключ
+            # (пара run1: yaml false, param get True).
             "controller_server:",
             "  ros__parameters:",
             "    FollowPath:",
-            "      publish_evaluation: true",
-            "      publish_trajectories: true",
-            "      publish_local_plan: true",
+            "      ros__parameters:",
+            "        publish_evaluation: true",
+            "        publish_trajectories: true",
+            "        publish_local_plan: true",
         ]
     )
     if not short_circuit:
-        lines.append("      short_circuit_trajectory_evaluation: false")
+        lines.append("        short_circuit_trajectory_evaluation: false")
     if trans_stopped is not None:
         # Не боевой 0.03: порог, ниже которого RotateToGoal считает корпус стоящим.
-        lines.append(f"      trans_stopped_velocity: {trans_stopped}")
+        lines.append(f"        trans_stopped_velocity: {trans_stopped}")
     return "\n".join(lines) + "\n"
 
 

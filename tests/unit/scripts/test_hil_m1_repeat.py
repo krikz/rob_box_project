@@ -47,6 +47,15 @@ def test_repeat_topics_add_yaw_costmap_and_controller_before_mux():
     assert "/cmd_vel_nav" != "/cmd_vel"
 
 
+def test_bag_qos_is_reliable_so_evaluation_is_not_dropped():
+    text = topics.bag_qos_overrides_yaml()
+    assert "/evaluation:" in text
+    assert "reliability: reliable" in text
+    assert "best_effort" not in text
+    script = (REPEAT / "run_m1_repeat.sh").read_text(encoding="utf-8")
+    assert "--qos-profile-overrides-path" in script
+
+
 def test_record_argv_refuses_list_without_required():
     argv = topics.record_argv("/tmp/bag")
     assert argv[:5] == ["ros2", "bag", "record", "-o", "/tmp/bag"]
@@ -187,6 +196,9 @@ def test_short_circuit_overlay_is_opt_in():
     """false добавляет строку; true и default — нет. Боевой yaml не открывается."""
     full = topics.dwb_publish_overlay_yaml(short_circuit=False)
     assert "short_circuit_trajectory_evaluation: false" in full
+    # Вложенность боевого yaml: FollowPath.ros__parameters, не плоский ключ.
+    assert "FollowPath:\n      ros__parameters:\n        publish_evaluation: true" in full
+    assert "        short_circuit_trajectory_evaluation: false" in full
     assert "publish_evaluation: true" in full
     assert "max_vel_x" not in full
     combat = topics.dwb_publish_overlay_yaml(short_circuit=True)
@@ -294,6 +306,30 @@ def test_resource_sample_parses_synthetic_proc(tmp_path):
     assert "mem_total_kb=missing" in empty
     assert "psi_cpu=missing" in empty
     assert "disk=missing" in empty
+
+
+def test_loop_flag_writes_a_line(tmp_path, monkeypatch):
+    """--loop не первым аргументом пишет строку. Пара run1: unrecognized arguments --loop."""
+    spec = importlib.util.spec_from_file_location("hil_resource_sample_loop", REPEAT / "resource_sample.py")
+    rs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rs)
+    root = tmp_path / "root"
+    (root / "proc").mkdir(parents=True)
+    (root / "proc/stat").write_text("cpu  1 0 0 1 0 0 0\n", encoding="utf-8")
+    (root / "proc/meminfo").write_text("MemTotal: 1 kB\nMemAvailable: 1 kB\n", encoding="utf-8")
+    out = tmp_path / "sandbox_resources.log"
+
+    def _once(*_a, **_k):
+        raise SystemExit(0)
+
+    monkeypatch.setattr(rs.time, "sleep", _once)
+    with pytest.raises(SystemExit) as caught:
+        rs.main(
+            ["--loop", "--host", "sandbox", "--out", str(out), "--root", str(root), "--disk", "sda"]
+        )
+    assert caught.value.code == 0
+    assert "host=sandbox" in out.read_text(encoding="utf-8")
+    assert "unrecognized arguments" not in out.read_text(encoding="utf-8")
 
 
 def test_shell_syntax_ok():
