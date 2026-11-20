@@ -192,7 +192,8 @@ class _Memory:
     def __init__(self, hits: list[dict]) -> None:
         self._hits = hits
 
-    def search(self, query, limit=5, speaker_id=None):  # noqa: ARG002
+    def search(self, query, limit=5, speaker_id=None, browse_when_empty=False):  # noqa: ARG002
+        # #4956: флаг принимаем, список хитов не меняем. Каталог фейк не строит.
         return list(self._hits)
 
 

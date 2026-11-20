@@ -982,7 +982,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'только что сохранил через memory_save — включая в этом же '
                        'разговоре, сразу после сохранения. Возвращает и факты, и '
                        'фрагменты прошлых разговоров, помечая каждый результат полем '
-                       "kind: 'fact' | 'turn'.",
+                       "kind: 'fact' | 'turn'. Если ни факт, ни реплика не совпали, в "
+                       'результатах каталог фактов говорящего с source="fact_browse".',
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
                                                          'description': 'Поисковый '
