@@ -57,13 +57,15 @@ def test_llm_unknown_theme_is_positive_filtered_and_never_generated(tmp_path, mo
     """LLM повторила непонятое слово человека: положительной темы нет ни у кода, ни у LLM, fake KIE не вызывается."""
     from rob_box_mcp_tools.engine.theme_choice import dj_set_slots
 
-    from .test_n605_theme_guard_junk_m6 import _running_set
+    from .test_n605_theme_guard_junk_m6 import _running_set, _wait_first_set_ordered
 
     dj, kie = _running_set(tmp_path, monkeypatch, cached=0)
     heard = f"поставь сет {word} на 1 трек"
     slots = dj_set_slots(dj, word, None, heard)
     assert slots.free is True and slots.theme == ""
-    ordered = len(kie.jobs)
+    # #4959: первый сет (кэш пуст) заказывает rock/150s из своего потока. Снимок до заказа ловил его как
+    # лишний GenJob этого вызова (CI job 136050355242, attempt 1; attempt 2 зелёный). Ждём тот же приём.
+    ordered = _wait_first_set_ordered(kie)
     data = dj.execute(action="start", theme=word, tracks=1, heard_text=heard).data
     assert data["theme"] == "" and len(kie.jobs) == ordered
 
