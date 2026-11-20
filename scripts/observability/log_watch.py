@@ -11,6 +11,7 @@
     python -X utf8 scripts/observability/log_watch.py                       # окно 24 ч, сводка текстом
     python -X utf8 scripts/observability/log_watch.py --json out.json       # + JSON со счётчиками
     python -X utf8 scripts/observability/log_watch.py --lines-file x.log    # без Loki, из файла
+    python -X utf8 scripts/observability/log_watch.py --cases               # кейсы вместо счётчиков (#4033 шаг 2а)
     python -X utf8 scripts/observability/log_watch.py --send-tg             # + в Telegram (только по команде)
 """
 
@@ -33,6 +34,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts" / "dialog"))
+import log_cases as lc  # noqa: E402
 import turn_failures as tf  # noqa: E402
 
 LOKI_URL = os.environ.get("LOKI_URL", "http://10.1.1.249:3100")
@@ -40,7 +42,7 @@ CONTAINER = "voice-assistant"
 #: Фильтр строк под события детекторов. Без эмодзи в начале: Loki с ним отдаёт 0 строк (ресёрч #4512, README).
 LINE_FILTER = (
     r"stt_attempt|\[echo\] фраза|accumulated reason=no_wake|turn_id=|turn=|tier1 kind=|\[execute\] событие"
-    r"|выступление старт|addressed=False|SpeechEvent"
+    r"|выступление старт|addressed=False|SpeechEvent|tool_not_available|\[e2e\]"
 )
 CHUNK_S = 6 * 3600  # окна по 6 ч: за сутки одним запросом Loki отвечает 429
 PAGE_LIMIT = 1000
@@ -170,6 +172,21 @@ def send_tg(text: str) -> None:
         subprocess.run(["bash", str(REPO / "scripts" / "robot_dev" / "tgsend.sh"), str(path)], check=True)
 
 
+DEFAULT_JOURNAL = Path.home() / ".local" / "state" / "rob_box_log_watch"
+
+
+def _cases_report(lines: Sequence[str], start_s: float, end_s: float, args: argparse.Namespace) -> Tuple[dict, str]:
+    """Кейсы окна: сводка без фраз и текст. Журнал — вне репо, если задан каталог или флаг."""
+    summary = lc.cases_summary(lines, start_s, end_s, args.min_count)
+    text = lc.render_cases(summary)
+    journal = args.journal_dir
+    if journal is not None:
+        cases, harness = lc.build_cases(lines)
+        kept = [c for c in cases if c.count >= args.min_count]
+        lc.write_journal(kept, journal, harness, args.private_dir)
+    return summary, text
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--hours", type=float, default=24.0, help="окно назад от сейчас, ч (24)")
@@ -177,6 +194,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--lines-file", type=Path, help="читать строки из файла вместо Loki")
     parser.add_argument("--json", type=Path, dest="json_out", help="записать сводку JSON")
     parser.add_argument("--send-tg", action="store_true", help="отправить текст в Telegram (только по команде)")
+    parser.add_argument("--cases", action="store_true", help="собрать кейсы вместо сухих счётчиков")
+    parser.add_argument(
+        "--journal-dir",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_JOURNAL,
+        help="журнал кейсов вне репо (по умолчанию ~/.local/state/rob_box_log_watch)",
+    )
+    parser.add_argument("--private-dir", type=Path, help="фразы харнесса отдельно; живые фразы не пишутся")
+    parser.add_argument("--min-count", type=int, default=1, help="не показывать кейс реже N раз")
     args = parser.parse_args(argv)
     end_s = time.time()
     start_s = end_s - args.hours * 3600
@@ -184,8 +211,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         lines = args.lines_file.read_text(encoding="utf-8", errors="replace").splitlines()
     else:
         lines = fetch_lines(start_s, end_s, args.loki_url)
-    summary = summarize(lines, start_s, end_s)
-    text = render_text(summary)
+    if args.cases:
+        summary, text = _cases_report(lines, start_s, end_s, args)
+    else:
+        summary = summarize(lines, start_s, end_s)
+        text = render_text(summary)
     print(text)
     if args.json_out:
         args.json_out.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
