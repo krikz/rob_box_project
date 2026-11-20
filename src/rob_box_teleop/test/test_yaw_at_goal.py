@@ -199,3 +199,85 @@ def test_node_is_silent_outside_the_xy_window_and_when_nav_is_not_live(node_para
     yaw._lookup._buffer.lookup_transform = lambda *args: _tf(M2_POSE)
     yaw._tick()
     assert all(pub.messages == [] for _, pub in node.publishers)
+
+
+def _yaw_twists(node):
+    return {topic: pub.messages for topic, pub in node.publishers}[YAW_AT_GOAL_CMD_VEL_TOPIC]
+
+
+def _arm(node, pose, goal, now_s=100.0):
+    """Живой NavigateThroughPoses + хвост /plan + поза. Как окна стоянки Gate 2."""
+    yaw = node._yaw
+    yaw._lookup._buffer.lookup_transform = lambda *args: _tf(pose)
+    yaw._now = lambda: now_s
+    yaw._on_nav(types.SimpleNamespace(status_list=[_status(2)]))
+    yaw._on_plan(_plan(*goal, stamp_s=now_s))
+
+
+# Gate 2 Depot 20.11, окна стоянки 2 с: /cmd_vel_yaw = wz 0.0 ровно 20/20 на 10 Гц
+# (M2/M5/R1/R2/R3), mux /diff_drive_controller/cmd_vel_unstamped совпал с нулями,
+# а не с ненулевым /cmd_vel DWB (mean angular.z 0.150/0.485/0.600/−0.128/0.512).
+# Причина — _tick публиковал Turn(0, done) каждый тик: yaw уже в допуске, xy внутри,
+# план свежий. timeout 0.2 с канала priority 15 не истекал.
+_STALL_TICKS = 20  # 2 с × 10 Гц, как семплы окон bag
+
+
+def test_inside_yaw_tolerance_does_not_hold_cmd_vel_yaw_at_zero(node_params):
+    """Ветка бага: xy и yaw внутри допуска, план свежий — тишина, не нули."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    inside = (M2_GOAL[0] + 0.1, M2_GOAL[1], math.radians(5.0))
+    _arm(node, inside, M2_GOAL)
+    for _ in range(_STALL_TICKS):
+        node._yaw._tick()
+    twists = _yaw_twists(node)
+    assert twists == []
+    assert node._yaw._turning is False
+
+
+def test_active_turn_still_publishes_nonzero_omega(node_params):
+    """Пока разворот идёт, команда как раньше: свой топик, знак к цели, не нули."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    _arm(node, M2_POSE, M2_GOAL)
+    for _ in range(_STALL_TICKS):
+        node._yaw._tick()
+    twists = _yaw_twists(node)
+    assert len(twists) == _STALL_TICKS
+    assert all(t.linear.x == 0.0 and t.angular.z < 0.0 for t in twists)
+    assert abs(twists[0].angular.z) == pytest.approx(min(abs(yag.shortest_yaw(M2_POSE[2], 0.0)), 0.6))
+
+
+def test_finished_turn_publishes_one_zero_then_silence(node_params):
+    """Yaw вошёл в допуск: один нулевой Twist, дальше ни одного — timeout 0.2 отдаёт пол Nav2."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    _arm(node, M2_POSE, M2_GOAL)
+    node._yaw._tick()
+    assert len(_yaw_twists(node)) == 1 and _yaw_twists(node)[0].angular.z != 0.0
+
+    inside = (M2_GOAL[0] + 0.05, M2_GOAL[1], math.radians(2.0))
+    node._yaw._lookup._buffer.lookup_transform = lambda *args: _tf(inside)
+    for _ in range(_STALL_TICKS):
+        node._yaw._tick()
+    twists = _yaw_twists(node)
+    zeros = [t for t in twists if t.angular.z == 0.0 and t.linear.x == 0.0]
+    assert len(zeros) == 1
+    assert twists[-1] is zeros[0]
+    assert node._yaw._turning is False
+
+
+def test_aborted_turn_publishes_one_zero_then_silence(node_params):
+    """Отказ: nav больше не жив / вышли из xy — тоже один ноль, не поток нулей."""
+    node_params["nav2_params_file"] = str(NAV2)
+    node = FollowPathWatchdogNode()
+    _arm(node, M2_POSE, M2_GOAL)
+    node._yaw._tick()
+    node._yaw._on_nav(types.SimpleNamespace(status_list=[_status(6)]))  # ABORTED
+    for _ in range(_STALL_TICKS):
+        node._yaw._tick()
+    twists = _yaw_twists(node)
+    zeros = [t for t in twists if t.angular.z == 0.0]
+    assert len(zeros) == 1
+    assert len(twists) == 2  # команда разворота + один ноль
+    assert node._yaw._turning is False

@@ -7,8 +7,8 @@ DWB ``RotateToGoal`` обязан крутить на месте внутри ``
 из того же ``nav2_params.yaml``.
 
 Решение — чистая функция. Нода подаёт сюда позу и конец живого ``/plan`` и публикует
-решённый ``Twist`` в ``/cmd_vel_yaw`` (twist_mux priority 15, выше Nav2). FollowPath
-не отменяем: mux сам отдаёт развороту пол, пока тик свежий.
+решённый ``Twist`` в ``/cmd_vel_yaw`` (twist_mux priority 15, выше Nav2) только пока
+разворот идёт. ``None`` и ``done`` нода не льёт нулями: timeout 0.2 с должен истечь.
 """
 
 from __future__ import annotations

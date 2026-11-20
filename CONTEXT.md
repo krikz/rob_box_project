@@ -504,8 +504,10 @@ FollowPath активен дольше `orphan_timeout_s` (1.5 с) — отме�
 `rob_box_teleop/followpath_orphan.py`. #4770 это не закрывает: там abort самого FollowPath внутри контроллера.
 
 **Разворот у цели** — та же нода (#4694): xy уже внутри `xy_goal_tolerance`, а yaw вне `yaw_goal_tolerance`
-того же goal checker'а. Twist в `/cmd_vel_yaw` (twist_mux priority 15, выше Nav2, ниже замков руля).
-Допуск yaw не ослабляется. Решение — чистая `rob_box_teleop/yaw_at_goal.py`.
+того же goal checker'а. Twist в `/cmd_vel_yaw` (twist_mux priority 15, выше Nav2, ниже замков руля)
+только пока разворот идёт. Вне разворота — тишина, не нули: непрерывный `wz=0` на 10 Гц не даёт
+timeout 0.2 с истечь, и канал вечно перебивает Nav2 (Depot Gate 2, 20.11). Снять начатый разворот —
+ровно один нулевой Twist. Допуск yaw не ослабляется. Решение — чистая `rob_box_teleop/yaw_at_goal.py`.
 Хвост `/plan` старше 2 с (`PLAN_STALE_S`) не цель, кроме позы уже внутри xy-допуска: у цели planner замирает,
 порог не поднимаем. Далеко от старого хвоста путь не выдумываем.
 
