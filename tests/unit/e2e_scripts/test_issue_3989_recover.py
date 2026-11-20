@@ -313,7 +313,7 @@ class TestRunStepRecovery:
         # 06.11: recover запрещён -- «Робот!» не говорим, но фраза шага при no_wake звучит ещё до 3 попыток всего.
         assert "RC=1" in out and "PLAY_COUNT=3" in out, (out, err)
         assert "E2E_RECOVER no_wake" not in out and out.count("E2E_RECOVER wake_replay a ") == 2
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 (no_wake)" in out
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 inject_failed (no_wake)" in out
         assert took < 90, took
 
     def test_recovery_that_did_not_help_is_fail_not_second_recovery(self, tmp_path):

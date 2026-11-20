@@ -2867,12 +2867,48 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
                 3) rc=1 ;;   # ПРИНЯТО нет за E2E_ACCEPT_WINDOW: переигрываем сразу
                 4)  # #3989: no_wake/silenced, а восстановления нет (нельзя, уже было или не сработало)
                     log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s (wait=event, verdict=${E2E_REPLY_VERDICT})"
+                    _no_wake_inject=""
                     if [ "$E2E_REPLY_VERDICT" = "no_wake" ]; then
-                        log "STEP ${label}: ❌ хода нет: фраза принята без вейка и ушла в бэклог (STT потерял «Робот») -- повторов нет"
+                        # #4951 (марафон 20.11, акт 2 n210, run 44789967142): вейк так и не пробился
+                        # (wake_replay вернул 0, попытки кончились) -- звуковых повторов больше нет, но
+                        # оригинальная фраза шага в топик ещё не уходила. Последний шанс -- один вызов
+                        # step_stt_inject. Сам решает, применима ли инъекция (флаг fallback выключен,
+                        # E2E_STEP_STT_INJECTED / уже пытались, пустой текст, barge_in): нет -- rc 2/3,
+                        # и ниже прежний честный FAIL turn_no_wake с маркером inject_failed. Ход после
+                        # инъекции есть (rc 0, FAIL не записан) -- не чистый PASS:
+                        # «OK recovered_stt_inject», как у веток stt_miss / stt_garbage.
+                        # silenced сюда не входит: инъекция в тишину бессмысленна (#3989), её detail без маркера.
+                        _no_wake_inject=" inject_failed"
+                        if step_stt_inject "$label" "${text:-}"; then
+                            if [ "${E2E_STT_MISS_FAIL:-0}" != "1" ]; then
+                                log "STEP ${label}: ход после инъекции есть -- итог recovered_stt_inject, не PASS"
+                                _nw_wake="wake_attempt=${E2E_STEP_WAKE_ATTEMPT:-1}/${E2E_WAKE_MAX_ATTEMPTS}"
+                                _nw_stt="stt_attempt=${E2E_STEP_STT_ATTEMPT:-1}/${E2E_STT_MAX_ATTEMPTS}"
+                                _nw_ok="OK recovered_stt_inject after_recover_wake_replay"
+                                _nw_ok="${_nw_ok} ${_nw_wake} ${_nw_stt} (no_wake)"
+                                emit_step "${label} ${_nw_ok}"
+                                return 0
+                            fi
+                            return 1
+                        fi
+                        log "STEP ${label}: ❌ фраза без вейка ушла в бэклог (STT потерял «Робот») -- повторов нет"
                     else
-                        log "STEP ${label}: ❌ ход проглотила тишина (stage=silenced): робот в тишине с прошлого шага/акта -- повторов нет"
+                        log "STEP ${label}: ❌ ход проглотила тишина (stage=silenced) -- повторов нет"
                     fi
-                    emit_step "${label} FAIL turn_${E2E_REPLY_VERDICT}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}}${E2E_STEP_WAKE_ATTEMPT:+ wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}}${E2E_STEP_STT_ATTEMPT:+ stt_attempt=${E2E_STEP_STT_ATTEMPT}/${E2E_STT_MAX_ATTEMPTS}} (${E2E_REPLY_REASON:--})"
+                    _nw_detail="turn_${E2E_REPLY_VERDICT}"
+                    _nw_detail="${_nw_detail}${E2E_STEP_RECOVERED:+ after_recover_${E2E_STEP_RECOVERED}}"
+                    _nw_wake_part=""
+                    if [ -n "${E2E_STEP_WAKE_ATTEMPT:-}" ]; then
+                        _nw_wake_part=" wake_attempt=${E2E_STEP_WAKE_ATTEMPT}/${E2E_WAKE_MAX_ATTEMPTS}"
+                    fi
+                    _nw_detail="${_nw_detail}${_nw_wake_part}"
+                    _nw_stt_part=""
+                    if [ -n "${E2E_STEP_STT_ATTEMPT:-}" ]; then
+                        _nw_stt_part=" stt_attempt=${E2E_STEP_STT_ATTEMPT}/${E2E_STT_MAX_ATTEMPTS}"
+                    fi
+                    _nw_detail="${_nw_detail}${_nw_stt_part}"
+                    _nw_detail="${_nw_detail}${_no_wake_inject} (${E2E_REPLY_REASON:--})"
+                    emit_step "${label} FAIL ${_nw_detail}"
                     mark_fail_kind no_reaction
                     return 1 ;;
                 *)
