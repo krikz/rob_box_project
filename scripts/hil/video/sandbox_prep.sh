@@ -23,6 +23,10 @@ tar cf - docker/sim docker/main/config docker/main/docker-compose.yaml docker/co
     | "${SSH[@]}" "$HOST" "tar xf - -C '$DIR'"
 # 2. наши скрипты
 tar cf - -C scripts/hil/video . | "${SSH[@]}" "$HOST" "tar xf - -C '$DIR'"
+# 2b. гейт twist_mux (opt-in HIL_MUX_GATE=1 в runvideo.sh). Обёртка video/mux_gate.py
+# ищет его рядом: в копии песочницы это $DIR/checks/mux_gate.py.
+"${SSH[@]}" "$HOST" "mkdir -p '$DIR/checks'" </dev/null
+tar cf - -C scripts/hil/checks mux_gate.py | "${SSH[@]}" "$HOST" "tar xf - -C '$DIR/checks'"
 # 2a. чистые модули rob_box_sim (план и метрика обхода покрытием, #4560): runcoverage.sh кладёт их в контейнер
 "${SSH[@]}" "$HOST" "mkdir -p '$DIR/pylib'" </dev/null
 tar cf - -C src/rob_box_sim --exclude=__pycache__ rob_box_sim | "${SSH[@]}" "$HOST" "tar xf - -C '$DIR/pylib'"

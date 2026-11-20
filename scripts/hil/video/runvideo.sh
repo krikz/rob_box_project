@@ -24,6 +24,27 @@ fi
 docker exec -d $G /entrypoint.sh python3 -m rob_box_sim.map_recorder --out /sim_video/maprec --rate 10
 sleep "$SETTLE_S"
 date -u +%FT%TZ > $D/out/run_start.txt
+# Гейт twist_mux — только по явному opt-in (HIL_MUX_GATE=1). Без флага поведение не меняется.
+# Включён: до первой цели вколоть vx=0.1 и сверить выход mux. rc 1/2 — маршрут не слать.
+# Скрипт сам отказывает вне контейнера HIL с живым замком /tmp/hil.lock (скорость не публикует).
+if [ "${HIL_MUX_GATE:-0}" = 1 ]; then
+    MUX_GATE_DIR="${HIL_MUX_GATE_DIR:-$D/out/mux_gate}"
+    mkdir -p "$MUX_GATE_DIR"
+    docker exec $G mkdir -p /mux_gate_out /hil_checks
+    docker cp "$D/checks/mux_gate.py" $G:/hil_checks/mux_gate.py
+    docker cp "$D/mux_gate.py" $G:/mux_gate.py
+    docker exec -e HIL_LOCK_FILE="${HIL_LOCK_FILE:-/tmp/hil.lock}" -e HIL_MUX_GATE_PY=/hil_checks/mux_gate.py $G \
+        /entrypoint.sh python3 -u /mux_gate.py run /mux_gate_out > "$MUX_GATE_DIR/gate.log" 2>&1
+    gate_rc=$?
+    docker cp $G:/mux_gate_out/capture.txt "$MUX_GATE_DIR/capture.txt" 2>/dev/null || true
+    docker cp $G:/mux_gate_out/raw.txt "$MUX_GATE_DIR/raw.txt" 2>/dev/null || true
+    if [ "$gate_rc" -ne 0 ]; then
+        echo "MUX_GATE: rc=${gate_rc}, маршрут не послан (capture: $MUX_GATE_DIR)" >&2
+        tail -n 20 "$MUX_GATE_DIR/gate.log" >&2 || true
+        exit "$gate_rc"
+    fi
+    echo "MUX_GATE: PASS"
+fi
 # ROUTE_GOALS_FILE (путь в контейнере, напр. /sim_worlds/building.goals.yaml) — цели из файла точек мира.
 # ROUTE_LOG — файл этого run_id. Пусто — прежний общий out/route.log (и он же, если задан ROUTE_LOG:
 # вызывающий читает оба; m1repeat копирует общий лог только если он не старше старта).
