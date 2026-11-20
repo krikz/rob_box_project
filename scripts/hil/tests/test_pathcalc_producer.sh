@@ -14,6 +14,7 @@ for file in src/navfn.cpp src/navfn_planner.cpp include/nav2_navfn_planner/navfn
         -o "$PACKAGE/$file"
 done
 patch -d "$UPSTREAM" -p1 <"$ROOT/scripts/hil/diagnostics/nav2_pathcalc_snapshot.patch"
+patch -d "$UPSTREAM" -p1 <"$ROOT/docker/main/nav2/navfn_gradient_origin.patch"
 cp "$ROOT/scripts/hil/diagnostics/pathcalc_snapshot.hpp" "$PACKAGE/include/nav2_navfn_planner/"
 
 cat >"$WORK/stub/rclcpp/rclcpp.hpp" <<'EOF'
@@ -30,6 +31,12 @@ g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
     "$PACKAGE/src/navfn.cpp" "$ROOT/scripts/hil/tests/pathcalc_producer_test.cpp" \
     -o "$WORK/pathcalc_producer_test"
 "$WORK/pathcalc_producer_test" "$WORK"
+gzip -dc "$ROOT/scripts/hil/tests/fixtures/4682_pathcalc_snapshot.bin.gz" >"$WORK/4682_snapshot.bin"
+g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
+    -I"$WORK/stub" -I"$PACKAGE/include" \
+    "$PACKAGE/src/navfn.cpp" "$ROOT/scripts/hil/tests/pathcalc_snapshot_replay_test.cpp" \
+    -o "$WORK/pathcalc_snapshot_replay_test"
+"$WORK/pathcalc_snapshot_replay_test" "$WORK/4682_snapshot.bin"
 grep -q 'costmap_->getSizeInCellsX() \* 4' "$PACKAGE/src/navfn_planner.cpp"
 grep -q 'costmap_->getSizeInCellsY() \* 4' "$PACKAGE/src/navfn_planner.cpp"
 echo 'PASS: pinned NavFn patch applies; max_cycles formula unchanged'
