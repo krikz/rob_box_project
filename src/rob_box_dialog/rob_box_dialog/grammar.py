@@ -35,6 +35,10 @@ Step = Tuple[str, str]
 _STEP_FILLER = frozenset(w.replace("ё", "е") for w in (*kn.GRAMMAR_FILLER, *kn.STOP_LEAD_WORDS, *kn.VOICE_STEP.filler))
 #: Основы громкости Tier-1 (все намерения): такое слово после «наоборот» или «как» — не пересказ шага голоса.
 _VOLUME_WORDS: Tuple[str, ...] = tuple(stem for stems in kn.VOLUME_STEMS.values() for stem in stems)
+#: Основы образов шага («диктор»): до «как» они не слово таблицы. Голое «диктор» просьбой не бывает.
+_LIKENESS_STEMS = frozenset(stem for stems in kn.VOICE_STEP.likeness.values() for stem in stems)
+#: Метка рестарта: образ после чужого слова сам просьба о речи. ``manner`` несёт её до слова образа и гаснет.
+_RESTARTED = ("", "")
 
 
 @dataclass(frozen=True)
@@ -104,14 +108,55 @@ def _voice_step(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optio
     знаки (:func:`~rob_box_dialog.words.clauses`); первая часть покрыта таблицей ЦЕЛИКОМ, непокрытая часть после
     границы — новая просьба (``rest``: «говори басом и расскажи сказку»). Без речевого глагола или манеры («быстрее»
     под музыку — темп трека), с отрицанием («не говори быстрее»), без шага («говори как пират») и при двух действиях
-    одного тула («быстрее и медленнее») — не Tier-1."""
+    одного тула («быстрее и медленнее») — не Tier-1. Чужое слово до «как» с образом из ``VOICE_STEP.likeness``
+    («галибаса как диктор», #4984) шаг не отменяет: :func:`_likeness_restart`."""
     parse, parts = _StepParse(), clauses(text, kn.VOICE_STEP.joins)
     for n, part in enumerate(parts):
         parsed = _step_part(tuple(word for word, _, _ in part), replace(parse, simile=False))
         if parsed is None:
-            return _step_command(parse, text[part[0][1]:]) if n else None
+            restarted = _likeness_restart(part, parse) if not n else None
+            if restarted is None:
+                return _step_command(parse, text[part[0][1]:]) if n else None
+            parse = restarted
+            continue
         parse = parsed
     return _step_command(parse, "")
+
+
+def _likeness_restart(part: Sequence[Tuple[str, int, int]], parse: _StepParse) -> Optional[_StepParse]:
+    """Чужое слово до «как» с образом ``VOICE_STEP.likeness`` шаг не отменяет.
+
+    «галибаса как диктор в старом кино» (#4984: канал склеил «говори басом») разбирается с образа, и образ сам
+    становится просьбой о речи. Слово таблицы («скажи как диктор», «не как диктор») образ не перебивает: голый
+    «как диктор» шагом не становится. Часть после союза остаётся новой просьбой.
+    """
+    words = tuple(word for word, _, _ in part)
+    at = _likeness_at(words)
+    if at is None or _known_before(words, at):
+        return None
+    owned = replace(parse, simile=False, owned=True, manner=_RESTARTED)
+    return _step_part(words[at:], owned)
+
+
+def _likeness_at(words: Sequence[str]) -> Optional[int]:
+    """Индекс «как», за которым сразу образ ``VOICE_STEP.likeness``; нет такого — ``None``."""
+    return next((i for i, word in enumerate(words)
+                 if word in kn.VOICE_STEP.simile and _request(_after(words, i), kn.VOICE_STEP.likeness)), None)
+
+
+def _after(words: Sequence[str], at: int) -> str:
+    """Слово сразу за индексом; за концом части — пусто."""
+    return words[at + 1] if at + 1 < len(words) else ""
+
+
+def _known_before(words: Sequence[str], at: int) -> bool:
+    """До «как» стоит слово таблиц диалога или просьба шага — тогда образ чужое слово не перебивает.
+
+    Сам «как» и основа образа не в счёт: «диктор» до «как» просьбой не бывает. «скажи» — слово таблицы,
+    «галибаса» — нет.
+    """
+    known = kn.dialog_words() - _LIKENESS_STEMS
+    return any(word in known or _request(word) for word in words[:at] if word not in kn.VOICE_STEP.simile)
 
 
 def _step_command(parse: _StepParse, rest: str) -> Optional[Tier1Command]:
@@ -148,7 +193,9 @@ def _retold(word: str, parse: _StepParse) -> Optional[_StepParse]:
     if _claimed_elsewhere(word):
         return None
     if parse.simile:
-        return _with(replace(parse, inverse=False), _request(word) or _request(word, kn.VOICE_STEP.likeness))
+        step = _request(word) or _request(word, kn.VOICE_STEP.likeness)
+        owned = parse.owned or (step is not None and parse.manner == _RESTARTED)
+        return _with(replace(parse, inverse=False, owned=owned, manner=None), step)
     if word in _STEP_FILLER:
         return parse
     return _with(replace(parse, inverse=False), _request(word))
