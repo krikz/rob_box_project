@@ -260,6 +260,14 @@ docker run --rm --network none --entrypoint /bin/bash \
 времени получения нет метки симуляции ближе 100 мс. Ошибка GT считается до исходной цели в
 `route.log`. Команды привода показываются по времени получения в bag.
 
+`--goal NAME` (по умолчанию `M1`) читает `GOAL_START`/`GOAL_END` любой цели маршрута.
+К старым полям добавляются `goal_end_sim`, `goal_end_result`, `goal_end_err`,
+`goal_end_wall_ns` и GT через 0.5 и 1.5 с после `GOAL_END` (`gt_500ms_after_goal_end`,
+`gt_1500ms_after_goal_end`). Wall `GOAL_END` — метка решения плюс разница sim; sim в
+`route.log` квантован по 10 мс (`goal_end_wall_precision_ms`). Нет строки `GOAL_END` —
+эти поля null, без падения. Окно GT в мешке: wall−4 с .. wall решения +6 с. Команды
+привода по-прежнему −0.3..+0.6 с.
+
 ## 4. Запись видов
 
 Камеры пишут PNG сами (`<save enabled="true">`) в `out/frames/video_top` и `video_chase`, по sim time.
