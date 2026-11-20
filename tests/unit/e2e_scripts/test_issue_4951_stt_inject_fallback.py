@@ -219,10 +219,11 @@ def test_the_injection_is_wired_once_per_step_and_judged_by_the_topic():
     assert lib_src.count('_emit_container_log "✅ ПРИНЯТО (e2e_harness): ${text}"') == 1
     assert lib_src.count('python3 "$(_events_py)" inject') == 1
     # входы: финал шага + потолки обоих повторов + no_wake после wake_replay (#4951, акт 2 n210)
-    assert main_src.count('step_stt_inject "$label"') == 4
+    # + инъекция после единственного звукового stt_replay (#4196). Было: 4 / 1 / 2 / 5.
+    assert main_src.count('step_stt_inject "$label"') == 5
     assert main_src.count('if [ "$reason" = "inject" ] && step_stt_inject "$label" "${text:-}"; then') == 2
-    assert main_src.count('if step_stt_inject "$label" "${text:-}"; then') == 1
-    assert main_src.count('--fallback "${E2E_STT_INJECT_FALLBACK:-1}" --injected "${E2E_STEP_STT_INJECTED:-0}"') == 2
+    assert main_src.count('if step_stt_inject "$label" "${text:-}"; then') == 2
+    assert main_src.count('--fallback "${E2E_STT_INJECT_FALLBACK:-1}" --injected "${E2E_STEP_STT_INJECTED:-0}"') == 3
     assert main_src.count("step_stt_inject() {") == 1
     # один заход за шаг и маркер: инъекция не маскируется под чистый PASS
     assert main_src.count("E2E_STEP_STT_INJECT_TRIED=1") == 1
@@ -230,7 +231,7 @@ def test_the_injection_is_wired_once_per_step_and_judged_by_the_topic():
     assert main_src.count('E2E_STEP_RECOVERED="stt_inject"') == 1
     assert main_src.count('E2E_STEP_STT_INJECTED=""') == 1
     assert main_src.count('E2E_STEP_STT_INJECT_TRIED=""') == 1
-    assert main_src.count("E2E_STT_INJECT_FALLBACK") == 5
+    assert main_src.count("E2E_STT_INJECT_FALLBACK") == 6  # +1: флаг судье stt-replay-inject
 
 
 # -- bash: run_step делает инъекцию на потолке (фейк-робот) -------------------------------------------------
