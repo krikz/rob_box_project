@@ -1152,6 +1152,25 @@ def compare_kind(step: Mapping[str, Any]) -> str:
     return str(raw)
 
 
+#: Строка приёма STT: ``✅ ПРИНЯТО (respeaker): <фраза>``. Источник в скобках необязателен.
+ACCEPTED_RE = re.compile(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(\S.*?)\s*$")
+#: TTS звучит: SpeechEvent started открывает окно, finished/cancelled/rejected его закрывает.
+#: ``✅ Воспроизведение завершено`` (tts_node) закрывает открытое окно, если события конца в логе нет.
+PLAYBACK_DONE_RE = re.compile(r"✅ Воспроизведение завершено")
+#: Источник фразы -- микрофон во время TTS (hardware AEC), не текст фразы.
+DURING_TTS_RE = re.compile(r"\[hardware AEC\].*во время TTS")
+#: Вызов тула в логе шага. Маркеры -- те же, что ``e2e_tool_match.invocation_markers``,
+#: но имя ловится в строке как есть: «Запрос выполнения: music_library» пишется с заглавной,
+#: а сравнение ниже приводит имя к lower. Свободная подстрока (каталог тулов в промпте) не матчится.
+#: Не путать с TOOL_CALL_RE разбора параметров: тот ловит имя и JSON, этот -- факт вызова.
+TOOL_INVOKED_RE = re.compile(
+    r"(?:запрос выполнения|Calling MCP tool|ToolCall\(name=)\s*:?\s*['\"]?([A-Za-z][A-Za-z0-9_]{1,40})"
+    r"|инструмент\s+['\"]?([A-Za-z][A-Za-z0-9_]{1,40})\s+выполнен"
+    r"|публикую результат для\s+['\"]?([A-Za-z][A-Za-z0-9_]{1,40})",
+    re.IGNORECASE,
+)
+
+
 def epoch_of(stamp: str) -> Optional[float]:
     """Начало окна шага: секунды epoch или ``STEP_BEFORE`` харнесса (``2026-10-27T23:24:30Z``, UTC робота)."""
     try:
@@ -1162,6 +1181,115 @@ def epoch_of(stamp: str) -> Optional[float]:
         return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
     except ValueError:
         return None
+
+
+def _speech_open(open_ids: Dict[str, float], kind: str, speech_id: str, ts: float) -> None:
+    """Открыть или закрыть реплику. Прогресс и очередь окно TTS не двигают."""
+    if kind == "started":
+        open_ids[speech_id] = ts
+    elif kind in CLOSING:
+        open_ids.pop(speech_id, None)
+
+
+def tts_speaking_at(lines: List[str], ts: float) -> bool:
+    """TTS звучал в момент ``ts``: есть SpeechEvent started без конца к этому моменту.
+
+    Конец -- finished/cancelled/rejected той же реплики или ``✅ Воспроизведение завершено``,
+    если открытая реплика ещё не закрыта событием. Очередь и синтез (queued/synthesized)
+    звучанием не считаются: микрофон эхо ловит, когда колонка уже играет.
+    """
+    open_ids: Dict[str, float] = {}
+    for line in lines:
+        line_ts = _ts(line)
+        if line_ts is None or line_ts > ts:
+            continue
+        event = speech_event(line)
+        if event is not None:
+            _speech_open(open_ids, event[0], event[1], line_ts)
+            continue
+        if PLAYBACK_DONE_RE.search(line) and open_ids:
+            open_ids.clear()
+    return bool(open_ids)
+
+
+def accepted_phrase(line: str) -> str:
+    """Текст ``✅ ПРИНЯТО`` или пустая строка, если это не приём."""
+    found = ACCEPTED_RE.search(line)
+    return found.group(1).strip() if found else ""
+
+
+def accept_is_tts_echo(lines: List[str], index: int) -> bool:
+    """``✅ ПРИНЯТО`` -- эхо собственного TTS, не ответ шага (#4981).
+
+    Признак детерминированный, не текст фразы: метка строки лежит внутри открытого
+    окна TTS (:func:`tts_speaking_at`) либо в том же окне лога есть строка hardware AEC
+    «во время TTS» не раньше предыдущего приёма и не позже этого. Чужой приём вне TTS
+    эхом не считается, даже если слова совпали с тем, что робот сказал.
+    """
+    ts = _ts(lines[index])
+    if ts is None or not accepted_phrase(lines[index]):
+        return False
+    if tts_speaking_at(lines, ts):
+        return True
+    prev = 0.0
+    for earlier in lines[:index]:
+        if accepted_phrase(earlier):
+            prev = _ts(earlier) or prev
+    for earlier in lines[: index + 1]:
+        mark = _ts(earlier)
+        if mark is None or mark < prev or mark > ts:
+            continue
+        if DURING_TTS_RE.search(earlier):
+            return True
+    return False
+
+
+def _in_window(line: str, since: Optional[float]) -> bool:
+    """Строка не старше начала окна. Нет метки или окна -- строка остаётся (её нечем отрезать)."""
+    if since is None:
+        return True
+    ts = _ts(line)
+    return ts is None or ts >= since
+
+
+def step_answer(lines: List[str], since: Optional[float] = None) -> str:
+    """Последний ``✅ ПРИНЯТО`` не старше ``since``, который не эхо TTS. Пусто -- ответа шага нет.
+
+    Последний, не первый: окно повтора начинается с нового PLAY, и принятая там фраза --
+    ответ на повтор. Эхо собственного TTS (микрофон во время звучания) ответом не считается,
+    даже если оно последнее в файле: иначе харнесс сдвигает окно и теряет вызов тула первой
+    попытки (#4981). ``since`` режет окно сам: ``docker logs --since`` на фейке лог не режет,
+    а прошлый ход в том же файле ответом этого шага не является.
+    """
+    window = [line for line in lines if _in_window(line, since)]
+    answer = ""
+    for index, line in enumerate(window):
+        phrase = accepted_phrase(line)
+        if phrase and not accept_is_tts_echo(window, index):
+            answer = phrase
+    return answer
+
+
+def tool_called_since(lines: List[str], since: float, names: List[str]) -> bool:
+    """Каждое имя из ``names`` вызвано в строке с меткой не раньше ``since``.
+
+    Пустой список -- вызов не доказан (шаг без ожидаемых тулов этим не «исполнен»).
+    Имя ищется маркером вызова, не свободной подстрокой: каталог тулов в промпте
+    ложным вызовом не считается.
+    """
+    wanted = [name.strip().lower() for name in names if name.strip()]
+    if not wanted:
+        return False
+    found = set()
+    for line in lines:
+        ts = _ts(line)
+        if ts is None or ts < since:
+            continue
+        for match in TOOL_INVOKED_RE.finditer(line):
+            name = next((group for group in match.groups() if group), "")
+            if name:
+                found.add(name.lower())
+    return all(name in found for name in wanted)
 
 
 def music_compare(kind: str, text: str, since: float) -> Dict[str, object]:
@@ -1338,6 +1466,42 @@ def _cmd_stt_replay_inject(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_step_answer(opts: Dict[str, str], flags: List[str]) -> int:
+    """Последний ПРИНЯТО окна, который не эхо TTS (#4981). Лог -- stdin, первая строка -- часы робота.
+
+    Печатает ``heard`` (пусто -- ответа шага нет) и ``echo`` (1 -- в окне было эхо, его отбросили).
+    ``--since`` необязателен: без него окно уже отрезал ``docker logs``.
+    """
+    _now, lines = split_input(sys.stdin.read())
+    since = epoch_of(opts["--since"]) if opts["--since"] else None
+    window = [line for line in lines if _in_window(line, since)]
+    heard = step_answer(lines, since)
+    echo = 0
+    for index, line in enumerate(window):
+        if accepted_phrase(line) and accept_is_tts_echo(window, index):
+            echo = 1
+            break
+    _emit({"heard": heard or "-", "echo": echo})
+    return 0
+
+
+def _cmd_tool_since(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--tools a,b`` и необязательный ``--since`` (epoch или STEP_BEFORE).
+
+    Лог -- stdin, первая строка -- часы робота. Без ``--since`` режет сам ``docker logs``:
+    любой вызов в отданном логе считается (фейк ``--since`` не режет, строки ``{NOW-x}``
+    старше UTC-штампа окна). С ``--since`` режет судья. ``called=0``, если лог без часов,
+    окно задано и не разобрано, или хоть одного вызова нет.
+    """
+    now, lines = split_input(sys.stdin.read())
+    since = epoch_of(opts["--since"]) if opts["--since"] else 0.0
+    names = [part.strip() for part in opts["--tools"].split(",") if part.strip()]
+    window_ok = since is not None
+    called = int(now is not None and window_ok and tool_called_since(lines, since, names))
+    _emit({"called": called})
+    return 0
+
+
 def _cmd_stt_retry(opts: Dict[str, str], flags: List[str]) -> int:
     """``--text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]``
     -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает
@@ -1468,6 +1632,7 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
     "inject": _cmd_inject,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
     "stt-retry": _cmd_stt_retry, "stt-miss": _cmd_stt_miss, "stt-replay-inject": _cmd_stt_replay_inject,
+    "step-answer": _cmd_step_answer, "tool-since": _cmd_tool_since,
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
@@ -1479,6 +1644,7 @@ USAGE = ("usage: e2e_events.py state|quiet|anchor [--silent-ok] [--barge] [--wai
          " | stt-retry --text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]"
          " | stt-miss --text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1] [--fallback 0|1] [--injected 0|1]"
          " | stt-replay-inject --stt-ok 0|1 --replayed 0|1 [--fallback 0|1] [--injected 0|1] [--barge-in 0|1] [--executed 0|1]"
+         " | step-answer < log | tool-since --since S --tools a,b < log"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
@@ -1498,7 +1664,8 @@ def main(argv: List[str]) -> int:
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
             "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0",
             "--missing": "", "--allowed": "1", "--timeout": "0", "--crash": "0",
-            "--fallback": "0", "--injected": "0", "--stt-ok": "0", "--replayed": "0"}
+            "--fallback": "0", "--injected": "0", "--stt-ok": "0", "--replayed": "0",
+            "--tools": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):
