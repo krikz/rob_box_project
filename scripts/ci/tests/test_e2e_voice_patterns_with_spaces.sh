@@ -69,8 +69,11 @@ EXTRACT="$WORK/pats.sh"
     echo 'log() { :; }'
     echo 'check_patterns() { shift; echo "COUNT=$#"; for p in "$@"; do echo "PAT[$p]"; done; }'
     echo 'STEP_BEFORE=BEFORE'
+    echo 'STEP_JUDGE_BEFORE="$STEP_BEFORE"'
     echo 'label=test'
-    awk '/mapfile -t _pats_arr/,/check_patterns "\$STEP_BEFORE" "\$\{_pats_arr\[@\]\}"/' "$HARNESS"
+    # Конец блока — вызов check_patterns с массивом паттернов. Окно (#4981) —
+    # ${STEP_JUDGE_BEFORE} (по умолчанию $STEP_BEFORE), не голый $STEP_BEFORE.
+    awk '/mapfile -t _pats_arr/,/check_patterns "\${STEP_JUDGE_BEFORE}" "\${_pats_arr\[@\]}"/' "$HARNESS"
 } > "$EXTRACT"
 
 grep -q 'mapfile -t _pats_arr' "$EXTRACT" || {
