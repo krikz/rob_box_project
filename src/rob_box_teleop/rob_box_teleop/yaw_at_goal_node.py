@@ -7,11 +7,13 @@
 ``path.poses.back()``). Допуск yaw — ``yaw_goal_tolerance`` из ``nav2_params.yaml``,
 не константа ноды.
 
-Twist идёт в ``/cmd_vel_yaw`` (twist_mux priority 15, выше Nav2). FollowPath не
-отменяем и в его ``/cmd_vel`` не пишем: mux сам отдаёт развороту пол, пока тик свежий,
-и возвращает его контроллеру, когда yaw вошёл в допуск и нода замолчала. Снаружи
-xy-окна нода молчит: это ещё FollowPath. Замки руля (51 и 90) глушат разворот так же,
-как Nav2.
+Twist идёт в ``/cmd_vel_yaw`` (twist_mux priority 15, выше Nav2, timeout 0.2 с).
+FollowPath не отменяем и в его ``/cmd_vel`` не пишем: mux сам отдаёт развороту пол,
+пока тик свежий, и возвращает его контроллеру, когда нода замолчала. Снаружи
+разворота нода молчит: нулевой поток на 10 Гц не даёт timeout 0.2 истечь, и канал
+priority 15 вечно перебивает Nav2 (Depot Gate 2, 20.11: M2/M5/R1/R2/R3, 20/20
+``wz=0``). Снять ранее начатый разворот — ровно один нулевой Twist, дальше тишина.
+Замки руля (51 и 90) глушат разворот так же, как Nav2.
 """
 
 from __future__ import annotations
@@ -142,28 +144,30 @@ class YawAtGoal:
 
     def _tick(self) -> None:
         pose = self._pose() if self._nav_live else None
-        goal = (
-            goal_from_plan(self._plan, self._now(), pose=pose, xy_tolerance_m=self._xy)
-            if self._nav_live
-            else None
-        )
+        goal = goal_from_plan(self._plan, self._now(), pose=pose, xy_tolerance_m=self._xy) if self._nav_live else None
         turn = (
             yag.turn_at_goal(pose, goal, self._xy, self._yaw, self._omega)
             if pose is not None and goal is not None
             else None
         )
-        if turn is None:
-            self._turning = False
+        if turn is None or turn.done:
+            # Не наш разворот / уже в допуске / плана нет. Нули каждый тик держат
+            # priority 15 вечно (timeout 0.2 не истекает). Был разворот — один ноль
+            # и тишина; не было — молчим сразу.
+            self._release()
             return
         self._publish(turn.omega)
-        if turn.done:
-            if self._turning:
-                self._node.get_logger().info("#4694 yaw вошёл в допуск — стоп, дальше goal checker")
-            self._turning = False
-            return
         if not self._turning:
             self._node.get_logger().info(f"#4694 {turn.reason}: w={turn.omega:.2f}")
         self._turning = True
+
+    def _release(self) -> None:
+        """Снять пол у mux, если мы его держали. Иначе — ни одного сообщения."""
+        if not self._turning:
+            return
+        self._node.get_logger().info("#4694 разворот снят — один ноль, дальше тишина, пол у Nav2")
+        self._publish(0.0)
+        self._turning = False
 
     def _publish(self, omega: float) -> None:
         twist = Twist()
