@@ -109,7 +109,7 @@ COPY --from=msgs /ws/install /ws/install
 # Ядро диалога из публичного пакета (ADR-0167 Ш3, #4932): rob_box_core и
 # rob_box_dialog ставятся pip'ом по тегу, а не colcon'ом из src/. Модули ложатся
 # в site-packages; telegram_node импортирует их оттуда (avatar_command, phrases).
-# Пин совпадает с voice-assistant: тег v0.7.12. Ставится ДО colcon, чтобы сборка
+# Пин совпадает с voice-assistant: тег v0.7.13. Ставится ДО colcon, чтобы сборка
 # хоста rob_box_telegram не затёрла ядро копией из src/.
 #
 # apt python3-pip на базе ros2-zenoh (Ubuntu 22.04) — это pip 22.0.2. Он не
@@ -121,7 +121,7 @@ COPY --from=msgs /ws/install /ws/install
 # Тот же приём здесь, отдельным слоем — до установки ядра.
 RUN pip3 install --no-cache-dir --upgrade pip
 RUN pip3 install --no-cache-dir \
-    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.12"
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.13"
 
 WORKDIR /ws/src
 # ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
