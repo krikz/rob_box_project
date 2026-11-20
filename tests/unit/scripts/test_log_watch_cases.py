@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -54,6 +55,17 @@ def test_series_case_carries_reason_and_duration():
     assert case.kind == "series" and case.code.startswith("deaf:")
     assert "stt_rejected=3" in case.code and "duration_s" not in case.code
     assert case.duration_s == 20 and case.signature
+
+
+def test_signature_is_stable_twelve_hex_and_splits_inputs():
+    one = lc._signature("odd_stt", "missing=-;extra=1;heard=глуш", lc.SOURCE_LOKI)
+    same = lc._signature("odd_stt", "missing=-;extra=1;heard=глуш", lc.SOURCE_LOKI)
+    assert one == same
+    assert re.fullmatch(r"[0-9a-f]{12}", one)
+    by_kind = lc._signature("series", "missing=-;extra=1;heard=глуш", lc.SOURCE_LOKI)
+    by_code = lc._signature("odd_stt", "missing=глуш;extra=0;heard=-", lc.SOURCE_LOKI)
+    by_source = lc._signature("odd_stt", "missing=-;extra=1;heard=глуш", "loki:other")
+    assert len({one, by_kind, by_code, by_source}) == 4
 
 
 def test_same_signature_aggregates_not_duplicates():
