@@ -8,8 +8,12 @@
     watch   --secs N                          только слушать
     orphan  [--len 1.5] [--timeout 10]        сирота нарочно (#4458): цель NavigateToPose → отмена → своя FollowPath
     nav     (--goal x,y,yaw° | --ahead M) [--timeout 180]  цель NavigateToPose из скрипта (3b из #4365, #4435)
+    hold    [--ahead 1.5] [--allowance 30] [--grace 2]  #4770: цель в свободную сторону; после принятия FollowPath
+            нулевой Twist на /cmd_vel_web (priority 50 > Nav2) до abort progress checker. Allowance не крутим.
     wall    [--speed 0.1] [--max-s 40] [--push 4]  телеоп /cmd_vel_web к ближайшему препятствию (#4365, #4470)
     backoff [--speed 0.1] [--secs 4]          отъехать назад
+    leave   [--ahead 1.5] [--after 2]         #4435: цель, дождаться FollowPath, записать CLIENT_PID и выйти
+                                              без cancel_goal. Дальше клиента убивает run_checks.sh.
 
 Направление выбирает скан (свободное — для orphan/nav --ahead, ближайшее препятствие — для wall), поза в ``map`` —
 из TF. Моторов в HIL нет: всё едет в Gazebo.
@@ -18,6 +22,7 @@
 import argparse
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -53,6 +58,9 @@ STATUS = {
 CMD_HZ = 10.0
 #: Файл-сигнал «хватит слушать» для ``watch`` (в контейнере; старый удаляется на старте пробы).
 STOP_FILE = "/tmp/hil_probe.stop"
+#: Маркеры оркестра: kill клиента и ros2 action cancel с хоста. Проба пишет KIND со своим sim.
+KILL_MARK = "/tmp/hil_probe.killed"
+HOST_CANCEL_MARK = "/tmp/hil_probe.host_cancel"
 #: Сектор «впереди» и окно сглаживания скана, рад.
 FRONT_HALF = math.radians(10)
 WINDOW_HALF = math.radians(5)
@@ -269,8 +277,24 @@ def ahead(n, dist_m, margin=0.9):
 
 
 def cmd_watch(n, a):
-    """Слушать ``secs`` с или до файла ``STOP_FILE`` (его создаёт run_checks.sh, когда сценарий кончился)."""
-    spin_for(n, a.secs, until=lambda: os.path.exists(STOP_FILE))
+    """Слушать ``secs`` с или до файла ``STOP_FILE`` (его создаёт run_checks.sh, когда сценарий кончился).
+
+    Файлы ``/tmp/hil_probe.killed`` и ``/tmp/hil_probe.host_cancel`` (их кладёт оркестр) — маркеры
+    kill клиента и ``ros2 action cancel`` с хоста. Строка пишется с sim-временем пробы, не с эпохи хоста.
+    """
+    seen = {"killed": False, "host": False}
+
+    def note_marks():
+        if not seen["killed"] and os.path.exists(KILL_MARK):
+            seen["killed"] = True
+            pid = open(KILL_MARK).read().strip() or "?"
+            out("CLIENT_KILLED", n, pid=pid, signal="TERM")
+        if not seen["host"] and os.path.exists(HOST_CANCEL_MARK):
+            seen["host"] = True
+            out("HOST_CANCEL", n, action="navigate_to_pose")
+
+    spin_for(n, a.secs, 0.2, note_marks, until=lambda: os.path.exists(STOP_FILE))
+    note_marks()
 
 
 def cmd_nav(n, a):
@@ -332,6 +356,77 @@ def cmd_orphan(n, a):
     spin_for(n, 3)
 
 
+def _follow_live(n):
+    return any(
+        kind == "FP_STATUS" and name in ("ACCEPTED", "EXECUTING") for (kind, _gid), name in n.last_status.items()
+    )
+
+
+def _mark_held(n, held):
+    if held:
+        return
+    for (kind, gid), name in list(n.last_status.items()):
+        if kind == "FP_STATUS" and name in ("ACCEPTED", "EXECUTING"):
+            held.append(gid)
+            out("FP_HELD", n, goal=gid)
+            out("HOLD", n, v="+0.00", w="+0.00")
+            return
+
+
+def _finish_nav(n, gh, res):
+    if not res.done():
+        out("NAV_SELF_CANCEL", n, why="abort_не_пришёл")
+        wait_future(n, gh.cancel_goal_async(), 5)
+        spin_for(n, 5, until=res.done)
+    for _ in range(5):
+        n.send_cmd(0.0, 0.0)
+    status = STATUS.get(res.result().status, "?") if res.done() else "NO_RESULT"
+    out("NAV_RESULT", n, status=status)
+
+
+def cmd_hold(n, a):
+    """#4770: цель достижима планировщику, корпус удержан — abort progress checker.
+
+    Не «план не построен». Точка — ``ahead`` м в свободном направлении. FollowPath принят —
+    нулевой Twist в ``/cmd_vel_web`` (priority 50 > Nav2 10) до итога. ``allowance`` — боевой
+    ``movement_time_allowance`` (30 с), не укорачиваем. Мало места или FollowPath не принят — SKIP.
+    """
+    client = ActionClient(n, NavigateToPose, "/navigate_to_pose")
+    if not wait_ready(n, need_tf=True) or not client.wait_for_server(timeout_sec=30):
+        out("ERROR", n, what="нет_/navigate_to_pose")
+        return
+    x, y, heading, d = ahead(n, a.ahead)
+    if d < 0.8:
+        out("HOLD_SKIP", n, why="мало_места", free=f"{d:.2f}")
+        return
+    gx, gy = x + d * math.cos(heading), y + d * math.sin(heading)
+    out("HOLD_START", n, ahead=f"{d:.2f}")
+    out("NAV_SENT", n, x=f"{gx:.2f}", y=f"{gy:.2f}", yaw=f"{math.degrees(heading):.0f}")
+    goal = NavigateToPose.Goal()
+    goal.pose = n.pose_stamped(gx, gy, heading)
+    gh = wait_future(n, client.send_goal_async(goal), 10)
+    if gh is None or not gh.accepted:
+        out("NAV_RESULT", n, status="REJECTED")
+        return
+    res = gh.get_result_async()
+    if not spin_for(n, 20, until=lambda: _follow_live(n)) or res.done():
+        status = STATUS.get(res.result().status, "?") if res.done() else "NO_FOLLOW"
+        out("HOLD_SKIP", n, why="FollowPath_не_принят", status=status)
+        if not res.done():
+            wait_future(n, gh.cancel_goal_async(), 5)
+        return
+    held = []
+
+    def hold_zero():
+        n.send_cmd(0.0, 0.0)
+        _mark_held(n, held)
+
+    spin_for(n, a.allowance + a.grace + 15.0, 1.0 / CMD_HZ, hold_zero, until=res.done)
+    _finish_nav(n, gh, res)
+    out("HOLD_END", n)
+    spin_for(n, 2)
+
+
 def cmd_wall(n, a):
     """Повернуться к ближайшему препятствию и ехать на него ``speed``; после EM_ON толкать ещё ``push`` с."""
     if not wait_ready(n, need_tf=False):
@@ -361,6 +456,58 @@ def cmd_wall(n, a):
     out("SCAN_END", n, front=f"{n.sector(0.0, FRONT_HALF):.3f}")
 
 
+def _gz_world():
+    """Имя мира Gazebo: единственный сервис ``/world/<имя>/create``."""
+    out = subprocess.run(["ign", "service", "-l"], capture_output=True, text=True, timeout=20).stdout
+    for line in out.splitlines():
+        if line.startswith("/world/") and line.endswith("/create"):
+            return line.split("/")[2]
+    return None
+
+
+def _spawn_wall(world, name, cx, cy, yaw, sx=0.2, sy=3.0, height=1.0):
+    """Статическая стенка. True — сервис ответил ``true``."""
+    size = f"{sx} {sy} {height}"
+    geom = f"<geometry><box><size>{size}</size></box></geometry>"
+    sdf = (
+        f"<sdf version='1.8'><model name='{name}'><static>true</static>"
+        f"<pose>{cx:.4f} {cy:.4f} {height / 2:.3f} 0 0 {yaw:.4f}</pose><link name='l'>"
+        f"<collision name='c'>{geom}</collision><visual name='v'>{geom}"
+        "<material><ambient>0.8 0.2 0.2 1</ambient></material></visual></link></model></sdf>"
+    )
+    r = subprocess.run(
+        ["ign", "service", "-s", f"/world/{world}/create", "--reqtype", "ignition.msgs.EntityFactory",
+         "--reptype", "ignition.msgs.Boolean", "--timeout", "5000", "--req", f'sdf: "{sdf}"'],
+        capture_output=True, text=True, timeout=15,
+    )
+    return "true" in r.stdout
+
+
+def cmd_corner(n, a):
+    """#4631: стенка поперёк хода, сдвинутая влево на ``shift`` м, чтобы перекрыть только левый угол.
+
+    Ставится в ``ahead`` м от носа по правде Gazebo и удаляется в конце. Дальше — тот же наезд, что ``wall``.
+    """
+    if not wait_ready(n, need_tf=False):
+        return
+    world = _gz_world()
+    if world is None or n.gt is None:
+        out("WALL_NOT_FOUND", n, nearest="?", max="0")
+        return
+    x, y, yaw = n.gt[0], n.gt[1], n.gt[2]
+    cx = x + (0.3064 + a.ahead + 0.1) * math.cos(yaw) - a.shift * math.sin(yaw)
+    cy = y + (0.3064 + a.ahead + 0.1) * math.sin(yaw) + a.shift * math.cos(yaw)
+    spawned = _spawn_wall(world, "corner_wall", cx, cy, yaw)
+    out("CORNER_WALL", n, spawned="yes" if spawned else "no", shift=f"{a.shift:.2f}", ahead=f"{a.ahead:.2f}")
+    if spawned:
+        cmd_wall(n, a)
+        subprocess.run(
+            ["ign", "service", "-s", f"/world/{world}/remove", "--reqtype", "ignition.msgs.Entity",
+             "--reptype", "ignition.msgs.Boolean", "--timeout", "5000", "--req", 'name: "corner_wall"'],
+            capture_output=True, text=True, timeout=15,
+        )
+
+
 def rotate(n, target_yaw, w=0.4, tol=math.radians(4), secs=30):
     """Разворот на месте по правде Gazebo (скид-стир в симе проскальзывает — по команде не считаем)."""
 
@@ -375,6 +522,38 @@ def rotate(n, target_yaw, w=0.4, tol=math.radians(4), secs=30):
     out("ROTATE_DONE" if done else "ROTATE_FAIL", n, err_deg=f"{err:.1f}")
     spin_for(n, 1.0)
     return done
+
+
+def cmd_leave(n, a):
+    """#4435: цель ушла, FollowPath принят — записать pid и выйти, не вызывая cancel_goal.
+
+    Отмену или kill делает оркестр снаружи. Если FollowPath не принят — SKIP, не молчаливый успех.
+    """
+    client = ActionClient(n, NavigateToPose, "/navigate_to_pose")
+    if not wait_ready(n, need_tf=True) or not client.wait_for_server(timeout_sec=30):
+        out("ERROR", n, what="нет_/navigate_to_pose")
+        return
+    x, y, heading, d = ahead(n, a.ahead)
+    if d < 0.5:
+        out("LEAVE_SKIP", n, why="мало_места", free=f"{d:.2f}")
+        return
+    gx, gy = x + d * math.cos(heading), y + d * math.sin(heading)
+    out("NAV_SENT", n, x=f"{gx:.2f}", y=f"{gy:.2f}", yaw=f"{math.degrees(heading):.0f}")
+    goal = NavigateToPose.Goal()
+    goal.pose = n.pose_stamped(gx, gy, heading)
+    gh = wait_future(n, client.send_goal_async(goal), 10)
+    if gh is None or not gh.accepted:
+        out("NAV_RESULT", n, status="REJECTED")
+        out("LEAVE_SKIP", n, why="цель_не_принята")
+        return
+    res = gh.get_result_async()
+    if not spin_for(n, 20, until=lambda: _follow_live(n)) or res.done():
+        status = STATUS.get(res.result().status, "?") if res.done() else "NO_FOLLOW"
+        out("LEAVE_SKIP", n, why="FollowPath_не_принят", status=status)
+        return
+    out("CLIENT_PID", n, pid=str(os.getpid()))
+    spin_for(n, a.after)
+    out("CLIENT_LEFT", n, pid=str(os.getpid()))
 
 
 def cmd_backoff(n, a):
@@ -400,18 +579,41 @@ def parse_args(argv):
     g.add_argument("--goal", help="x,y,yaw° в map")
     g.add_argument("--ahead", type=float)
     p.add_argument("--timeout", type=float, default=180)
+    p = sub.add_parser("hold")
+    p.add_argument("--ahead", type=float, default=1.5)
+    p.add_argument("--allowance", type=float, default=30.0)
+    p.add_argument("--grace", type=float, default=2.0)
     p = sub.add_parser("wall")
     p.add_argument("--speed", type=float, default=0.1)
     p.add_argument("--max-s", dest="max_s", type=float, default=40)
     p.add_argument("--max-dist", dest="max_dist", type=float, default=3.5)
     p.add_argument("--push", type=float, default=4.0)
+    p = sub.add_parser("leave")
+    p.add_argument("--ahead", type=float, default=1.5)
+    p.add_argument("--after", type=float, default=2.0)
     p = sub.add_parser("backoff")
     p.add_argument("--speed", type=float, default=0.1)
     p.add_argument("--secs", type=float, default=4)
+    p = sub.add_parser("corner")
+    p.add_argument("--speed", type=float, default=0.1)
+    p.add_argument("--max-s", dest="max_s", type=float, default=40)
+    p.add_argument("--max-dist", dest="max_dist", type=float, default=3.5)
+    p.add_argument("--push", type=float, default=4.0)
+    p.add_argument("--ahead", type=float, default=1.5)
+    p.add_argument("--shift", type=float, default=0.25)
     return ap.parse_args(argv)
 
 
-COMMANDS = {"watch": cmd_watch, "nav": cmd_nav, "orphan": cmd_orphan, "wall": cmd_wall, "backoff": cmd_backoff}
+COMMANDS = {
+    "watch": cmd_watch,
+    "nav": cmd_nav,
+    "orphan": cmd_orphan,
+    "hold": cmd_hold,
+    "wall": cmd_wall,
+    "backoff": cmd_backoff,
+    "corner": cmd_corner,
+    "leave": cmd_leave,
+}
 
 
 def main(argv=None):

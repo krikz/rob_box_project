@@ -215,8 +215,8 @@ class TurnWatch:
         self._music = event.value == MUSIC_ON
 
     def _phrase_lost(self, event: Event) -> Optional[Verdict]:
-        """Фраза не стала ходом. Пустой STT под музыкой — сама музыка (``stt_node``: «Пустой STT (эхо/музыка)»), не
-        человек: в серию не идёт."""
+        """Фраза не стала ходом. Пустой STT под музыкой — сама музыка (снимок плеера; stt_node пишет
+        ``reason=rejected_empty``/``rejected_while_speaking`` по SpeechEvent, #4030), не человек: в серию не идёт."""
         cause = STT_ERROR if event.kind == STT_REJECTED and event.value == STT_FAILED else event.kind
         if cause == STT_REJECTED and self._music:
             return None

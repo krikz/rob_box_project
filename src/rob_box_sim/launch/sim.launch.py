@@ -177,7 +177,16 @@ def generate_launch_description():
             parameters=[{"use_sim_time": True}],
         )
 
-    jsb = spawner("joint_state_broadcaster")
+    jsb = ExecuteProcess(
+        cmd=[
+            "python3", "-m", "rob_box_sim.controller_spawner", "joint_state_broadcaster",
+            "--startup-timeout", "60",
+            "--controller-manager", "/controller_manager",
+            "--controller-manager-timeout", "60",
+            "--ros-args", "-p", "use_sim_time:=true",
+        ],
+        output="screen",
+    )
     ddc = spawner("diff_drive_controller")
 
     return LaunchDescription([

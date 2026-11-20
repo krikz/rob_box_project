@@ -125,6 +125,15 @@ def test_enough_stops_the_chain_too():
     assert ports.said[-1] == "Остановился. Удалил: хил-вход. Не стал: хил-кухня, хил-диван, хил-окно."
 
 
+def test_interrupt_stops_the_remaining_steps():
+    """Прерывание («стой») останавливает оставшиеся: после второго шага третье и четвёртое не стартуют."""
+    ports = Ports([answer(deletes())], hold=2)
+    interrupted(ports, "Робот, стой")
+    assert ports.batches == [["хил-вход"], ["хил-кухня"]]
+    assert len(ports.batches) < 4
+    assert ports.said[-1] == "Остановился. Удалил: хил-вход, хил-кухня. Не стал: хил-диван, хил-окно."
+
+
 def test_summary_after_a_stop_goes_in_the_stop_epoch():
     """Владелец речи отбрасывает фразы старой эпохи: итог - в эпохе стопа, а не вереницы."""
     session = Session("personality")

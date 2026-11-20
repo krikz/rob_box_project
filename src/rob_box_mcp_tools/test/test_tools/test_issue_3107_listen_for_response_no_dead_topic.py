@@ -3,7 +3,7 @@
 The live ROS graph (L: Architecture Audit run 36422274238) showed
 ``/voice/stt/request`` with a publisher (mcp_server) and no subscriber
 anywhere; ``git log -S'/voice/stt/request'`` finds only mcp_tools commits,
-so no node ever consumed it. The tool's real effect is in dialogue_node,
+so no node ever consumed it. The tool's real effect is in dialog_node,
 which leaves the agent loop on a ``listen_for_response`` result.
 
 Mocked ROS2: see conftest.py MockNode; ``std_msgs`` and heavy sibling tools
@@ -41,5 +41,5 @@ def test_execute_publishes_nothing_and_reports_success(mock_node):
 
 
 def test_tool_name_unchanged_for_dialogue_node_short_circuit(mock_node):
-    # dialogue_node matches on this exact name to leave the agent loop.
+    # dialog_node matches on this exact name to leave the agent loop.
     assert ListenForResponseTool(mock_node).name == "listen_for_response"

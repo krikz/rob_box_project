@@ -28,7 +28,7 @@ Endpoints (per issue #1160)
 ---------------------------
 Каждый ROS2-нода — отдельный процесс, поэтому биндит СВОЙ порт:
 
-* ``9100`` — dialogue_node (LLM latency / fallback counter)
+* ``9100`` — dialog_node (LLM latency / fallback counter)
 * ``9110`` — tts_node (TTS latency / provider fallback)
 * ``9111`` — stt_node (recognize counter)
 * ``9112`` — speaker_id_node (recognize counter)
@@ -46,7 +46,7 @@ OpenTelemetry-трейсы (issue #1234, этап 2)
 ``init_tracing(service_name)`` в ``__init__`` (до создания httpx-клиентов
 провайдеров), затем оборачивает ключевые операции в ``start_span``:
 
-* ``dialogue.llm_call`` — dialogue_node (обёртка process_input → LLM)
+* ``dialogue.llm_call`` — dialog_node (обёртка process_input → LLM)
 * ``tts.synthesize`` — tts_node (обёртка цепочки синтеза)
 * ``stt.recognize`` — stt_node (обёртка распознавания)
 

@@ -36,6 +36,7 @@ from rob_box_dialog.knowledge import (
     MUSIC_PROMISES,
     MUSIC_SILENCE_CLAIM_HEADS,
     MUSIC_SILENCE_CLAIM_LEADS,
+    MUSIC_SILENCE_RETELL_LEADS,
     MUSIC_STOP_CLAIM,
     MUSIC_STOP_CLAIM_UNLESS,
     MUSIC_STOP_UNWOKEN_FORMS,
@@ -334,11 +335,11 @@ def search_promises(text: str) -> Tuple[str, ...]:
 
 
 def done_claims(text: str) -> Tuple[str, ...]:
-    """Виды утверждений о сделанном в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
-    ``motion``) - по словам, как :func:`music_promises`, но про прошедшее: «Готово, хил-окно удалена.», «сохранил
-    точку», «поехал». Слово с ``unless_before`` за одно-два слова до него («уже удалил», «не удалил») - не утверждение:
-    такие слова из фразы убираются до сверки. Тул, что утверждение делает правдой, судит валидатор команды
-    (``command._check_done_claim``)."""
+    """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
+    ``motion``, ``photo_send``) - по словам, как :func:`music_promises`: о сделанном («Готово, хил-окно удалена.»,
+    «сохранил точку», «поехал») и обещании отправки снимков (#4505). Слово с ``unless_before`` за одно-два слова до
+    него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Тул, что утверждение
+    делает правдой, судит валидатор команды (``command._check_done_claim``)."""
     tokens = name_tokens(text)
     found = []
     for kind, claim in DONE_CLAIMS.items():
@@ -508,6 +509,12 @@ def asks_to_listen(text: str) -> bool:
     слушай и не влезай») или слово тишины ``knowledge.SILENCE_WORDS`` («помолчи»). «Не молчи», «слушай, а как…» -
     нет."""
     return has_form(text, LISTEN_ONLY_FORMS) or has_word(text, SILENCE_WORDS)
+
+
+def asks_own_memory_condition(text: str) -> bool:
+    """Память о человеке — условие другой просьбы («учти то, что ты про меня знаешь»), а не её предмет."""
+    said = " ".join(name_tokens(text))
+    return has_word(said, SELF_MEMORY_ASK["condition"]) and has_form(said, SELF_MEMORY_ASK["self"])
 
 
 def asks_own_memory(text: str) -> bool:
@@ -708,9 +715,28 @@ def music_stop_claimed(text: str) -> bool:
         tokens = name_tokens(sentence)
         if sentence.rstrip().endswith("?") or set(tokens) & set(MUSIC_STOP_CLAIM_UNLESS):
             continue
-        if _promises(tokens, MUSIC_STOP_CLAIM) or any(_silence_heads(part) for part in _CLAIM_PART.split(sentence)):
+        if _promises(tokens, MUSIC_STOP_CLAIM) or _silence_heads_parts(_CLAIM_PART.split(sentence)):
             return True
     return False
+
+
+def _silence_heads_parts(parts: Sequence[str]) -> bool:
+    """Есть ли часть предложения, начинающаяся с «тишины» как утверждение, а не как подлежащее пересказа.
+    Часть-вводитель прямой речи ``MUSIC_SILENCE_RETELL_LEADS`` («мол, тишина давит») отменяет claim в следующей
+    части, потому что «тишина» там - объект чужой речи, а не сообщение робота о плеере."""
+    retold = False
+    for part in parts:
+        if _silence_heads(part) and not retold:
+            return True
+        retold = _retelling_introducer(part)
+    return False
+
+
+def _retelling_introducer(part: str) -> bool:
+    """Часть предложения - вводитель прямой речи (``MUSIC_SILENCE_RETELL_LEADS``) в отдельной части:
+    «мол», «дескать»; служебные слова ``MUSIC_SILENCE_CLAIM_LEADS`` перед ним не в счёт."""
+    tokens = [t for t in name_tokens(part) if t not in MUSIC_SILENCE_CLAIM_LEADS]
+    return len(tokens) == 1 and tokens[0] in MUSIC_SILENCE_RETELL_LEADS
 
 
 def _silence_heads(part: str) -> bool:

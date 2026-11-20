@@ -153,16 +153,20 @@ class SpeechRecord:
     stop_at: Optional[float] = None
     stop_chars: Optional[int] = None
     t0_ns: Optional[int] = None  # момент первого звука (огибающая кусков потока, #3930)
+    heard_s: float = 0.0  # сколько звука поток уже положил в буфер (#3930); 0 — не поток
+    played_s: float = 0.0  # сколько из этого буфера плеер уже отдал в динамик
     wake: threading.Event = field(default_factory=threading.Event)
 
 
 class SpeechLedger:
-    """Журнал живых реплик: эпохи, отмена, произнесённые символы."""
+    """Журнал живых реплик: эпохи, отмена, произнесённые символы. Отметка отмены переживает закрытие пред-синтеза,
+    чтобы опоздавший ``commit=true`` того же ``speech_id`` не вернул заменённый сегмент на звучание (#4342)."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._records: Dict[str, SpeechRecord] = {}
+        self._cancelled_ids: Dict[str, float] = {}
 
     def admit(self, speech_id: str, meta: SpeechMeta, text: str) -> SpeechRecord:
         """Завести запись. Устаревшие эпохи здесь не отбрасываются: эпоху агента
@@ -172,7 +176,12 @@ class SpeechLedger:
         with self._lock:
             for sid in [s for s, r in self._records.items() if now - r.touched > STALE_RECORD_S]:
                 del self._records[sid]
-            rec = SpeechRecord(speech_id, meta, len(text), sentence_ends(text), touched=now)
+            for sid in [s for s, when in self._cancelled_ids.items() if now - when > STALE_RECORD_S]:
+                del self._cancelled_ids[sid]
+            rec = SpeechRecord(speech_id, meta, len(text), sentence_ends(text), touched=now,
+                               cancelled=speech_id in self._cancelled_ids)
+            if rec.cancelled:
+                rec.wake.set()
             self._records[speech_id] = rec
             return rec
 
@@ -194,20 +203,27 @@ class SpeechLedger:
         По ``speech_id`` - ровно её; иначе - реплики агента (``*`` - любого) с
         эпохой не новее ``epoch``, кроме непрерываемых.
         """
+        now = self._clock()
         with self._lock:
             if speech_id:
                 hit = [self._records[speech_id]] if speech_id in self._records else []
+                self._cancelled_ids[speech_id] = now
             else:
                 hit = [r for r in self._records.values()
                        if agent in (ANY_AGENT, r.meta.agent) and r.meta.epoch <= epoch and r.meta.interruptible]
             for rec in hit:
                 rec.cancelled = True
                 rec.wake.set()  # прервать ожидание ``at``
+                self._cancelled_ids[rec.speech_id] = now
             return hit
 
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
-        rec = self.get(speech_id)
-        return bool(rec and rec.cancelled)
+        with self._lock:
+            rec = self._records.get(speech_id or "")
+            cancelled_at = self._cancelled_ids.get(speech_id or "")
+            return bool(rec and rec.cancelled) or (
+                cancelled_at is not None and self._clock() - cancelled_at <= STALE_RECORD_S
+            )
 
     def spoken_chars(self, rec: SpeechRecord) -> int:
         """Сколько символов прозвучало - доля текста по доле времени воспроизведения."""
@@ -215,6 +231,18 @@ class SpeechLedger:
             return 0
         spoken = int(round(rec.text_len * min(1.0, self.elapsed_s(rec) / rec.duration_s)))
         return spoken if rec.stop_chars is None else min(spoken, rec.stop_chars)
+
+    def heard_chars(self, rec: SpeechRecord) -> int:
+        """Сколько символов потока уже прозвучало (#3930) — из факта буфера, без оценки скорости речи.
+
+        Длительность до конца синтеза неизвестна (``duration_s=0``): доля времени дала бы ноль, и окно
+        молчало бы, будто реплики не было. Факт — две длины одного буфера: сколько плеер уже отдал
+        (``played_s``) и сколько продюсер положил (``heard_s``). Весь текст — только когда отдано всё
+        положенное: хвоста, которого в буфере нет, в доле нет."""
+        if rec.text_len <= 0 or rec.heard_s <= 0 or rec.played_s <= 0:
+            return 0
+        share = min(1.0, rec.played_s / rec.heard_s)
+        return int(round(rec.text_len * share))
 
     def set_duration(self, rec: SpeechRecord, duration_s: float) -> None:
         """Длительность потоковой реплики стала известна (поток кончился) - старт не сдвигается (#3930)."""
@@ -380,6 +408,8 @@ class SpeechOwner:
             return
         if audio is not None and len(audio):
             self._publish_envelope(rec, audio, sample_rate, rec.t0_ns + int(offset_s * 1e9))
+            rec.heard_s = max(rec.heard_s, offset_s + len(audio) / sample_rate)
+            rec.played_s = max(rec.played_s, min(rec.heard_s, self.ledger.elapsed_s(rec)))
         if total_s is not None:
             self.ledger.set_duration(rec, total_s)
 
@@ -394,7 +424,9 @@ class SpeechOwner:
         elif error in _CANCEL_ERRORS or rec.cancelled:
             self._emit("cancelled", rec, spoken_chars=self.ledger.spoken_chars(rec), reason=error or "cancelled")
         else:
-            self._emit("rejected", rec, reason=error or "error")
+            # Обрыв потока после звука (#3930): доля — по факту буфера (``heard_s``), не ноль и не весь текст.
+            spoken = self.ledger.heard_chars(rec) if error == "minimax_stream_broken" else 0
+            self._emit("rejected", rec, spoken_chars=spoken, reason=error or "error")
 
     def is_cancelled(self, speech_id: Optional[str]) -> bool:
         return self.ledger.is_cancelled(speech_id)

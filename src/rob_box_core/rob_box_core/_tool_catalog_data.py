@@ -597,7 +597,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'event_source': '',
         'name': 'get_robot_status',
         'description': 'Получить текущий статус робота (позиция, батарея, состояние '
-                       'систем).',
+                       'систем). Отвечай фразой из message: если там сказано, что это '
+                       'поза симулятора, не называй её полом.',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],
@@ -981,7 +982,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'только что сохранил через memory_save — включая в этом же '
                        'разговоре, сразу после сохранения. Возвращает и факты, и '
                        'фрагменты прошлых разговоров, помечая каждый результат полем '
-                       "kind: 'fact' | 'turn'.",
+                       "kind: 'fact' | 'turn'. Если ни факт, ни реплика не совпали, в "
+                       'результатах каталог фактов говорящего с source="fact_browse".',
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
                                                          'description': 'Поисковый '
@@ -1566,7 +1568,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'шутку; matrix '
                                                                        '- думаю, ищу, '
                                                                        'считаю, '
-                                                                       '«взламываю». '
+                                                                       '«взламываю»; '
+                                                                       'plasma - '
+                                                                       'спокойный '
+                                                                       'перелив, '
+                                                                       'эмбиент, без '
+                                                                       'повода; rain - '
+                                                                       'грусть, дождь, '
+                                                                       'тихая погода. '
                                                                        'fx (разовый '
                                                                        'импульс в '
                                                                        'начале сцены): '
@@ -1668,7 +1677,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                                     'enum': [   'none',
                                                                                                 'rainbow',
                                                                                                 'fire',
-                                                                                                'matrix']},
+                                                                                                'matrix',
+                                                                                                'plasma',
+                                                                                                'rain']},
                                                                           'fx': {   'type': 'string',
                                                                                     'description': 'Слот '
                                                                                                    'лица '

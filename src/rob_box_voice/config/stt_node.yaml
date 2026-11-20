@@ -31,7 +31,7 @@ stt_node:
     # ADR-0150 PR-3b (#3690): раннего «булька» stt_node больше нет - сегмент с вейком уходит в
     # /dialog/interrupt_request, по нему диалог включает рефлекс addressed (лицо, кольцо, earcon «услышал»).
     # ADR-0150 PR-5 (#3694): речь stt_node не глушит — на сегмент с вейком
-    # публикует /dialog/interrupt_request, решает dialogue_node.
+    # публикует /dialog/interrupt_request, решает dialog_node.
     # ===== Цепочка STT-провайдеров (issue #2365 Phase 2, ADR-0124) =====
     # Порядок = приоритет: первый — primary, остальные — фолбеки.
     # Vosk принудительно переносится в конец (_normalize_provider_chain):

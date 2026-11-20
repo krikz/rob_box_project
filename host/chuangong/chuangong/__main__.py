@@ -1,6 +1,6 @@
-"""CLI агента: `python3 -m chuangong run` (тик, его зовёт systemd) и `python3 -m chuangong status` (наблюдатель).
+"""CLI агента: тик run, локальный cancel, validate-inputs пульта, status и C1 dry-run.
 
-Конфиг тика — аргументы или переменные окружения CHUANGONG_* (systemd берёт их из /etc/chuangong/chuangong.env).
+Конфиг — аргументы или переменные окружения CHUANGONG_* (systemd берёт их из /etc/chuangong/chuangong.env).
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(f"CHUANGONG_{name}", default)
 
 
-def _run_parser(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("run", help="один тик: fetch → verify → [stage] → report")
+def _runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--robot-id", default=_env("ROBOT_ID", ""))
     p.add_argument("--node", default=_env("NODE", ""), choices=st.NODES)
     p.add_argument("--channel", default=_env("CHANNEL", "dev"))
@@ -28,11 +27,44 @@ def _run_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--pubkey", default=_env("PUBKEY", "/etc/chuangong/release.pub"))
     p.add_argument("--state-dir", default=_env("STATE_DIR", "/var/lib/chuangong"))
     p.add_argument("--releases-root", default=_env("RELEASES_ROOT", "/opt/rob_box/releases"))
+    p.add_argument("--legacy-root", default=_env("LEGACY_ROOT", "/home/ros2/rob_box_project"))
     p.add_argument("--zenoh", default=_env("ZENOH", "http://127.0.0.1:8000"))
     p.add_argument("--mode", default=_env("MODE", "observe"), choices=[m.value for m in st.Mode])
     p.add_argument("--dry-run", action="store_true", default=_env("DRY_RUN", "0") == "1")
     p.add_argument("--hil-lock", default=_env("HIL_LOCK", "/tmp/hil.lock"))
     p.add_argument("--reserve-gb", type=float, default=float(_env("RESERVE_GB", "2")))
+
+
+def _run_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("run", help="один тик: fetch → verify → [stage] → report")
+    _runtime_args(p)
+
+
+def _c1_parsers(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("adopt", help="доказать current по legacy-файлам и image ID; по умолчанию dry-run")
+    _runtime_args(p)
+    p.add_argument("release")
+    p.add_argument("--apply", action="store_true", help="записать только current/previous и adoption evidence")
+
+    p = sub.add_parser("preflight", help="C1 dry-run: staged/signature, HIL, dirty, место и current")
+    _runtime_args(p)
+    p.add_argument("release")
+
+    p = sub.add_parser("activate", help="план Vision → Sound → Main; --execute зовёт исполнителя роли")
+    _runtime_args(p)
+    p.add_argument("release")
+    p.add_argument("--execute", action="store_true", help="исполнить план (по умолчанию только план, execute=false)")
+
+    p = sub.add_parser("rollback", help="план отката на signed previous; --execute зовёт исполнителя роли")
+    _runtime_args(p)
+    p.add_argument("--execute", action="store_true", help="исполнить план отката (по умолчанию только план)")
+
+
+def _cancel_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("cancel", help="локально отменить staged; current/previous не трогать")
+    p.add_argument("--node", default=_env("NODE", ""), choices=st.NODES)
+    p.add_argument("--state-dir", default=_env("STATE_DIR", "/var/lib/chuangong"))
+    p.add_argument("--releases-root", default=_env("RELEASES_ROOT", "/opt/rob_box/releases"))
 
 
 def _status_parser(sub: argparse._SubParsersAction) -> None:
@@ -44,16 +76,25 @@ def _status_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--summary", default="", help="файл для markdown-итога (GITHUB_STEP_SUMMARY)")
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    from .agent import Config, Deps, tick
-    from .registry import Registry
-    from .stage import DockerCli
-    from .zenoh_rest import ZenohRest
+def _validate_inputs_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "validate-inputs",
+        help="F: Update Robot: отказать при пустом robot_id или release (update/rollback)",
+    )
+    p.add_argument("--action", required=True, help="status|update|rollback|cancel")
+    p.add_argument("--robot-id", default="")
+    p.add_argument("--release", default="")
+    p.add_argument("--operation-id", default="", help="общий id команды и отчёта (github.run_id)")
+    p.add_argument("--github-output", default="", help="GITHUB_OUTPUT: operation_id=...")
+    p.add_argument("--summary", default="", help="GITHUB_STEP_SUMMARY")
+
+
+def _config(args: argparse.Namespace):
+    from .agent import Config
 
     if not args.robot_id or not args.node:
-        print("нужны --robot-id и --node (или CHUANGONG_ROBOT_ID / CHUANGONG_NODE)", file=sys.stderr)
-        return 2
-    cfg = Config(
+        raise ValueError("нужны --robot-id и --node (или CHUANGONG_ROBOT_ID / CHUANGONG_NODE)")
+    return Config(
         robot_id=args.robot_id,
         node=args.node,
         channel=args.channel,
@@ -61,16 +102,94 @@ def cmd_run(args: argparse.Namespace) -> int:
         pubkey=Path(args.pubkey),
         state_dir=Path(args.state_dir),
         releases_root=Path(args.releases_root),
+        legacy_root=Path(args.legacy_root),
         zenoh_url=args.zenoh,
         mode=st.Mode(args.mode),
         dry_run=args.dry_run,
         hil_lock=Path(args.hil_lock),
         reserve_bytes=int(args.reserve_gb * 1024**3),
     )
-    deps = Deps(registry=Registry(cfg.registry_url), docker=DockerCli(), zenoh=ZenohRest(cfg.zenoh_url))
-    record = tick(cfg, deps)
+
+
+def _deps(cfg):
+    from .agent import Deps
+    from .registry import Registry
+    from .stage import DockerCli
+    from .zenoh_rest import ZenohRest
+
+    return Deps(registry=Registry(cfg.registry_url), docker=DockerCli(), zenoh=ZenohRest(cfg.zenoh_url))
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    from .agent import tick
+
+    try:
+        cfg = _config(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    record = tick(cfg, _deps(cfg))
     print(json.dumps(record, ensure_ascii=False, sort_keys=True))
     # Ошибка fetch/stage — штатное состояние агента (оно в отчёте), а не падение юнита.
+    return 0
+
+
+def cmd_c1(args: argparse.Namespace) -> int:
+    from .activation import ActivationMachine
+
+    # --execute без проверенного адаптера останавливается до config, registry и docker.
+    # Иначе пульт читает реестр и список контейнеров и только потом отказывает (19.11).
+    wants_execute = bool(getattr(args, "execute", False))
+    if wants_execute and os.environ.get("CHUANGONG_COMPOSE_ADAPTER_VERIFIED") != "1":
+        print(
+            json.dumps(
+                {"state": "blocked", "reason": "executor_not_wired", "detail": "compose adapter not verified"},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
+
+    try:
+        cfg = _config(args)
+        from .role_switch import execute_role
+
+        verified = os.environ.get("CHUANGONG_COMPOSE_ADAPTER_VERIFIED") == "1"
+        machine = ActivationMachine(cfg, _deps(cfg), executor=execute_role if verified else None)
+        if args.cmd == "adopt":
+            record = machine.adopt(args.release, apply=args.apply)
+        elif args.cmd == "preflight":
+            record = machine.preflight(args.release)
+        elif args.cmd == "activate":
+            record = machine.activate(args.release, execute=args.execute)
+        else:
+            record = machine.rollback(execute=args.execute)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+    return 1 if record["state"] in {s.value for s in st.ERROR_STATES} else 0
+
+
+def cmd_cancel(args: argparse.Namespace) -> int:
+    """Локальная отмена staged: сеть и compose не трогаются."""
+    from . import cancel
+
+    if not args.node:
+        print("нужен --node (или CHUANGONG_NODE)", file=sys.stderr)
+        return 2
+    try:
+        record = cancel.cancel_staged(Path(args.state_dir), Path(args.releases_root), args.node)
+    except cancel.CancelError as exc:
+        print(
+            json.dumps(
+                {"state": "error", "reason": exc.reason, "detail": exc.detail},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 1
+    print(json.dumps(record, ensure_ascii=False, sort_keys=True))
     return 0
 
 
@@ -88,14 +207,66 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_validate_inputs(args: argparse.Namespace) -> int:
+    """Пульт F: Update Robot — проверка входов; update/rollback/cancel → not_wired (exit 2)."""
+    from .fleet_inputs import FleetInputError, render_error_summary, render_summary, validate_inputs
+
+    try:
+        record = validate_inputs(
+            action=args.action,
+            robot_id=args.robot_id,
+            release=args.release,
+            operation_id=args.operation_id,
+        )
+    except FleetInputError as exc:
+        print(json.dumps({"ok": False, "reason": exc.reason, "detail": exc.detail}, ensure_ascii=False, sort_keys=True))
+        if args.summary:
+            with open(args.summary, "a", encoding="utf-8") as fh:
+                fh.write(
+                    render_error_summary(
+                        reason=exc.reason,
+                        detail=exc.detail,
+                        action=(args.action or "").strip(),
+                        robot_id=(args.robot_id or "").strip(),
+                        release=(args.release or "").strip(),
+                        operation_id=(args.operation_id or "").strip(),
+                    )
+                )
+        return 2
+    print(json.dumps({"ok": True, **record}, ensure_ascii=False, sort_keys=True))
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as fh:
+            op = record.get("operation_id") or ""
+            fh.write(f"operation_id={op}\n")
+            fh.write(f"action={record['action']}\n")
+            fh.write(f"robot_id={record['robot_id']}\n")
+            rel = record.get("release") or ""
+            fh.write(f"release={rel}\n")
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as fh:
+            fh.write(render_summary(record))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(prog="chuangong")
     sub = parser.add_subparsers(dest="cmd", required=True)
     _run_parser(sub)
+    _cancel_parser(sub)
+    _c1_parsers(sub)
     _status_parser(sub)
+    _validate_inputs_parser(sub)
     args = parser.parse_args(argv)
-    return cmd_run(args) if args.cmd == "run" else cmd_status(args)
+    if args.cmd == "run":
+        return cmd_run(args)
+    if args.cmd == "cancel":
+        return cmd_cancel(args)
+    if args.cmd == "status":
+        return cmd_status(args)
+    if args.cmd == "validate-inputs":
+        return cmd_validate_inputs(args)
+    return cmd_c1(args)
 
 
 if __name__ == "__main__":

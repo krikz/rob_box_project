@@ -9,7 +9,7 @@ tts_voice_registry.py — единый реестр голосов TTS-пров�
 3. Какой голос реально использовать?    (``resolve_voice``)
 
 Чистый Python без ROS-зависимостей: модуль импортируется и
-``rob_box_voice`` (tts_node, dialogue_node), и ``rob_box_mcp_tools``
+``rob_box_voice`` (tts_node, dialog_node), и ``rob_box_mcp_tools``
 (SpeakTextTool, SetVoiceTool) — без тяжёлых зависимостей (rclpy, torch).
 
 Дизайн-решения (docs/design/LLM_VOICE_SELECTION_PROPOSAL.md, Q1-Q11):

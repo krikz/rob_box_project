@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-from rob_box_sim import worlds_catalog as wc
 from rob_box_sim.geometry2d import ROBOT_BODY_BOTTOM_Z, Pose2D, clearance
 from rob_box_sim.world_sdf import boxes_from_sdf, gap_between, load_world_boxes
+
+from rob_box_sim import worlds_catalog as wc
 
 REPO = Path(__file__).resolve().parents[3]
 WORLDS = REPO / "src" / "rob_box_sim" / "worlds"
@@ -107,8 +107,30 @@ def test_single_link_world_keeps_same_geometry():
     assert one_text.count("<link ") == 2  # пол + walls
 
 
+def test_dead_end_turn_circle_is_about_rear_axle_not_base_footprint():
+    """Разворот в симе идёт вокруг задней оси, не вокруг base_footprint (#4377, #4475).
+
+    Круг углов вокруг base_footprint — 0.4306 м, и тест, который мерил его, говорил
+    «в тупике 1.1 м свободно» (~0.12 м до стены). HIL 09.11: центр (−0.144, 0.000),
+    нос заметает 0.5426 м — до стены тупика 7.5 мм, а не 12 см.
+    """
+    from rob_box_sim.geometry2d import ROBOT_FOOTPRINT as fp
+
+    about_base = max(
+        math.hypot(x, y) for x in (fp.x_min, fp.x_max) for y in (fp.y_min, fp.y_max)
+    )
+    assert about_base == pytest.approx(0.4306, abs=1e-3)
+    assert wc.TURN_CENTER_X == pytest.approx(-0.144)
+    assert wc.turn_swept_radius() == pytest.approx(0.5426, abs=1e-3)
+    assert wc.turn_swept_radius() > about_base
+
+
 def test_dead_end_robot_can_turn_by_body_but_not_with_big_padding():
-    """Тупик: разворот на месте по корпусу помещается (~0.12 м), а круг с padding 0.10 — нет."""
+    """Тупик: круг вокруг задней оси почти касается стены; padding 0.10 его пересекает.
+
+    Зазор корпуса на спавне (base_footprint стоит) > 0.1 м — это не зазор разворота.
+    Зазор разворота считает turn_body_clearance: ось стоит, корпус ходит вокруг нее.
+    """
     from rob_box_sim.geometry2d import ROBOT_FOOTPRINT as fp
 
     boxes = load_world_boxes(WORLDS / "dead_end.sdf")
@@ -118,8 +140,12 @@ def test_dead_end_robot_can_turn_by_body_but_not_with_big_padding():
     assert 2 * inner == pytest.approx(wc.DEAD_END_WIDTH, abs=1e-3)
     end = max((b for b in boxes if b.sy > b.sx), key=lambda b: b.cx)
     assert end.cx - end.sx / 2 - fp.x_max == pytest.approx(wc.DEAD_END_FRONT, abs=1e-3)
-    swept = max(math.hypot(x, y) for x in (fp.x_min, fp.x_max) for y in (fp.y_min, fp.y_max))
-    assert inner - swept > 0.1  # по корпусу разворот на месте свободен
+    swept = wc.turn_swept_radius()
+    assert inner - swept == pytest.approx(
+        0.0074, abs=1e-3
+    )  # по корпусу — миллиметры, не 0.12 м
+    assert inner - swept > 0  # корпус стену не пересекает
     assert inner - (swept + 0.10 * math.sqrt(2)) < 0  # padding 0.10: по costmap — нет
+    assert wc.turn_body_clearance(boxes) == pytest.approx(inner - swept, abs=1e-3)
     for yaw in (0.0, 0.7, 1.5708, 2.4, 3.1416):
-        assert clearance(Pose2D(0, 0, yaw), boxes) > 0.1
+        assert clearance(Pose2D(0, 0, yaw), boxes) > 0.1  # спавн, не разворот

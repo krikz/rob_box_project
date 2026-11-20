@@ -197,9 +197,14 @@ class V2Ports:
         self.executor = Executor(self._send, on_late=self._late, epoch=epoch)
 
     def provider(self) -> str:
-        """Провайдер, к которому идёт вызов сейчас: цепочка ставит ``answered_by`` ДО вызова (фразы потолка, В31).
-        Без цепочки — «» (имя обёртки ``health-aware-fallback`` человеку ничего не говорит)."""
-        return str(getattr(self._llm, "answered_by", None) or "")
+        """Провайдер, к которому идёт вызов сейчас (фразы потолка и отказа, В31).
+
+        Цепочка с фолбеком ставит ``answered_by`` до вызова. Один провайдер — не цепочка, ``answered_by`` у него нет,
+        и имя берётся так же, как у успешного ответа (:func:`answering_provider`): ``name`` провайдера, которое
+        обёртки моста и счётчика пробрасывают с внутреннего. Имя обёртки ``health-aware-fallback`` человеку ничего не
+        говорит — его нет."""
+        name = answering_provider(self._llm)
+        return "" if name == "health-aware-fallback" else name
 
     async def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Answer:
         """Один ответ LLM (с повтором моста по нарушениям); потолок ставит ход снаружи. Провайдер не жив (цепочка
@@ -326,6 +331,11 @@ class V2Ports:
         """Отмена речи эпохи; ``speech_id`` - ровно этой реплики (правка звучащего счёта, #4207)."""
         speech_client.cancel(self._node, agent=self._agent, speech_id=speech_id or None, epoch=epoch, reason=reason,
                              boundary=boundary)
+
+    def answer_perform(self, yes: bool) -> bool:
+        """Ответ на «выключить и зачитать?» — владельцу выступления."""
+        host = self._performer()
+        return bool(host is not None and host.answer(yes))
 
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его

@@ -9,7 +9,7 @@
 //
 // Что умеет (зеркало ws_server.py):
 //   HELLO → WELCOME (или ERROR{AUTH_FAIL}, если задан `pin` и он не совпал);
-//   JSON_EVENT ping → pong с эхом ts_ms;
+//   JSON_CMD{cmd:ping} (и старый JSON_EVENT ping) → pong с эхом ts_ms;
 //   SUBSCRIBE → subscribe_ack{stream_id} | ERROR{TOPIC_UNKNOWN};
 //   UNSUBSCRIBE; JSON_CMD по таблице `commands` (unknown → ERROR{UNKNOWN_COMMAND});
 //   SET_MODE / ACQUIRE_FLOOR / RELEASE_FLOOR → STATE_UPDATE;

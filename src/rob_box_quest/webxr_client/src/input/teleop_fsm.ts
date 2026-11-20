@@ -64,8 +64,8 @@ export class TeleopFSM {
   // floor_lost JSON_EVENT от сервера, считаем, что floor наш. Сервер
   // ответит FLOOR_HELD / floor_lost очень быстро (< 1 с), и FSM
   // переключится в armed_no_floor. На HELLO сервер передаёт
-  // teleop_floor_held_by (см. meta-quest-api.md §3), и caller должен
-  // вызвать setHasFloor(<== == session.session_id>) сразу после WELCOME.
+  // teleop_floor_held_by = ``quest:<session_id>`` (issue #2190).
+  // Сверка — sameFloorClient, не равенство с голым session_id.
   private seq = 0;
   private heartbeatSeq = 0;
   private lastSendTsMs = 0;
@@ -82,7 +82,7 @@ export class TeleopFSM {
 
   /**
    * AV-19: уведомить FSM о текущем состоянии teleop_floor. Вызывается
-   * из main.ts на WELCOME (teleop_floor_held_by == session.session_id)
+   * из main.ts на WELCOME (sameFloorClient(held_by, session_id))
    * и на JSON_EVENT{type:"floor_lost"} (hasFloor=false).
    */
   setHasFloor(hasFloor: boolean): void {

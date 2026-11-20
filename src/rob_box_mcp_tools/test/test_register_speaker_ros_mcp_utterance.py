@@ -2,17 +2,17 @@
 
 Прод-путь (``tool_provider: ros_mcp``)::
 
-    dialogue_node ── LLMToolCallAdapter ──/mcp/execute──▶ mcp_server
+    dialog_node ── LLMToolCallAdapter ──/mcp/execute──▶ mcp_server
                                                            └─ RegisterSpeakerTool(node=mcp_server)
                                                               └─/voice/speaker/register──▶ speaker_id_node
 
 Тул исполняется в ДРУГОМ процессе: ``self.node`` у него — mcp_server, а не
-dialogue_node, поэтому ``getattr(self.node, "_current_turn_utterance_id")``
+dialog_node, поэтому ``getattr(self.node, "_current_turn_utterance_id")``
 всегда ``None`` и speaker_id_node честно отказывает (``no_utterance_context``).
 На роботе это ломало регистрацию голоса целиком (#2833 → #2842).
 
 Тест моделирует именно этот путь, а не in-process: настоящий
-``LLMToolCallAdapter`` на узле dialogue_node формирует и подписывает запрос,
+``LLMToolCallAdapter`` на узле dialog_node формирует и подписывает запрос,
 «mcp_server» проверяет подпись и исполняет настоящий ``RegisterSpeakerTool``
 через настоящий ``MCPToolRegistry`` на ОТДЕЛЬНОМ узле без атрибутов хода, и
 проверяется JSON, опубликованный в ``/voice/speaker/register``.
@@ -179,7 +179,7 @@ class _Node:
 
 
 class _DialogueNode(_Node):
-    """Узел dialogue_node: знает utterance_id ТЕКУЩЕГО хода."""
+    """Узел dialog_node: знает utterance_id ТЕКУЩЕГО хода."""
 
     def __init__(self, bus: _Bus, utterance_id: Optional[str]) -> None:
         super().__init__("dialogue_node", bus)
@@ -247,7 +247,7 @@ def _production_adapter(dialogue: _DialogueNode) -> LLMToolCallAdapter:
     """Адаптер так, как его строит DialogueNode._build_tool_provider.
 
     До #2842 у ``LLMToolCallAdapter`` не было ``turn_context`` и
-    dialogue_node строил его как ``LLMToolCallAdapter(self)``. Тогда
+    dialog_node строил его как ``LLMToolCallAdapter(self)``. Тогда
     строим так же, чтобы на старом коде тест показывал сам баг
     (``utterance_id=None`` в /voice/speaker/register), а не TypeError.
     """

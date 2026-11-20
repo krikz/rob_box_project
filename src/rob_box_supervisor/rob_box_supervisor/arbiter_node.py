@@ -523,18 +523,22 @@ class AvatarArbiter(Node):
             self.FLOOR_EXPIRY_CHECK_PERIOD_S, self._check_floor_expiry
         )
 
-        # ── twist_mux lock publisher (ADR-0081 R1/R3, #2191) ────────────
+        # ── twist_mux lock publisher (ADR-0081 R1/R3, #2191, #4694) ─────
         # /teleop_lock — std_msgs/Bool. Источник истины один
         # (LockManager.holder(Floor.TELEOP)) — публикуем из таймера,
         # чтобы пути (acquire/release/expire/FSM-переход) не разъехались.
-        # QoS: reliable+transient_local (latched) — twist_mux по
-        # контракту читает lock-топик при init и при пересборке графа;
-        # без latched новый подписчик может пропустить True, если
-        # arbiter уже стоит с активным floor (false negative = автономия
-        # не блокируется).
+        # QoS: RELIABLE + VOLATILE, не latched. twist_mux (ros-humble-twist-mux)
+        # подписывается LockTopicHandle на SystemDefaultsQoS — durability
+        # VOLATILE (include/twist_mux/topic_handle.hpp, пакет не патчим).
+        # TRANSIENT_LOCAL с VOLATILE не стыкуется: опоздавший mux и
+        # ``ros2 topic echo`` не видят поток (замер #4694, 17.11.2026).
+        # Опоздавший подписчик получает текущее значение следующим тиком
+        # 20 Гц (тот же приём, что у /joystick_lock, depth=10 → VOLATILE).
+        # Смысл замка не меняется: data = holder(TELEOP) is not None.
+        # /avatar/state остаётся TRANSIENT_LOCAL — это другой контракт.
         lock_qos = QoSProfile(
             depth=1,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            durability=DurabilityPolicy.VOLATILE,
             reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
         )
         self._teleop_lock_pub = self.create_publisher(

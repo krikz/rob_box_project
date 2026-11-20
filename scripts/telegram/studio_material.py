@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -27,6 +28,18 @@ SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostK
 MAP_SAMPLES = 12  # снимков карты на прогон: подложка меняется по ходу ролика, а качать все 400 — долго
 TOP_RUN = "depot"  # корень out/ — прогон с кадрами камер (вид сверху, compose.py)
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+# Сколько живёт файл материала в кэше, прежде чем его перекачать с песочницы.
+# Разбор 14.11 (issue #4711): `Gate.fetch()` возвращал успех на любой непустой локальный
+# файл, поэтому route.log лежал с 07.11 — студия монтировала материал недельной давности,
+# пока песочница давно перезаписала прогон. Шесть часов — материал свежий в пределах сессии.
+CACHE_MAX_AGE_S = 6 * 3600
+
+# Порог «прогон — материал», а не отладочный заход: у отладочных одна цель и
+# почти нулевое покрытие (ADR-0171 §2a — незавершённая работа и отладочные прогоны
+# не материал).
+MIN_GOALS = 2
+MIN_COVER = 1.0  # м² размаха траектории
 
 # Подписи прогонов, которые уже обсуждали (#4495, дрейф локализации). Код, а не модель, знает, что есть «до».
 KNOWN_RUNS = {
@@ -43,6 +56,20 @@ TOPICS = {
         "markers": ("дрейф", "depot", "icp", "локализац", "поза уплыва", "уплыв", "потеря опоры"),
     }
 }
+
+
+def cache_stale(local: Path, max_age_s: int = CACHE_MAX_AGE_S) -> bool:
+    """Файл в кэше протух: пора перекачать с песочницы.
+
+    Разбор 14.11 (issue #4711): кэш не обновлялся вообще, и студия монтировала
+    материал недельной давности — route.log от 07.11, пока песочница давно
+    перезаписала прогон.
+    """
+    try:
+        age = time.time() - Path(local).stat().st_mtime
+    except OSError:
+        return True
+    return age > max_age_s
 
 
 class Gate:
@@ -70,9 +97,12 @@ class Gate:
         return [line.strip() for line in out.splitlines() if line.strip()], ""
 
     def fetch(self, remote: str, local: Path) -> str:
-        """Один файл через legacy scp (-O обязателен: sftp гейт не пропускает). Пустая строка — успех."""
+        """Один файл через legacy scp (-O обязателен: sftp гейт не пропускает). Пустая строка — успех.
+
+        Файл в кэше берётся, только если он свежий: иначе материал протухает (issue #4711).
+        """
         local = Path(local)
-        if local.is_file() and local.stat().st_size > 0:
+        if local.is_file() and local.stat().st_size > 0 and not cache_stale(local):
             return ""
         local.parent.mkdir(parents=True, exist_ok=True)
         part = local.with_suffix(local.suffix + ".part")
@@ -113,6 +143,129 @@ def runs_catalog(gate: Gate) -> tuple:
             }
         )
     return found, ""
+
+
+def published_runs(state: dict) -> set:
+    """Прогоны, чей материал уже уходил в канал. Множество id.
+
+    Разбор 14.11 (issue #4711): пост 09.11 про PR #4555 получил ролик с
+    прогонами `shisyun_s1`/`shisyun_s2` — материал уже уходил в канал 06.11, и
+    файл был байт-идентичен опубликованному. Студия брала первые два прогона из
+    каталога, не глядя ни на тему, ни на то, что это уже показывали.
+
+    В канал ушёл только пост со статусом `approved` (нажатая кнопка Шифу).
+    Черновик (`proposed`) и отклонённый (`rejected`) в канал не уходили.
+    """
+    used = set()
+    for record in (state.get("posts") or {}).values():
+        if str(record.get("status") or "") != "approved":
+            continue
+        motion = record.get("last_motion") or {}
+        for run in motion.get("runs") or []:
+            used.add(str(run))
+    return used
+
+
+def fresh_catalog(catalog: list, used: set) -> list:
+    """Каталог без прогонов, чей материал уже публиковали.
+
+    Пустой результат — честный сигнал: материала, который ещё не показывали,
+    нет. Лучше пусто, чем повтор старого ролика.
+    """
+    if not used:
+        return list(catalog or [])
+    return [item for item in catalog or [] if str(item.get("id") or "") not in used]
+
+
+def longest_run(facts: list) -> str:
+    """Прогон с самым длинным заездом по фактам сессии. "" — если таких нет.
+
+    Правило кода, а не выбор модели: Шифу просил «самый длинный заезд робота с
+    максимальным покрытием» (14.11) — и получал тот же ролик, потому что правила
+    не было вовсе. Сравниваем по данным факта: длина по времени (sim_s), покрытие
+    по снимкам карты (map_snapshots) и число целей. Отладочные прогоны (одна
+    цель) в выдачу не попадают — см. MIN_GOALS.
+    """
+    best_id, best_key = "", None
+    for fact in facts or []:
+        if str(fact.get("kind") or "") != "robot_run":
+            continue
+        numbers = fact.get("numbers") or {}
+        goals = int(numbers.get("goals") or 0)
+        if goals < MIN_GOALS:
+            continue
+        key = (
+            float(numbers.get("sim_s") or 0.0),
+            int(numbers.get("map_snapshots") or 0),
+            int(numbers.get("pose_rows") or 0),
+            goals,
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_id = str(fact.get("run_id") or "")
+    return best_id
+
+
+def route_goals(route_text: str) -> int:
+    """Сколько целей маршрута прошёл робот: все строки с меткой GOAL_START.
+
+    Считаются ВСЕ цели (M* и R*): факт о прогоне и окно монтажа должны говорить
+    одно и то же число (issue #4711). Раньше факт считал все, а окно — только M*:
+    читатель видел «10 целей», в ролике было пять.
+    """
+    goals = 0
+    for line in (route_text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "GOAL_START":
+            goals += 1
+    return goals
+
+
+def measure_run(rows: list) -> Optional[dict]:
+    """Измерение прогона по строкам позы: {"goals", "cover", "length", "points"}.
+
+    cover — размах траектории по осям (span_x, span_y): чем больше, тем шире
+    прошёл робот. length — длина пути в метрах. None — измерять нечего.
+    """
+    xs, ys = [], []
+    for row in rows or []:
+        try:
+            xs.append(float(row["tx"]))
+            ys.append(float(row["ty"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if len(xs) < 2:
+        return None
+    length = 0.0
+    for i in range(len(xs) - 1):
+        length += ((xs[i + 1] - xs[i]) ** 2 + (ys[i + 1] - ys[i]) ** 2) ** 0.5
+    return {
+        "goals": 0,  # цели считаются по route.log, позы о них не знают
+        "cover": (max(xs) - min(xs), max(ys) - min(ys)),
+        "length": length,
+        "points": len(xs),
+    }
+
+
+def best_run(runs: list) -> str:
+    """Прогон с самым длинным заездом и максимальным покрытием. "" — если ни один не годится.
+
+    Правило кода, а не выбор модели: «найди самый длинный заезд» (Шифу, 14.11)
+    должно находиться по данным. Отладочные прогоны (одна цель, ничтожное
+    покрытие) в выдачу не попадают — см. MIN_GOALS и MIN_COVER.
+    """
+    best_id, best_key = "", None
+    for item in runs or []:
+        cover = item.get("cover") or (0.0, 0.0)
+        goals = int(item.get("goals") or 0)
+        area = float(cover[0]) * float(cover[1])
+        if goals < MIN_GOALS or area < MIN_COVER:
+            continue
+        # Сначала покрытие (максимальное), потом длина пути, потом число целей.
+        key = (area, float(item.get("length") or 0.0), goals)
+        if best_key is None or key > best_key:
+            best_key, best_id = key, str(item.get("id") or "")
+    return best_id
 
 
 def topic_of(text: str) -> str:

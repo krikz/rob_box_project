@@ -207,7 +207,7 @@ class FakeTTSProvider(TTSProvider):
 
     Use this wherever a unit test needs a ``TTSProvider`` instance but the
     test is not about TTS itself (e.g. exercising downstream consumers in
-    ``tts_node`` or ``dialogue_node``).
+    ``tts_node`` or ``dialog_node``).
     """
 
     name = "fake"

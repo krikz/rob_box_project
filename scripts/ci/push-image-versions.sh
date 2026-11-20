@@ -7,7 +7,12 @@
 # recoverable instead of silently losing the image-version commit.
 #
 # Usage:
-#   push-image-versions.sh <branch> [component]
+#   push-image-versions.sh <branch> [component] [VAR...]
+#
+# VAR (PERCEPTION_TAG, VOICE_ASSISTANT_TAG, …) — поля, которые писал ЭТОТ
+# билд. Без них конфликт rebase в .image-versions.* нечем разрешать: скрипт
+# абортит rebase и падает (fail-closed). С ними — берёт свежую ветку и
+# перезаписывает только свои строки (scripts/ci/resolve-image-versions-conflict.sh).
 #
 # Environment:
 #   IMAGE_VERSIONS_PUSH_ATTEMPTS      Maximum pull/rebase + push attempts (5)
@@ -38,8 +43,11 @@ if [[ -z "${GIT_SSH_COMMAND:-}" ]]; then
   export GIT_SSH_COMMAND
 fi
 
-BRANCH="${1:?usage: push-image-versions.sh <branch> [component]}"
+BRANCH="${1:?usage: push-image-versions.sh <branch> [component] [VAR...]}"
 COMPONENT="${2:-image-versions}"
+shift $(( $# > 1 ? 2 : 1 ))
+OURS_VARS=("$@")
+RESOLVE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/resolve-image-versions-conflict.sh"
 MAX_ATTEMPTS="${IMAGE_VERSIONS_PUSH_ATTEMPTS:-5}"
 RETRY_DELAY="${IMAGE_VERSIONS_PUSH_RETRY_DELAY:-5}"
 REMOTE="${IMAGE_VERSIONS_GIT_REMOTE:-origin}"
@@ -70,6 +78,56 @@ git_net() {
 
 # rc 0 = branch exists, 2 = reachable but branch absent (ls-remote
 # --exit-code), anything else = remote unreachable / timed out.
+# Снимок своих тегов ДО rebase. Apply-бэкенд «успевает» и оставляет наш
+# файл целиком, затирая чужой тег (run 44404978409). После синхронизации
+# заново берём файл со свежей ветки и пишем в него только эти значения.
+# Чужие строки и разделитель не трогаем.
+capture_own_tags() {
+  OWN_TAG_LINES=()
+  [ "${#OURS_VARS[@]}" -eq 0 ] && return 0
+  local file var line
+  mapfile -t files < <(git diff-tree --no-commit-id --name-only -r HEAD -- 'docker/*/.image-versions.*')
+  for file in "${files[@]}"; do
+    for var in "${OURS_VARS[@]}"; do
+      line="$(git show "HEAD:${file}" 2>/dev/null | grep -m1 "^${var}=" || true)"
+      [ -n "$line" ] || continue
+      OWN_TAG_LINES+=("${file}|${line}")
+    done
+  done
+}
+
+rewrite_own_tags_from_head() {
+  [ "${#OWN_TAG_LINES[@]}" -eq 0 ] && return 0
+  local entry file line value var fresh changed=0 restored=""
+  fresh="$(git rev-parse "${REMOTE}/${BRANCH}")"
+  for entry in "${OWN_TAG_LINES[@]}"; do
+    file="${entry%%|*}"
+    line="${entry#*|}"
+    var="${line%%=*}"
+    value="${line#*=}"
+    # Файл со свежей ветки берём один раз: повторный checkout стирает
+    # уже вписанный свой тег.
+    case " ${restored} " in
+      *" ${file} "*) ;;
+      *)
+        git checkout "$fresh" -- "$file" 2>/dev/null || continue
+        restored="${restored} ${file}"
+        ;;
+    esac
+    grep -q "^${var}=" "$file" || continue
+    if ! grep -qx "${var}=${value}" "$file"; then
+      sed -i "s|^${var}=.*|${var}=${value}|" "$file"
+      echo "✅ ${COMPONENT}: ${file}: ${var}=${value} (свой тег поверх свежей ветки)" >&2
+      changed=1
+    fi
+    git add -- "$file"
+  done
+  if [ "$changed" -eq 1 ] && ! git diff --cached --quiet; then
+    git commit --amend --no-edit || return 1
+  fi
+  return 0
+}
+
 remote_branch_exists() {
   git_net ls-remote --exit-code --heads "$REMOTE" "$BRANCH" >/dev/null 2>&1
 }
@@ -85,11 +143,29 @@ pull_and_rebase() {
     return 3
   fi
 
+  # merge-бэкенд, не apply: apply молча затирает соседнюю строку чужого
+  # билда, когда разделитель сдвинулся (run 44404978409). -c на pull не
+  # доходит до дочернего rebase — пишем в локальный конфиг чекаута.
+  git config rebase.backend merge
+  capture_own_tags
   if git_net pull --rebase "$REMOTE" "$BRANCH"; then
+    rewrite_own_tags_from_head || return 1
     return 0
   fi
 
-  echo "❌ ${COMPONENT}: git pull --rebase ${REMOTE} ${BRANCH} failed" >&2
+  # Гонка соседних строк .image-versions.* (run 44404978409): rebase встал
+  # на CONFLICT. Свои теги переписываем поверх свежей ветки и продолжаем.
+  # Не наш конфликт или нечем переписывать — abort, попытка не повторяется.
+  if [ "${#OURS_VARS[@]}" -gt 0 ] && [ -d "$(git rev-parse --git-path rebase-merge 2>/dev/null || true)" ]; then
+    echo "⚠️  ${COMPONENT}: rebase конфликтует — переписываю только свои теги: ${OURS_VARS[*]}" >&2
+    if bash "$RESOLVE" "${OURS_VARS[@]}" && GIT_EDITOR=true git rebase --continue; then
+      rewrite_own_tags_from_head || return 1
+      return 0
+    fi
+    echo "❌ ${COMPONENT}: конфликт .image-versions не разрешён, rebase прерван" >&2
+  else
+    echo "❌ ${COMPONENT}: git pull --rebase ${REMOTE} ${BRANCH} failed" >&2
+  fi
   git rebase --abort >/dev/null 2>&1 || true
   return 1
 }

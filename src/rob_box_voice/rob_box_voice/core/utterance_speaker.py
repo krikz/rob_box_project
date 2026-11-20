@@ -1,7 +1,7 @@
 """utterance_speaker.py — single source of truth for "who said THIS phrase"
 (issue #2829, ADR-0131).
 
-Before this module, ``dialogue_node`` decided "who is speaking" by reading
+Before this module, ``dialog_node`` decided "who is speaking" by reading
 whatever the *last* ``/voice/speaker/result`` message happened to leave in
 a shared mutable field (``_current_speaker``), after a blind
 ``asyncio.sleep(0.30)`` meant to let biometry "usually" finish first. STT

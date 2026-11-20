@@ -102,6 +102,8 @@ class SessionSnapshot:
     #: Владельцы тулов продукта из профиля (ADR-0167 Ш1в, ``owners.TOOL_OWNERS``): по ним срез тулов агента
     #: (``agents.tools_for``). Ставит хост при создании сессии; ``None`` - хост не передал (умолчание ядра - без тулов).
     owners: Optional[Tuple[str, ...]] = None
+    #: Автоматический раздел фактов собеседника виден до ``reset``; в новой сессии факты читаются явными тулами памяти.
+    speaker_memory_visible: bool = True
 
     def top(self, kind: str) -> Optional[SceneFrame]:
         """Верхний кадр этого вида или ``None``."""
@@ -148,6 +150,8 @@ class Session:
                                      started_at=clock(),
                                      wake_words=None if wake_words is None else tuple(wake_words),
                                      owners=None if owners is None else tuple(owners))
+        #: Сколько раз за сессию уже отдали вопрос об имени этому собеседнику (A29). Не в снимке: модель это не решает.
+        self.identity_asked: dict[str, int] = {}
 
     @property
     def snapshot(self) -> SessionSnapshot:
@@ -205,10 +209,14 @@ class Session:
             self._commit("expire", scenes=tuple(f for f in self._snap.scenes if f not in gone), **asked)
         return gone
 
-    def reset(self) -> None:
-        """Новая сессия разговора: эпоха + 1, стек и вопрос очищены; голос, собеседник, музыка и провайдеры —
-        не трогаются («забудь всё» ≠ «выключи музыку»)."""
-        self._commit("reset", epoch=self._snap.epoch + 1, scenes=(), pending_ask=None)
+    def reset(self, *, speaker_memory_visible: Optional[bool] = None) -> None:
+        """Новая сессия разговора: эпоха + 1, стек и вопрос очищены; голос, собеседник, музыка, провайдеры
+        и постоянные факты — не трогаются («забудь всё» ≠ «выключи музыку»). ``speaker_memory_visible`` задаёт
+        автоматическую память в снимке новой эпохи; ``None`` сохраняет текущий режим для служебного сброса окна.
+        Счётчик вопроса об имени (A29) сбрасывается: новая сессия — новый акт."""
+        visible = self._snap.speaker_memory_visible if speaker_memory_visible is None else speaker_memory_visible
+        self.identity_asked = {}
+        self._commit("reset", epoch=self._snap.epoch + 1, scenes=(), pending_ask=None, speaker_memory_visible=visible)
 
     def replace_epoch(self) -> int:
         """Перебивание стопом (REPLACE, §6.2, ``interrupt.py``): эпоха + 1 — речь, ответ LLM и исходы действий

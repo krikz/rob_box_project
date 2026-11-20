@@ -1,0 +1,11 @@
+--- a/nav2_navfn_planner/src/navfn.cpp
++++ b/nav2_navfn_planner/src/navfn.cpp
+@@ -864,6 +864,8 @@
+         return 0;
+       }
+     } else {  // have a good gradient here
++      if (dx < 0.0F) {stc--; dx += 1.0F;}
++      if (dy < 0.0F) {stc -= nx; dy += 1.0F;}
+       // get grad at four positions near cell
+       gradCell(stc);
+       gradCell(stc + 1);

@@ -4,7 +4,7 @@ handlers/messages.py — Handlers for text messages and voice messages.
 
 After Phase 6 v2 / W7 this module is a *thin transport*: every text and
 voice message is forwarded to ``/voice/stt/utterance`` so the unified
-AgentCore/harness pipeline (in ``dialogue_node``) can decide what to
+AgentCore/harness pipeline (in ``dialog_node``) can decide what to
 do with it. There is no LLM call here.
 
 Features:
@@ -65,7 +65,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     Implements message debouncing: if user sends multiple messages quickly
     (e.g. Telegram splits a long message), they are merged before
-    forwarding. The dialogue_node (downstream) decides what to do with
+    forwarding. The dialog_node (downstream) decides what to do with
     the text — chat with LLM, run a tool, or ignore.
 
     AV-22 (Issue #1914) — ГЕЙТ ``/operator``:
@@ -154,7 +154,7 @@ async def _flush_buffer(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("Merged %d message parts for chat %d", len(buf["texts"]), chat_id)
 
     # Forward to the unified dialogue pipeline with the source marker
-    # (issue #1195): source=telegram + chat_id lets dialogue_node skip the wake-word
+    # (issue #1195): source=telegram + chat_id lets dialog_node skip the wake-word
     # gate (chat messages are explicit address) and route the LLM reply
     # back into this chat. The chat_id is also recorded as "active chat"
     # so voice-initiated replies echo here too.

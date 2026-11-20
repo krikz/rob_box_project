@@ -156,6 +156,8 @@ count.capped: ["Досчитаю до {top} — дальше слишком до
 command.state_claim: ["Про {subjects} данных у меня нет — утверждать не буду."]
 # Речь, оборванную кодом посреди предложения (перечень голосов), кончает эта пометка: названо не всё.
 command.speech_cut: ["и так далее."]
+# TTS-поток оборвался после начала звука (tts_stream.BROKEN): хвост не прозвучал. Говорит код из факта, не LLM.
+tts.cut: ["Речь оборвалась, хвост не прозвучал."]
 
 local.done: &done ["Готово."]
 local.rejected: ["Не вышло."]
@@ -276,6 +278,8 @@ motion.not_reached.server_unavailable: ["Не доехал до точки {targ
 motion.not_reached.unknown_status: ["Не уверен, что доехал до точки {target}: навигация не подтвердила прибытие."]
 motion.not_reached.unknown_target: ["Не знаю точку {target}."]
 motion.not_reached.localization_lost: ["Не уверен, что доехал до точки {target}: потерял, где нахожусь на карте."]
+motion.not_reached.lock_held: ["Руль занят, не поеду к точке {target}."]
+motion.not_reached.lock_unknown: ["Не вижу замок, не поеду к точке {target}."]
 # Стоп навигации (#3789, knowledge.STOP_TOOL_PHRASES): по виду отмены из данных тула, а не «Приехал.» класса.
 motion.stop.confirmed: ["Останавливаюсь."]
 motion.stop.idle: ["Я и так стою."]
@@ -361,6 +365,10 @@ speak_aloud.rejected.unsupported_script: ["Не озвучил: выбранны
 speak_aloud.rejected.operator_hold: ["Не озвучил: оператор занял робота."]
 speak_aloud.lost: ["Не знаю, договорил ли: нет события от динамиков."]
 speak_aloud.timeout: ["Не знаю, прозвучало ли: итога от динамиков нет."]
+# снимок в Telegram: фразу строит бот из результата send_photo, не тул до отправки (ADR-0148, #4694 Л)
+chat.photo.sent: ["Отправил снимок {caption}."]
+chat.photo.not_sent: ["Снимок не ушёл: Telegram не принял файл."]
+chat.photo.no_group: ["Не знаю, чьи снимки слать: в прошлом ходе не было лиц."]
 
 # --- ход процесса в чате Telegram: подпись шага, чат правит одно сообщение (chats.ChatPorts, #4243) --------------
 chat.progress.thinking: ["Думаю…"]

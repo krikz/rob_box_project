@@ -361,6 +361,15 @@ def test_n604_a_model_choosing_the_llm_option_keeps_the_llm_theme_verbatim():
     assert pick.theme == N604_LLM and pick.id == LLM_ID
 
 
+def test_4479_cached_stt_scrap_does_not_become_the_set_theme():
+    """М14 n604: загрязнённая тема уже есть в кэше, но совпадение с огрызком STT тему сета не решает."""
+    llm_theme = "рок на ночной дискотеке"
+    scrap = "уводи сторону тетя гриша подруг добреет"
+    known = (KnownTheme(scrap, scrap, CACHE, 2),)
+    pick = choose_theme(llm_theme, N604_HEARD, known, DeterministicChooser())
+    assert pick.id in (LLM_ID, NONE_ID) and pick.theme != scrap
+
+
 def test_supported_heard_words_still_replace_a_stale_llm_theme():
     """Регресс: слова реплики с опорой («сет про космос») - по-прежнему другая тема, а не огрызок."""
     question, themes = theme_question("поставь сет про космос", "Увертюра 1812, мегасет для геймеров", known_themes())

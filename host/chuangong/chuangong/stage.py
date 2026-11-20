@@ -8,11 +8,15 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Protocol
+
+import yaml
 
 from . import release_format as rf
 from .registry import Registry, RegistryError
@@ -21,6 +25,9 @@ MARKER = ".chuangong-staged"
 MAX_BUNDLE_UNPACKED = 512 * 1024 * 1024
 # Сжатые слои в реестре → распакованный образ в /var/lib/docker: на наших образах 2–4× (docker images vs registry).
 IMAGE_UNPACK_FACTOR = 3
+# digest в ref образа (как release_format / image_versions_text): только sha256:64hex.
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BUILD_MANIFEST_NAME = "build-manifest.yaml"
 
 
 class StageError(RuntimeError):
@@ -34,6 +41,10 @@ class StageError(RuntimeError):
 class Docker(Protocol):
     def image_present(self, ref: str) -> bool: ...
 
+    def image_id(self, ref: str) -> str | None: ...
+
+    def running_compose_image_ids(self) -> dict[str, list[str]]: ...
+
     def pull(self, ref: str) -> None: ...
 
     def running_images(self) -> list[str]: ...
@@ -41,11 +52,129 @@ class Docker(Protocol):
     def hotpatched_containers(self) -> list[str]: ...
 
 
-class DockerCli:
-    """docker CLI хоста. Только чтение и `docker pull`; никаких stop/rm/up."""
+def _service_tag_vars(manifest: dict[str, Any]) -> dict[str, str]:
+    """service → *_TAG из docker/build-manifest.yaml (image_versions != false).
 
-    def __init__(self, timeout_s: float = 1800.0) -> None:
+    То же соответствие, что gen_build_matrix.image_versions_map / release.all_services:
+    nav2 → NAV2_TAG. Сервисы с image_versions: false сюда не попадают.
+    """
+    out: dict[str, str] = {}
+    for pi in (manifest.get("pis") or {}).values():
+        for name, spec in ((pi or {}).get("services") or {}).items():
+            iv = (spec or {}).get("image_versions", False)
+            if iv is not False:
+                out[str(name)] = str(iv)
+    return out
+
+
+def _load_service_tag_vars(manifest_path: Path) -> dict[str, str]:
+    try:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise StageError("compose_up_manifest", f"{manifest_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise StageError("compose_up_manifest", f"{manifest_path}: ожидался mapping")
+    return _service_tag_vars(raw)
+
+
+def _resolve_build_manifest(project_dir: Path, manifest_path: Path | None) -> Path:
+    """Манифест рядом с compose: ``docker/<role>`` → ``docker/build-manifest.yaml``."""
+    if manifest_path is not None:
+        path = Path(manifest_path)
+        if not path.is_file():
+            raise StageError("compose_up_manifest", f"нет файла {path}")
+        return path
+    candidate = Path(project_dir).resolve().parent / _BUILD_MANIFEST_NAME
+    if candidate.is_file():
+        return candidate
+    raise StageError(
+        "compose_up_manifest",
+        f"нет {_BUILD_MANIFEST_NAME} рядом с {project_dir} (ожидался {candidate})",
+    )
+
+
+def _pinned_tag_value(service: str, ref: str, image_tag: str) -> str:
+    """Значение *_TAG как image_versions_text(pinned=True): ``<image_tag>@sha256:…``.
+
+    Digest — часть ref после ``@`` (тот же split, что в release.py). Тег сборки —
+    ``image_tag`` релиза, не «dev»/«latest» из воздуха. Полный ref
+    ``prefix:name-humble-TAG@sha256:…`` разбирается так же: в env идёт image_tag + digest.
+    """
+    if not isinstance(ref, str) or "@" not in ref:
+        raise StageError("compose_up_bad_ref", f"{service}: нет @digest в {ref!r}")
+    digest = ref.split("@", 1)[1]
+    if not _DIGEST_RE.match(digest):
+        raise StageError("compose_up_bad_ref", f"{service}: digest не sha256:64hex в {ref!r}")
+    if not isinstance(image_tag, str) or not image_tag.strip():
+        raise StageError("compose_up_unpinned", f"{service}: пустой image_tag, digests без тега сборки")
+    return f"{image_tag.strip()}@{digest}"
+
+
+def external_override(release: dict[str, Any], role: str) -> str:
+    """Compose-override: каждый сторонний образ роли закреплён своим digest из релиза.
+
+    stage подставляет digest только в переменные ``*_TAG`` наших сервисов, а сторонние
+    образы (eclipse/zenoh и т.п.) в compose остаются плавающим тегом. Релиз их уже
+    закрепил (``external_images``), и adopt отказывает, если они не закреплены, но в
+    итоговый ``docker compose config`` digest сам не попадал. Override закрывает это:
+    сервис, чей образ в compose равен ref до ``@``, получает образ с digest.
+    """
+    pinned_by_ref = {
+        ref.split("@", 1)[0]: ref
+        for ref in release["roles"][role]["external_images"]
+        if "@" in ref
+    }
+    # Сервис без image_versions (supercollider) compose берёт голым тегом канала:
+    # переменной *_TAG для него нет, поэтому digest из релиза подставляем здесь же.
+    pinned_by_service = {
+        name: ref for name, ref in release["roles"][role]["images"].items() if "@" in str(ref)
+    }
+    compose = yaml.safe_load(
+        (Path("docker") / role / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    services = {}
+    matched = set()
+    for name, svc in (compose.get("services") or {}).items():
+        image = (svc or {}).get("image")
+        if image in pinned_by_ref:
+            services[name] = {"image": pinned_by_ref[image]}
+            matched.add(image)
+        elif name in pinned_by_service and "${" in str(image):
+            services[name] = {"image": pinned_by_service[name]}
+    missing = set(pinned_by_ref) - matched
+    if missing:
+        raise StageError(
+            "external_override_unmatched",
+            f"{role}: в compose нет сервиса для {sorted(missing)}",
+        )
+    return yaml.safe_dump({"services": services}, sort_keys=True)
+
+
+def compose_digest_env(
+    images: dict[str, str],
+    *,
+    image_tag: str,
+    service_vars: dict[str, str],
+) -> dict[str, str]:
+    """service→digest-ref + манифест → env ``{NAV2_TAG: image_tag@sha256:…, …}``.
+
+    Сервис без image_versions в манифесте в env не попадает (compose берёт IMAGE_TAG/docker_tag).
+    """
+    env: dict[str, str] = {}
+    for service, ref in images.items():
+        var = service_vars.get(str(service))
+        if not var:
+            continue
+        env[var] = _pinned_tag_value(str(service), ref, image_tag)
+    return env
+
+
+class DockerCli:
+    """docker CLI хоста. Только чтение, `docker pull` и compose up/down по digest-env."""
+
+    def __init__(self, timeout_s: float = 1800.0, *, manifest_path: Path | None = None) -> None:
         self.timeout_s = timeout_s
+        self.manifest_path = Path(manifest_path) if manifest_path is not None else None
 
     def _run(self, *args: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
         try:
@@ -56,7 +185,43 @@ class DockerCli:
             return subprocess.CompletedProcess(["docker", *args], 127, "", f"docker {args[0]}: {exc}")
 
     def image_present(self, ref: str) -> bool:
-        return self._run("image", "inspect", "--format", "{{.Id}}", ref).returncode == 0
+        return self.image_id(ref) is not None
+
+    def image_id(self, ref: str) -> str | None:
+        res = self._run("image", "inspect", "--format", "{{.Id}}", ref)
+        image_id = res.stdout.strip()
+        return image_id if res.returncode == 0 and image_id else None
+
+    def running_compose_image_ids(self) -> dict[str, list[str]]:
+        res = self._run("ps", "--format", "{{.ID}}")
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"docker ps exited {res.returncode}"
+            raise StageError("compose_probe_failed", error, service="unknown", container="docker ps", error=error)
+        services: dict[str, list[str]] = {}
+        for container in (line.strip() for line in res.stdout.splitlines() if line.strip()):
+            inspected = self._run(
+                "inspect", "--format", '{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}', container
+            )
+            if inspected.returncode != 0:
+                error = (
+                    inspected.stderr.strip()
+                    or inspected.stdout.strip()
+                    or f"docker inspect exited {inspected.returncode}"
+                )
+                raise StageError("compose_probe_failed", error, service="unknown", container=container, error=error)
+            raw = inspected.stdout.strip()
+            service, separator, image_id = raw.rpartition(" ")
+            if not separator or not image_id:
+                raise StageError(
+                    "compose_probe_failed",
+                    f"unexpected docker inspect output: {raw!r}",
+                    service=service or "unknown",
+                    container=container,
+                    error=f"unexpected docker inspect output: {raw!r}",
+                )
+            if service != "<no value>":
+                services.setdefault(service, []).append(image_id)
+        return {service: sorted(ids) for service, ids in services.items()}
 
     def pull(self, ref: str) -> None:
         res = self._run("pull", "--quiet", ref, timeout=self.timeout_s)
@@ -70,8 +235,134 @@ class DockerCli:
     def hotpatched_containers(self) -> list[str]:
         """Контейнеры с меткой горячей заливки /ws/HOTPATCH (её пишет scripts/robot_dev/hotpatch.sh push)."""
         res = self._run("ps", "--format", "{{.Names}}")
-        names = [n.strip() for n in res.stdout.splitlines() if n.strip()] if res.returncode == 0 else []
-        return [n for n in names if self._run("exec", n, "test", "-f", "/ws/HOTPATCH").returncode == 0]
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"docker ps exited {res.returncode}"
+            raise StageError("hotpatch_probe_failed", error)
+        names = [n.strip() for n in res.stdout.splitlines() if n.strip()]
+        hotpatched = []
+        for name in names:
+            probe = self._run("exec", name, "test", "-f", "/ws/HOTPATCH")
+            if probe.returncode == 0:
+                hotpatched.append(name)
+            elif probe.returncode != 1 or probe.stderr.strip():
+                error = probe.stderr.strip() or probe.stdout.strip() or f"docker exec exited {probe.returncode}"
+                raise StageError("hotpatch_probe_failed", f"{name}: {error}")
+        return hotpatched
+
+    def _compose(
+        self, project_dir: Path, *args: str, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess:
+        run_env = None if env is None else {**os.environ, **env}
+        try:
+            return subprocess.run(
+                ["docker", "compose", *args],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                stdin=subprocess.DEVNULL,
+                env=run_env,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(["docker", "compose", *args], 127, "", f"docker compose: {exc}")
+
+    def compose_down(self, project_dir: Path) -> None:
+        """``docker compose down`` в каталоге роли. Тесты подставляют FakeDocker."""
+        res = self._compose(project_dir, "down", "--remove-orphans", "--timeout", "20")
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"compose down exited {res.returncode}"
+            raise StageError("compose_down_failed", error, dir=str(project_dir))
+
+    def compose_up(
+        self,
+        project_dir: Path,
+        images: dict[str, str] | None = None,
+        *,
+        image_tag: str | None = None,
+        manifest_path: Path | None = None,
+    ) -> None:
+        """``docker compose up -d`` с digest-env из ``images`` (service → ref@sha256).
+
+        Env — ``{NAV2_TAG: <image_tag>@sha256:…, …}`` как ``image_versions_text(pinned=True)``:
+        имя переменной из ``docker/build-manifest.yaml`` (image_versions), значение —
+        тег сборки релиза + digest из ref. Пустой ``images``/``None`` — отказ (не dev/latest).
+        """
+        pinned = dict(images or {})
+        if not pinned:
+            raise StageError(
+                "compose_up_unpinned",
+                "images пуст: compose up без digest-pin (dev/latest не подставляем)",
+                dir=str(project_dir),
+                images={},
+            )
+        if not isinstance(image_tag, str) or not image_tag.strip():
+            raise StageError(
+                "compose_up_unpinned",
+                "нужен image_tag релиза для *_TAG=<image_tag>@sha256 (как image_versions_text pinned)",
+                dir=str(project_dir),
+                images=pinned,
+            )
+        manifest = _resolve_build_manifest(project_dir, manifest_path or self.manifest_path)
+        service_vars = _load_service_tag_vars(manifest)
+        env = compose_digest_env(pinned, image_tag=image_tag.strip(), service_vars=service_vars)
+        if not env:
+            raise StageError(
+                "compose_up_unpinned",
+                "ни один сервис images не имеет image_versions в манифесте — pin пуст",
+                dir=str(project_dir),
+                images=pinned,
+            )
+        res = self._compose(project_dir, "up", "-d", "--force-recreate", "--pull", "never", env=env)
+        if res.returncode != 0:
+            error = res.stderr.strip() or res.stdout.strip() or f"compose up exited {res.returncode}"
+            raise StageError(
+                "compose_up_failed",
+                error,
+                dir=str(project_dir),
+                images=pinned,
+                env=dict(env),
+            )
+
+    def check_container_status(self, container: str) -> str | None:
+        """None = контейнер running, иначе деталь. Тот же контракт, что у FakeDocker."""
+        res = self._run("inspect", "--format", "{{.State.Status}}", container)
+        if res.returncode != 0:
+            return res.stderr.strip() or res.stdout.strip() or f"docker inspect exited {res.returncode}"
+        status = res.stdout.strip()
+        if status != "running":
+            return f"container {container} status {status or 'unknown'}, expected running"
+        return None
+
+    def check_container_logs(self, container: str) -> str | None:
+        """None = логи читаются, иначе деталь. Содержимое не толкует — это проверка доступности."""
+        res = self._run("logs", "--tail", "50", container)
+        if res.returncode != 0:
+            return res.stderr.strip() or f"docker logs exited {res.returncode}"
+        return None
+
+    def check_ros2_topics(self, expected_topics, container: str | None = None) -> str | None:
+        """Сверка expected_topics с ros2 topic list внутри контейнера роли.
+
+        None = все на месте. Нет контейнера, нет ros2 или темы не нашлось — деталь,
+        не исключение: execute_role отличает сбой проверки от падения адаптера.
+        """
+        expected = list(expected_topics)
+        if not container:
+            return "check_ros2_topics: не задан контейнер роли"
+        # ros2 в контейнере роли появляется в PATH только после setup.bash.
+        # Прямой exec ros2 падает "executable file not found", хотя ros2 есть.
+        res = self._run(
+            "exec", container, "bash", "-lc",
+            "source /opt/ros/humble/setup.bash && ros2 topic list",
+            timeout=60.0,
+        )
+        if res.returncode != 0:
+            return res.stderr.strip() or res.stdout.strip() or f"ros2 topic list exited {res.returncode}"
+        present = {line.strip() for line in res.stdout.splitlines() if line.strip()}
+        missing = [topic for topic in expected if topic not in present]
+        if missing:
+            return f"missing topics: {missing}"
+        return None
 
 
 def _repo_of(ref: str) -> tuple[str, str]:

@@ -1,0 +1,55 @@
+name: "G: Dialog Core Pin Guard"
+
+# Импорт rob_box_dialog должен идти из site-packages пина Dockerfile, а не из
+# локального src/ (#4932, #4891). Штатный Unit Tests (ROS2 Humble) такого venv
+# не имеет: pytest.skip там был бы вечным зелёным пропуском. Этот джоб ставит
+# тег в изолированный venv и гоняет пробу. Без префикса скрипт падает.
+#
+# Каталог tests/ci/dialog_core_pin/ не собирают ни G-Run Tests (src/*/test),
+# ни Offline Unit Tests (tests/unit). Молчаливого skip нет.
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - "tests/ci/dialog_core_pin/**"
+      - "docker/sound/voice_assistant/Dockerfile"
+      - ".github/workflows/G-Dialog-Core-Pin-Guard.yml"
+  pull_request:
+    # Как у остальных G-: PR-триггер только на develop (#3922).
+    branches:
+      - develop
+    paths:
+      - "tests/ci/dialog_core_pin/**"
+      - "docker/sound/voice_assistant/Dockerfile"
+      - ".github/workflows/G-Dialog-Core-Pin-Guard.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pin-guard:
+    name: Dialog core pin guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+
+      - name: Install the Dockerfile pin into an isolated venv
+        run: bash tests/ci/dialog_core_pin/install_pin.sh
+
+      - name: Pin import is site-packages, not src
+        run: bash tests/ci/dialog_core_pin/run_guard.sh

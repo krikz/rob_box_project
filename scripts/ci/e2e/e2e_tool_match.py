@@ -6,7 +6,7 @@
 ====================
 ``check_acceptance`` и ``check_gate1_aggregate`` в ``e2e_voice_test.sh``
 искали имя тула ПОДСТРОКОЙ по ``docker logs voice-assistant``. Это не
-работает: ``dialogue_node`` на каждом ходе печатает в лог весь запрос к
+работает: ``dialog_node`` на каждом ходе печатает в лог весь запрос к
 LLM, включая строку
 
     tools(56): clear_waypoints, compose_music, ..., stop_music, ...
@@ -41,9 +41,9 @@ LLM, включая строку
 Реальный вызов оставляет в логе имя тула В КАВЫЧКАХ или после явного
 маркера исполнения:
 
-    dialogue_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
-    dialogue_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
-    dialogue_node: 📤 Отправлен запрос b5119339: get_current_time
+    dialog_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
+    dialog_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
+    dialog_node: 📤 Отправлен запрос b5119339: get_current_time
     mcp_server:    📥 Запрос выполнения: get_current_time с параметрами {}
     mcp_server:    ✅ Инструмент get_current_time выполнен успешно
 
@@ -76,6 +76,7 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "registration_failures", "registration_pending",
            "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
            "drop_unspoken_cancels", "repeated_numerals", "count_continuation_failures",
+           "count_reach", "count_end_failures",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
@@ -96,18 +97,22 @@ VOICE_CYCLE_MARKERS = (
 # Issue #3860: дамп LLM-запроса (``deepseek.py::_dump_llm_request``) печатает промпт, историю и
 # ``recent_actions`` прошлых ходов -- там имена тулов в кавычках, то есть маркеры вызова.
 # В выводе launch у строки дампа есть префикс ``[dialog_node-3]``. Зеркало bash-функции
-# ``strip_llm_request_dump`` из e2e_voice_lib.sh (одна форма строки в обоих местах).
+# ``strip_llm_request_dump`` из e2e_voice_lib.sh, НО с дополнительным альтернативой ``LLM RESPONSE``
+# (#4694): дамп ответа отклонённой попытки несёт имена тулов в JSON actions (``"stop_music"``), и
+# must_not считал НЕисполненный вызов исполненным. Bash-зеркало не режет RESPONSE: оно питает
+# только pattern-check шага, а паттерны сценариев не опираются на имена тулов из ответов.
 _DUMP_PREFIX = r"^(?:\[[A-Za-z0-9_]+-[0-9]+\])?\s*"
 _DUMP_LINE_RE = re.compile(
     r"LLM REQUEST (?:START|END)"
+    r"|LLM RESPONSE"
     r"|" + _DUMP_PREFIX + r"\[[0-9]+\] [A-Za-z_]+: "
     r"|" + _DUMP_PREFIX + r"tools\([0-9]+\): "
 )
 
 
 def strip_llm_request_dump(logs: str) -> str:
-    """Лог без строк дампа LLM-запроса. Режем по форме строки, не блоком START..END: при обрезке
-    ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
+    """Лог без строк дампа LLM-запроса и ответа. Режем по форме строки, не блоком START..END:
+    при обрезке ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
     return "\n".join(line for line in logs.split("\n") if not _DUMP_LINE_RE.search(line))
 
 
@@ -126,7 +131,7 @@ def invocation_markers(tool: str) -> list:
         # tools=['x', 'y'] в итоговой строке хода + ToolCall(name='x')
         "'%s'" % t,
         '"%s"' % t,
-        # dialogue_node → mcp_server и обратно
+        # dialog_node → mcp_server и обратно
         "запрос выполнения: %s" % t,
         "инструмент %s выполнен" % t,
         "публикую результат для %s" % t,
@@ -188,10 +193,29 @@ def first_voice_cycle_position(logs: str) -> int | None:
     Используется для assertion «discovery tool был вызван ДО первого
     голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
     ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
-    или TTS-запрос ``🔊 TTS:``.
+    или TTS-запрос ``🔊 TTS:``. Промежуточная фраза ``understand.progress``
+    содержательным ответом не считается.
     """
     low = logs.lower()
-    return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
+    progress_pending = False
+    filler_speech_ids: set[str] = set()
+    offset = 0
+    for line in low.splitlines(keepends=True):
+        if "🧭 [turn-v2] промежуточная фраза:" in line:
+            progress_pending = True
+        if progress_pending and "🔊 tts:" in line:
+            progress_pending = False
+            match = re.search(r"speech_id=([a-z0-9]+)", line)
+            if match:
+                filler_speech_ids.add(match.group(1))
+            offset += len(line)
+            continue
+        if not any(f"speech_id={speech_id}" in line for speech_id in filler_speech_ids):
+            positions = [line.find(marker) for marker in VOICE_CYCLE_MARKERS if line.find(marker) >= 0]
+            if positions:
+                return offset + min(positions)
+        offset += len(line)
+    return None
 
 
 # =============================================================================
@@ -203,8 +227,8 @@ def first_voice_cycle_position(logs: str) -> int | None:
 # реплика САМОГО ГОВОРЯЩЕГО, и подпись диктора, которую ставит
 # speaker_id_node:
 #
-#   dialogue_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
-#   dialogue_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
+#   dialog_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
+#   dialog_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
 #
 # Из-за этого три из четырёх keyword-проверок акта 2 были тавтологиями —
 # зелёными независимо от поведения робота (замер 22.09.2026):
@@ -286,13 +310,13 @@ def keyword_hit(logs: str, kw: str) -> bool:
 #
 #   [speaker_id_node] ⚠️ [issue #2829] register_request for 'Саша' has no
 #       utterance_id -- honest refusal instead of registering whoever speaks next
-#   [dialogue_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
+#   [dialog_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
 #       no_utterance_context (utterance_id=None)
 #
 # ``expected_tool_calls``/``discovery_tools`` доказывают только, что LLM
 # ДЁРНУЛА тул. register_speaker — fire-and-forget публикация в топик: тул
 # «выполнен успешно» и тогда, когда нода биометрии профиль не завела.
-# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialogue_node.
+# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialog_node.
 #
 # Регэкспы ниже — копии f-строк из кода робота, а не «похожий вид»
 # (src/rob_box_voice/rob_box_voice/speaker_id_node.py):
@@ -306,7 +330,7 @@ def keyword_hit(logs: str, kw: str) -> bool:
 # и dialogue_node.py (_on_speaker_result):
 #   Регистрация '{name}' отклонена: {error} (utterance_id=…)
 #   Регистрация '{name}' отклонена — реплика …с короче …   (too_short)
-# Отказ ищется по ОБЕИМ нодам: dialogue_node параллельно правят (#2842), и
+# Отказ ищется по ОБЕИМ нодам: dialog_node параллельно правят (#2842), и
 # если его строка поменяется, строка speaker_id_node всё равно поймает отказ.
 
 REGISTER_TOOL = "register_speaker"
@@ -332,7 +356,7 @@ _REG_REJECTED_RES = (
      "utterance_not_found"),
     (re.compile(r"Registration of '([^']*)' rejected"), "too_short"),
 )
-# Причину dialogue_node печатает явно после двоеточия; у too_short вместо
+# Причину dialog_node печатает явно после двоеточия; у too_short вместо
 # двоеточия тире — тогда причины в строке нет, и это too_short.
 _REG_REJECTED_DIALOGUE_RE = re.compile(
     r"Регистрация '([^']*)' отклонена(?::\s*([A-Za-z_]+))?"
@@ -699,10 +723,51 @@ def count_continuation_failures(logs: str) -> list:
     return failures
 
 
+# ── #4077 / М9: n802 ложный PASS по SpeechEvent started при урезанном счёте ─────────
+#
+# «посчитай до сорока» → модель «Считаю… Один… Десять.» (80 симв.) -- шаг зелёный: ждал только
+# ``SpeechEvent started``. Конец речи окно не видит (n803 barge-in). Длину плана судим по TTS и по
+# старту выступления: ``full_count`` на «до сорока» → poem ``segments=4`` (десяток, COUNT_PER_SEGMENT).
+
+#: Десяток чисел на сегмент выступления-счёта (``knowledge.COUNT_PER_SEGMENT``): ``segments=N`` → до N×10.
+_COUNT_PER_SEGMENT = 10
+_PERFORM_SEGS_RE = re.compile(r"выступление старт kind=\w+\b[^\n]*\bsegments=(\d+)")
+_HIGH_NUMERALS = (("пятьдесят", 50), ("сорок", 40), ("тридцать", 30), ("двадцать", 20))
+
+
+def count_reach(logs: str) -> int:
+    """До какого числа доходит план счёта в окне шага.
+
+    Берёт максимум из числительных в ``🔊 TTS`` (:func:`robot_speech` -- весь план, не только звучавшее) и из
+    ``выступление старт … segments=N`` × :data:`_COUNT_PER_SEGMENT` (счёт кодом на «до сорока» -- poem из 4 сегментов,
+    а barge-in режет окно на первом; без segments урезание до десяти и полный poem неразличимы)."""
+    speech = robot_speech(logs).lower().replace("ё", "е")
+    reach = 0
+    for word in _NUMERAL_RE.findall(speech):
+        reach = max(reach, _NUMERALS.index(word) + 1)
+    for word, value in _HIGH_NUMERALS:
+        if re.search(r"(?<![а-яё])%s(?![а-яё])" % word, speech):
+            reach = max(reach, value)
+    for found in _PERFORM_SEGS_RE.findall(logs):
+        reach = max(reach, int(found) * _COUNT_PER_SEGMENT)
+    return reach
+
+
+def count_end_failures(logs: str, min_end: int) -> list:
+    """Счёт короче ``min_end`` (М9 n802: урезание до десяти при ``SpeechEvent started``). Пусто -- длина достаточна."""
+    if not min_end:
+        return []
+    reach = count_reach(logs)
+    if reach >= int(min_end):
+        return []
+    return ["count reaches %d, need at least %d (#4077 n802: silent cut)" % (reach, int(min_end))]
+
+
 def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
     """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
 
-    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дамп LLM-запроса режется здесь, #3860),
+    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дампы LLM-запроса и ответа режутся
+    здесь, #3860, #4694),
     ``timing_path`` — ``timing.json`` харнесса для ``response_max_ms`` (пусто — не проверяется). Результат — словарь
     ``acceptance.json`` (``pass``, ``reason``, поля диагностики).
     """
@@ -744,6 +809,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
     forbidden_called = [c for c in must_not if tool_invoked(kept_logs, c)]
     repeated_numbers = repeated_numerals(logs) if acc.get("no_repeat_numbers") else []
     count_failures = count_continuation_failures(logs) if acc.get("count_continues") else []
+    min_count_end = int(acc.get("min_count_end") or 0)
+    count_end_fail = count_end_failures(logs, min_count_end) if min_count_end else []
     found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
     missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
     forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
@@ -805,6 +872,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         failures.append(f"numbers spoken more than once (#4207: count restarted after edit): {repeated_numbers}")
     if count_failures:
         failures.append(f"count not continued after the edit (#4207): {count_failures}")
+    if count_end_fail:
+        failures.append(f"count too short (#4077): {count_end_fail}")
     if identification_failures:
         failures.extend(identification_failures)
     if discovery_tool_errors:
@@ -835,6 +904,9 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         "repeated_numbers": repeated_numbers,
         "count_continues": bool(acc.get("count_continues")),
         "count_failures": count_failures,
+        "min_count_end": min_count_end,
+        "count_reach": count_reach(logs) if min_count_end else 0,
+        "count_end_failures": count_end_fail,
         "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
         "identify_failures": identification_failures,
         "discovery_tools": discovery_tools,

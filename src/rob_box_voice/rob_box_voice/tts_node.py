@@ -104,10 +104,10 @@ from .core.voice_owner import attach_voice_owner
 
 # ADR-0150 PR-3 (#3688) — tts_node владелец речи: SpeechRequest/Cancel/Event,
 # огибающая. Старых JSON-входов речи нет (PR-15 часть 15-core, #3711).
+from .core import tts_cut, tts_stream
 from .core.speech_owner import SpeechOwner, owner_of
 from .core.speech_timing import PREFETCH_PROVIDER
 from rob_box_dialog_host.tts_voice_registry import known_provider, unsupported_language_notice
-from .core import tts_stream
 
 # ADR-0145 §4 TTSNode step 1 — moved verbatim to ``utils/resample.py``
 # (no behaviour change). NOT ``utils/audio_utils.py``: that module does
@@ -561,6 +561,43 @@ def _run_in_tts_loop(coro) -> Any:
     return future.result()
 
 
+def _text_if_script_unreadable(node, text: str, language: str = None, prebaked_audio=None) -> str:
+    """Текст для синтеза: честная фраза, если письменность некому читать (#4763).
+
+    Пред-синтез не трогаем: аудио уже готово, подмена текста его не озвучит.
+    """
+    if prebaked_audio is not None:
+        return text
+    notice = _spoken_script_notice(node, text, language)
+    if not notice:
+        return text
+    node.get_logger().warn(
+        f"🌐 [AV-28] письменность некому читать (lang={language!r}) — "
+        f"произношу отказ (текст был: {text[:60]!r})"
+    )
+    return notice
+
+
+def _spoken_script_notice(node, text: str, language: str = None) -> str | None:
+    """Фраза-отказ, если письменность ``text`` не читает ни один живой провайдер.
+
+    ``None`` — кто-то в цепочке текст прочитает (или цепочки нет: решают
+    вызывающие, как раньше). Язык реплики важнее угадывания по буквам:
+    деванагари без ``language`` — всё равно хинди панели Quest.
+    """
+    chain_of = getattr(node, "_effective_provider_chain", None)
+    chain = chain_of() if callable(chain_of) else getattr(node, "provider_chain", None)
+    if not chain:
+        return None
+    dead = getattr(node, "_provider_is_dead", lambda _name: False)
+    alive = [name for name in chain if not dead(name)]
+    if not alive or any(not _tts_guard_should_skip(text, provider=name) for name in alive):
+        return None
+    lang = language or ("hi" if _tts_guard_analyze(text).scripts == ("devanagari",) else None)
+    who = getattr(node, "_effective_provider", lambda: None)() or alive[0]
+    return unsupported_language_notice(who, lang)
+
+
 def _text_or_language_notice(
     logger, provider: str, text: str, language: str = None
 ) -> str:
@@ -625,6 +662,26 @@ def _silero_role(node) -> str:
     return "основной" if chain and chain[0] == "silero" else "запасной"
 
 
+#: Калибровка скорости озвучки (символов/с) -- та же, что у тула ``estimate_tts_duration``
+#: (DEFAULT_CHARS_PER_SECOND, chipmunk 2x): оценка длительности реплики по длине текста.
+_SPEECH_CHARS_PER_SECOND = 30.0
+
+
+def _cloud_tts_budget_for_text(base_budget_s: float, text: str) -> float:
+    """Облачный бюджет под длину реплики (#4694, run 43473608179: n401 -> n402).
+
+    Фиксированные 8 с -- потолок для типичного короткого ответа, но длинная реплика
+    (перечень голосов, ~15-20 с озвучки) по построению длиннее бюджета: MiniMax обрывался
+    по ``cloud_tts_budget_s`` -> ``MiniMax stream: нет звука`` -> транзиентный dead-mark,
+    и snapshot следующего хода ловил provider_state=yandex/anton, хотя синтез вернулся
+    на MiniMax. Масштабируем: base (прежний потолок: первый звук, retry, сеть) ПЛЮС
+    оценка звучания самой реплики. Короткие реплики держат base почти без изменений
+    (оценка ~0.2 с), аварийный knob малого base сохраняет смысл.
+    """
+    est_s = len(text or "") / _SPEECH_CHARS_PER_SECOND
+    return base_budget_s + est_s
+
+
 def chain_for_requested(provider: str, current_chain: list[str]) -> list[str]:
     """Цепочка провайдеров после явного выбора (set_provider, выбор голоса) — #4240.
 
@@ -648,6 +705,10 @@ def refuse_unsupported_script(node, text: str, speech_id: str, chunk_data: dict,
 
     Warning с ПОЛНЫМ текстом и ``finished(success=False, error="unsupported_script")``, чтобы ждущий не висел.
     ``True`` — реплика отклонена (вызывающий возвращается).
+
+    Язык панели Quest (#4763) здесь не решаем: французский латиницей гард
+    пропускает, а письменность без читателя (хинди на Yandex) договаривает
+    ``_spoken_script_notice`` уже в ``_synthesize_and_play``.
     """
     provider = node._effective_provider()
     if not _tts_guard_should_skip(text, provider=provider):
@@ -713,6 +774,10 @@ class TTSNode(Node):
         # Silero. НЕ прерывает уже начатый HTTP/gRPC-запрос (нет
         # cancellation-инфраструктуры, тот же честный компромисс, что в
         # stt_fallback._measure) — ограничивает число ДАЛЬНЕЙШИХ попыток.
+        # Базовое значение — потолок облачных накладных расходов (первый звук,
+        # retry, сеть); длинные реплики добавляют к нему оценку озвучки
+        # (#4694, см. _cloud_tts_budget_for_text): фиксированный потолок
+        # обрекает их по построению и провоцирует ложный transient dead-mark.
         self.declare_parameter("cloud_tts_budget_s", 8.0)
         # Issue #1229 — файл персистентного состояния фактического
         # провайдера TTS (переживает рестарт контейнера; пустая строка =
@@ -3373,6 +3438,7 @@ class TTSNode(Node):
                     f"(speech_id={(speech_id or '')[:8]}, sink={sink})"
                 )
                 raise _TTSEmptyTextError("empty_text")
+            text = _text_if_script_unreadable(self, text, language, prebaked_audio)
 
             # 1) Готовый пред-синтез (ADR-0150 PR-3).
             if self._sap_consume_presynth(prebaked_audio, voice, speech_id, ctx):
@@ -3600,7 +3666,9 @@ class TTSNode(Node):
         # (minimax + yandex, включая retries). Считается один раз ЗДЕСЬ
         # (не пересчитывается на каждого провайдера), чтобы бюджет
         # действительно был суммарным, а не «per-provider».
-        cloud_budget_s = getattr(self, "cloud_tts_budget_s", 8.0)
+        cloud_budget_s = _cloud_tts_budget_for_text(
+            getattr(self, "cloud_tts_budget_s", 8.0), text
+        )
         cloud_deadline = time.monotonic() + cloud_budget_s
         # #3728: фолбек не читает то, что отказался бы читать гард (иероглифы Yandex/Silero бормочут).
         provider_chain = _tts_guard_readable_chain(provider_chain, text)
@@ -4225,6 +4293,7 @@ class TTSNode(Node):
             self._publish_tts_finished(speech_id, success=False, error=outcome, batch_id=batch_id,
                                        batch_index=batch_index, batch_total=batch_total,
                                        batch_started_at=batch_started_at, dialogue_id=dialogue_id)
+            tts_cut.say(self, outcome, speech_id)  # одна фраза из факта обрыва, не из текста LLM
             return
         self.cleanup_playback_noise()
         self.stop_requested = self.stop_requested or outcome == "stopped"

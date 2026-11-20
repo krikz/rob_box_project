@@ -8,7 +8,7 @@ RSS-дельту между итерациями.
 
 Цель: показать, растёт ли память в _synthesize_and_play на mock
 silero_model, или она стабильна. Если стабильна — утечка не в
-tts_node, а где-то выше (dialogue_node / shared infra).
+tts_node, а где-то выше (dialog_node / shared infra).
 
 Запуск:
     python3 heap_snapshot_repro.py [--iterations 10]

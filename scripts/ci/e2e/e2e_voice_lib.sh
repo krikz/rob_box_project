@@ -957,7 +957,7 @@ wait_robot_quiet() {
     done
 }
 
-# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started","n":N,"delay_sec":X}.
+# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started|perform_started","n":N,"delay_sec":X}.
 _barge_field() {  # $1=json $2=поле
     BARGE_JSON="$1" python3 -c 'import json, os, sys
 try:
@@ -973,7 +973,7 @@ wait_barge_anchor() {
     local since="$1" spec="$2" after n t0 now out
     after="$(_barge_field "$spec" after)"; n="$(_barge_field "$spec" n)"
     case "$after" in
-        speech_started|llm_request|segment_started) ;;
+        speech_started|llm_request|segment_started|perform_started) ;;
         *) E2E_ANCHOR_ERROR="неизвестный barge_in.after='${after}'"; return 2 ;;
     esac
     t0="$(date +%s)"
@@ -1026,9 +1026,16 @@ barge_hold() {
     delay="$(_barge_field "$spec" delay_sec)"
     robot_now="$(${ROBOT_SSH} "date +%s.%N" 2>/dev/null | tr -d '\r')"
     case "$robot_now" in ''|*[!0-9.]*) robot_now="$E2E_ANCHOR_NOW" ;; esac
-    remaining="$(awk -v d="${delay:-0}" -v n="$robot_now" -v a="$E2E_ANCHOR_TS" 'BEGIN{r=d-(n-a); printf "%.2f", (r>0?r:0)}')"
-    awk "BEGIN{exit !($remaining > 0)}" 2>/dev/null && sleep "$remaining"
-    awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
+    # LC_ALL=C: ru_RU печатает «1,00», и sleep такую строку не принимает -- задержка якоря
+    # молча схлопывалась в ноль (тест #3857: took=0.08 вместо ~1 с по часам робота).
+    # Целые секунды: дробный sleep на CI (GNU sleep без локали, busybox) дробь не
+    # принимает и молча выходит 0 -- задержка якоря схлопывается (тест #3857: 0.16 с в CI).
+    # python, не awk: LC_ALL=C внутри $(awk) не перебивает LC_ALL=ru_RU вызывающего,
+    # awk печатает «1,00», [ -gt ] падает, sleep не зовётся (тест #3857 comma-locale).
+    export D="${delay:-0}" N="$robot_now" A="$E2E_ANCHOR_TS"
+    remaining="$(LC_ALL=C python3 -c 'import os,math; r=float(os.environ["D"])-(float(os.environ["N"])-float(os.environ["A"])); print(math.ceil(r) if r>0 else 0)')"
+    if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then sleep "$remaining"; fi
+    LC_ALL=C awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
 }
 
 # --- issue #3989 — восстановление шага: политика сценария и фразы -------------------------------------------
@@ -1236,8 +1243,10 @@ check_track_ref() {
 # e2e_events.session_report; тишина -- реплика снятия (фраза -- RECOVERY в e2e_events.py) в /voice/stt/utterance, как
 # от STT, и новый снимок. Маркер «E2E_RECOVER silenced at_act_start» (recover_mark), пометка акта в сводке. Не
 # снялась -- E2E_FATAL: акт молчащего робота нечитаем. Не прочитать -- громко, но не фатал: шагам поможет step_recover.
-# Рабочий процесс внутри voice-assistant (rclpy), как у музыки ниже. argv: read|unsilence, фраза (base64), сек ждать
-# снимков после реплики. Печатает одну строку JSON: snapshot, scenes, [after], now.
+# Рабочий процесс внутри voice-assistant (rclpy), как у музыки ниже. argv: read|unsilence|inject, фраза (base64),
+# сек ждать снимков после реплики. Печатает одну строку JSON: snapshot, scenes, [after], [subscribers, injected], now.
+# inject (решение Шифу 19.11, #4951) -- та же публикация в /voice/stt/utterance, но с честным счётом подписчиков:
+# реплика уходит только при subscribers > 0, иначе публикация в пустоту -- не инъекция (injected=0).
 _e2e_session_py() {
     cat <<'SESSIONPY'
 import base64, json, sys, time
@@ -1262,15 +1271,21 @@ def scenes():
             for s in got[-1].scenes]
 spin_until(lambda: got, 5.0)  # latched: у живой ноды снимок приходит сразу
 report = {"snapshot": bool(got), "scenes": scenes()}
-if mode == "unsilence":
+if mode in ("unsilence", "inject"):
     pub = node.create_publisher(Utterance, "/voice/stt/utterance", 10)
     spin_until(lambda: pub.get_subscription_count() > 0, 5.0)
-    msg = Utterance()
-    msg.text = base64.b64decode(sys.argv[2]).decode("utf-8").strip()
-    msg.source, msg.provider = Utterance.SOURCE_RESPEAKER, "e2e_harness"
-    pub.publish(msg)
-    spin_until(lambda: False, wait_s)  # снимков может быть несколько (собеседник, сцена): берём последний
-    report["after"] = scenes()
+    matched = int(pub.get_subscription_count())
+    if mode == "inject":
+        report["subscribers"] = matched
+        report["injected"] = int(matched > 0)
+    if matched > 0 or mode == "unsilence":
+        msg = Utterance()
+        msg.text = base64.b64decode(sys.argv[2]).decode("utf-8").strip()
+        msg.source, msg.provider = Utterance.SOURCE_RESPEAKER, "e2e_harness"
+        pub.publish(msg)
+    if mode == "unsilence":
+        spin_until(lambda: False, wait_s)  # снимков может быть несколько (собеседник, сцена): берём последний
+        report["after"] = scenes()
 report["now"] = time.time()
 node.destroy_node()
 rclpy.shutdown()
@@ -1310,6 +1325,44 @@ ensure_not_silenced_for_act() {
     echo "E2E_FATAL: перед актом робот в тишине (${detail}), реплика «${phrase}» не сняла её за ${wait_s} с — шаги акта проглотила бы тишина (issue #3989)" >&2
     printf '%s\n' "$out" | tail -3 >&2
     exit 2
+}
+
+# --- issue #4951 (решение Шифу 19.11) — STT не донёс команду: оригинал в /voice/stt/utterance ----------------
+# Шаг не приняли ни в одной попытке (no_accept, мусор до потолка, тишина после повтора): харнесс публикует в топик
+# ОРИГИНАЛЬНУЮ фразу шага (source=respeaker, provider=e2e_harness) -- ОДИН раз за шаг. Публикация в пустоту -- не
+# инъекция: у топика обязан быть подписчик (injected=1, e2e_events.inject_report). Судья окна шага ищет в логе
+# «✅ ПРИНЯТО», а его пишет только stt_node: харнесс пишет честную строку сам, с пометкой (e2e_harness) -- без неё
+# ход после инъекции выглядел бы как ход без приёма. Шаг с инъекцией -- «OK recovered_stt_inject», не чистый PASS.
+_emit_container_log() {  # $1 = строка в stdout PID 1 voice-assistant (только он попадает в docker logs)
+    local line cmd
+    line="$1"
+    # Команда уходит ОДНИМ аргументом robot_ros (как python3 -c в stt_inject_command): robot_ros
+    # сериализует аргументы через %q и eval'ит их на роботе, а eval склеивает аргументы пробелами
+    # без экранирования -- разбитая по словам команда теряет группировку. Не одним аргументом:
+    # bash -c получал только «printf», а пустой файл создавал редирект внешней оболочки
+    # (поймано тестом #4951: pid1_stdout = 0 байт).
+    cmd="$(printf 'printf "%%s\\n" %q > /proc/1/fd/1' "$line")"
+    robot_ros "$cmd" >/dev/null 2>&1
+}
+stt_inject_command() {  # $1 = текст шага
+    # rc 0 -- реплика ушла в топик при живом подписчике И строка приёма записана в лог контейнера;
+    # rc 1 -- инъекции не было (пустой текст, нет подписчика, публикация не ответила) -- шаг остаётся честным FAIL;
+    # rc 2 -- реплика ушла, но приём в лог не записан: ход мог быть, судья его не увидит -- отдельный вердикт.
+    local text="$1" code_b64 text_b64 out rep
+    [ -n "$text" ] || return 1
+    code_b64="$(_e2e_session_py | base64 | tr -d '\n\r')"
+    text_b64="$(printf '%s' "$text" | base64 | tr -d '\n\r')"
+    out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" inject '${text_b64}' 0" 2>/dev/null)"
+    rep="$(printf '%s\n' "$out" | grep -a '^{' | tail -1 | python3 "$(_events_py)" inject 2>/dev/null)"
+    if [ "$(printf '%s\n' "$rep" | _ev_kv injected)" != "1" ]; then
+        log "⚠️ инъекция не удалась: /voice/stt/utterance без подписчика или рабочий процесс не ответил (${rep:-нет ответа})"
+        return 1
+    fi
+    if ! _emit_container_log "✅ ПРИНЯТО (e2e_harness): ${text}"; then
+        log "⚠️ инъекция: реплика ушла, но строка «ПРИНЯТО» не записана в лог контейнера -- судья хода без приёма"
+        return 2
+    fi
+    return 0
 }
 
 # --- issue #4027 — скорость и тон TTS не переживают акт ---------------------------------------------------

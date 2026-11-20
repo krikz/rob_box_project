@@ -114,7 +114,7 @@ class SQLiteVoiceMemory(MemoryStore):
         Defaults to ``~/.rob_box/voice.db``.
     agent:
         Namespace key written into the ``agent`` column on every row.
-        ADR-0083 §2.4 — both dialogue_node (personality) and
+        ADR-0083 §2.4 — both dialog_node (personality) and
         supervisor_node (operator) point at the same file; the column
         is what keeps their facts disjoint. Defaults to ``"default"``
         so every pre-migration caller (tests, speaker profile helpers)

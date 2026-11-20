@@ -140,7 +140,10 @@ def server_client_id(session_id: str) -> str:
 # Heartbeat/watchdog тайминги (meta-quest-api.md §7 + ADR-0027 §3.3).
 HEARTBEAT_INTERVAL_S = 0.2  # server → client (200 ms)
 CLIENT_PING_INTERVAL_S = 5.0  # client → server ожидаемая частота
-WATCHDOG_TIMEOUT_S = 0.6  # 3× heartbeat = 600 ms нет ping → close
+# Нет ping дольше этого — close (ws_server._watchdog_loop).
+# Живой клиент шлёт JSON_CMD{cmd:ping}; JSON_EVENT{type:ping} тоже кормит
+# сторож (старые шлемы). Интервал (connection.ts, 200 мс) строго меньше.
+WATCHDOG_TIMEOUT_S = 0.6
 
 
 @dataclass
@@ -199,7 +202,7 @@ class ClientSession:
         return self.protocol_version
 
     def feed_ping(self, now_monotonic: Optional[float] = None) -> None:
-        """Клиент прислал JSON_EVENT{type:"ping"} → сбрасываем watchdog."""
+        """Клиент прислал ping (JSON_CMD или JSON_EVENT) → сбрасываем watchdog."""
         self.last_ping_monotonic = now_monotonic if now_monotonic is not None else time.monotonic()
 
     def feed_heartbeat(self, now_monotonic: Optional[float] = None) -> None:

@@ -87,10 +87,49 @@ def test_deploy_pull_ignores_compose_pull_policy():
         assert "--policy always" in line, f"pull без --policy always: {line.strip()}"
 
 
-def test_vision_autostart_pull_ignores_compose_pull_policy():
+def test_vision_autostart_does_not_pull_from_registry():
+    """Issue #4533: автозапуск использует локальный кэш, обновление — через деплой."""
     setup = (Path(__file__).resolve().parents[2] / "scripts/setup/setup_vision_pi.sh").read_text(encoding="utf-8")
     exec_pre = [line for line in setup.splitlines() if line.startswith("ExecStartPre=") and "compose pull" in line]
-    assert exec_pre and all("--policy always" in line for line in exec_pre)
+    assert not exec_pre, f"autostart не должен ждать registry: {exec_pre}"
+
+
+# ── Vision Pi: reinstall systemd units (issue #3018, ретро run 43035890763) ──────
+
+VISION_UPDATE_CODE_STEP = "[Vision Pi] Update Code"
+VISION_REINSTALL_STEP = "[Vision Pi] Reinstall Systemd Units + Health Timer (issue #3018)"
+
+
+def test_vision_reinstall_systemd_units_runs_after_update_code():
+    """Инвариант порядка: reinstall применяет source на Pi, поэтому репозиторий
+    там обязан быть обновлён ДО проверки diff'ов против origin/develop. Если
+    reinstall встанет раньше Update Code, рабочая копия сравнится со старым
+    develop, skip сработает, а свежий setup_vision_pi.sh приедет без reinstall."""
+    names = [name for name, _ in _steps(WORKFLOW_PATH.read_text(encoding="utf-8"))]
+    assert names.index(VISION_UPDATE_CODE_STEP) < names.index(VISION_REINSTALL_STEP)
+
+
+def test_vision_reinstall_rejects_unit_with_stale_compose_pull_pre():
+    """Ретро run 43035890763 (после #4533 / PR #4667): unit на Vision Pi сохранил
+    `ExecStartPre=-/usr/bin/docker compose pull ...`, а шаг отрапортовал
+    «skip reinstall». Причина: Restart=on-failure и ExecStart=...--pull never
+    в #4533 не менялись, поэтому старый unit проходил все grep-проверки
+    контракта. Skip-условие обязано отвергать unit с `ExecStartPre=.*compose pull`,
+    иначе снятие pull из автозапуска не доходит до уже установленных Pi."""
+    steps = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    body = steps[VISION_REINSTALL_STEP]
+    assert re.search(
+        r"!\s*systemctl cat robbox-vision\.service \| grep -q '\^ExecStartPre=.*compose pull'",
+        body,
+    ), "skip-условие reinstall не отвергает unit со stale ExecStartPre compose pull"
+    assert re.search(
+        r"!\s*systemctl cat robbox-vision\.service \| grep -q '\^After=.*network-online\.target'",
+        body,
+    ), "skip-условие reinstall не отвергает unit с After=network-online.target (#4533)"
+    assert re.search(
+        r"systemctl cat robbox-vision\.service \| grep -q '\^TimeoutStartSec=900\$'",
+        body,
+    ), "skip-условие reinstall не отвергает unit без TimeoutStartSec=900 (#4533)"
 
 
 # ── ADR-0159: Sound Pi как третий узел деплоя ───────────────────────────────────
@@ -117,7 +156,7 @@ def test_every_node_compose_dir_has_a_deploy_pipeline():
         assert f"docker/{short}" in steps[f"[{pi}] Check Container Status"]
         assert f"SCOPE={short}" in steps[f"[{pi}] Check Container Status"]
         assert f"SCOPE={short}" in steps[f"[{pi}] Check Container Logs"]
-        assert "sound_pi_ip=10.1.1.12" in workflow
+        assert "ROBBOX_SOUND_HOST:-10.1.1.12" in workflow
 
 
 def test_node_order_is_vision_then_sound_then_main():
@@ -129,9 +168,10 @@ def test_node_order_is_vision_then_sound_then_main():
 
 def test_sound_pi_ip_is_set_in_every_environment():
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert workflow.count('echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV') == workflow.count(
-        'echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV'
-    ) == 4
+    # Адрес задаётся один раз дефолтом переменной и действует на все ветки (#4375).
+    assert workflow.count("ROBBOX_SOUND_HOST:-10.1.1.12") == 1
+    assert workflow.count("ROBBOX_VISION_HOST:-10.1.1.11") == 1
+    assert workflow.count("ROBBOX_MAIN_HOST:-10.1.1.10") == 1
 
 
 def test_voice_resource_pack_goes_to_sound_and_hef_stays_on_vision():
@@ -195,6 +235,37 @@ def test_sound_pull_covers_supervisor_image_used_by_supervisor_and_avatar_arbite
     assert "docker compose config --images" in (root / "scripts/deploy/preflight_pull_images.sh").read_text(encoding="utf-8")
 
 
+# Шаги, которые резолвят тег образа: pull качает, start создаёт контейнер
+# (--pull never берёт то, что pull положил). Оба обязаны видеть один файл.
+_TAG_STEPS = (
+    "[Vision Pi] Pull Docker Images",
+    "[Vision Pi] Start Containers",
+    "[Sound Pi] Pull Docker Images",
+    "[Sound Pi] Start Containers",
+    "[Main Pi] Pull Docker Images",
+    "[Main Pi] Start Containers",
+)
+
+
+def test_deploy_sources_image_versions_for_local_registry():
+    """Issue #4763 (run 44078254848, staging+local): условие
+    `[ registry_source != 'local' ]` не давало source'ить .image-versions.*,
+    compose pull качал голый ${IMAGE_TAG} (twist-mux-humble-dev), а SHA-тег
+    из файла (TWIST_MUX_TAG=dev-f77ae33) на диск робота не попадал. Сборка
+    пушит SHA-тег в local registry до записи в файл (L-Build Pi Services,
+    tag_and_push), так что исключение local нечем оправдать. registry_source
+    выбирает только префикс реестра; skip по-прежнему не пулит (preflight)."""
+    steps = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    needle = (
+        "if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; "
+        "then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi"
+    )
+    for name in _TAG_STEPS:
+        body = steps[name]
+        assert needle in body, f"{name}: .image-versions не source'ится"
+        assert "!= 'local'" not in body, f"{name}: registry_source=local всё ещё исключён"
+
+
 def test_wave2_services_are_expected_on_sound_and_gone_from_vision_checks():
     """quest, telegram-bot, avatar-arbiter — обязательные контейнеры Sound Pi (EXPECTED_CONTAINERS);
     в шагах Vision на них ничего не завязано."""
@@ -244,12 +315,13 @@ def _guard_snippet():
 
 def test_guard_rejects_undocumented_local_production_combo():
     """Инцидент 10.11 (run 42861316455): run задиспатчен с environment=production
-    (default формы) + registry_source=local. Шаги pull/start не грузят
-    .image-versions.* при registry_source=local (условие '[ ... != local ]'),
-    поэтому compose разрешил образы в голый ${IMAGE_TAG}=latest — а голый latest
-    локальный registry обновляет только релизной сборкой с main (образы от
-    28.09). Робот получил 6-недельной давности образы и деградировал. Докумен-
-    тированные комбинации (docs/deployment/DEPLOYMENT_WORKFLOW.md) не пострадают."""
+    (default формы) + registry_source=local. До #4763 шаги pull/start не грузили
+    .image-versions.* при registry_source=local, поэтому compose разрешил образы
+    в голый ${IMAGE_TAG}=latest — а голый latest локальный registry обновляет
+    только релизной сборкой с main (образы от 28.09). Робот получил 6-недельной
+    давности образы и деградировал. Документированные комбинации
+    (docs/deployment/DEPLOYMENT_WORKFLOW.md) не пострадают. Гард остаётся:
+    local+production по-прежнему недокументированная комбинация."""
     import subprocess
 
     snippet = _guard_snippet()

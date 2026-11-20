@@ -91,6 +91,7 @@ def test_photo_returns_id_and_caption_for_the_bot():
     assert owner.calls == [(people.OP_PHOTO, "", "fff371fe", "")]
     assert result.success and result.data["photo_id"] == "fff371fe" and "photo_path" not in result.data
     assert result.data["caption"] == "fff371fe - без имени" and result.data["status"] == "done"
+    assert result.message == ""  # «отправил» — только после send_photo, не из тула
 
 
 @pytest.mark.parametrize("reason", ["person_not_found", "exhibition_mode", "no_snapshot", "bad_id"])

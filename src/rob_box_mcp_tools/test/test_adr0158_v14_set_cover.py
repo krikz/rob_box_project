@@ -190,11 +190,13 @@ C = CoverWork("Star Wars - Cantina", "starwars", spoken="Star Wars - Cantina")
 
 def test_ten_minute_star_wars_set_plays_different_pieces_never_back_to_back(tmp_path):
     """Приёмка В16: сет «звёздные войны» на 10 минут при деньгах — ≥ 3 произведения, главная тема первой, одно
-    произведение не подряд; вторые варианты задач — у другого места сета, новых задач — по числу произведений."""
+    произведение не подряд; вторые варианты задач — у другого места сета, новых задач — по числу произведений.
+    После двух вариантов каждого произведения — путь стиля, а не третий круг тех же каверов (#4009)."""
     routes = _plan(tmp_path, [A, B, C]).routes
     works = [r.work for r in routes]
-    assert len(set(works)) == 3 and works[0] == A and all(a != b for a, b in zip(works, works[1:]))
-    assert works == [A, B, C, A, B, C, A]
+    assert len({w for w in works if w is not None}) == 3 and works[0] == A
+    assert all(a != b for a, b in zip(works, works[1:]))
+    assert works == [A, B, C, A, B, C, None]
 
 
 def test_two_pieces_from_one_score_keep_their_own_melody(tmp_path):
@@ -250,16 +252,16 @@ def test_cache_played_an_hour_ago_loses_to_a_new_order_with_money(tmp_path, hour
 
 
 def test_star_wars_set_through_dj_set_routes_covers(tmp_path, monkeypatch):
-    """«сет на тему звёздных войн» при деньгах: путь каждого трека — кавер материала темы, мост — наш синтез."""
+    """«сет на тему звёздных войн» при деньгах: одна задача кавера даёт два трека, остальные — путь стиля (#4009)."""
     monkeypatch.setattr("rob_box_mcp_tools.engine.engine_tools.theme_covers",
-                        lambda dj, theme, seed, log, records: [(A, object())])
+                        lambda dj, theme, seed, log, records: [(A, ((A.material, object()),))])
     lib, maker = _lib(tmp_path), Maker()
     dj = _dj(lib, Kie())
     dj.gen_sets = gs.GenSetMaker(Kie(), lambda: lib, DeterministicChooser(), cover=maker)
     out = dj.execute(action="start", theme="звёздные войны", style="club", tracks=4,
                      heard_text="сыграй сет на тему звёздных войн на 4 трека")
     assert out.success, out.error
-    assert out.data["routes"] == [COVER] * 4 and out.data["source"] == "generated"
+    assert out.data["routes"] == [COVER] * 2 + [GEN] * 2 and out.data["source"] == "generated"
     dj.execute(action="stop")
 
 
@@ -271,12 +273,13 @@ def _plan(tmp_path, works, **kw):
 
 
 def test_ten_minute_set_with_covers_is_filled_by_cover_length(tmp_path):
-    """600 с, каверы по 90 с: прежний подсчёт по 150 с давал 4 трека = 6 минут. Файл звучит весь, не последний
-    трек короче на кроссфейд 1.5 с (В15): 88.5 с на трек, последний 90 с — плановый конец ≥ 600 − 90."""
+    """600 с, четыре допустимых кавера по 90 с, затем инструменталы стиля (#4009). Файл звучит весь, не последний
+    трек короче на кроссфейд 1.5 с (В15): 88.5 с на кавер, последний 90 с — плановый конец ≥ 600 − 90."""
     from rob_box_music.source import route_seconds
 
     plan = _plan(tmp_path, [A, B])
-    assert {r.id for r in plan.routes} == {COVER} and len(plan.routes) == len(plan.genres) == 7
+    assert [r.id for r in plan.routes] == [COVER] * 4 + [GEN] * 2
+    assert len(plan.genres) == 6
     assert route_seconds(plan.routes[0]) == 88.5 and route_seconds(plan.routes[0], True) == 90
     end = sum(route_seconds(r) for r in plan.routes[:-1]) + route_seconds(plan.routes[-1], True)
     assert end >= 600 - 90 and end - route_seconds(plan.routes[-1], True) < 600 - 60  # последний трек нужен

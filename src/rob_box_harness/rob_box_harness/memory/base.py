@@ -445,7 +445,7 @@ class InMemoryStore(MemoryStore):
 # ``speaker:<tag>``. Отдельной таблицы не нужно: ``save_fact``/``search_facts``
 # уже умеют изолировать данные по scope (ADR-0001 §2.4.3). Хелперы ниже —
 # просто удобная обёртка над существующими методами MemoryStore, чтобы
-# dialogue_node не дублировал логику «прочитать/создать/обновить профиль».
+# dialog_node не дублировал логику «прочитать/создать/обновить профиль».
 
 SPEAKER_SCOPE_PREFIX = "speaker:"
 SPEAKER_PROFILE_KEY = "profile"
@@ -528,7 +528,7 @@ async def merge_speaker_facts(store: MemoryStore, src_tag: str, dst_tag: str) ->
     эмбеддинги голоса. Эта функция — независимый аналог для слоя памяти
     (факты), намеренно НЕ знающий о ``SpeakerDatabase``: биометрия и
     LLM-память — разные слои с разной ответственностью, вызывающий код
-    (например, dialogue_node) сам решает, вызывать ли обе операции вместе.
+    (например, dialog_node) сам решает, вызывать ли обе операции вместе.
 
     Переносит все факты из ``speaker_scope(src_tag)`` в
     ``speaker_scope(dst_tag)``. При конфликте ключей выигрывает dst —

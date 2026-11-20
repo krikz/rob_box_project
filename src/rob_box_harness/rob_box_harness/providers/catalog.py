@@ -6,7 +6,7 @@ its API key, and whether it exposes a balance API worth probing before
 the first call.
 
 The table used to live as ``DialogueNode._LLM_PROVIDER_REGISTRY`` inside
-``rob_box_voice.dialogue_node`` — a module that imports ``rclpy`` at the
+``rob_box_voice.dialog_node`` — a module that imports ``rclpy`` at the
 top and therefore cannot be touched by anything outside a ROS2 runtime.
 Every other caller that wanted the same defaults (the local text-chat
 entry point in ``scripts/dialogue``, tests, future adapters) had to copy

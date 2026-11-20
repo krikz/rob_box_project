@@ -24,6 +24,7 @@ import bisect
 import functools
 import logging
 import math
+import re
 from dataclasses import replace
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -609,6 +610,48 @@ def theme_match(material: ScoreMaterial, refs: Sequence[Tuple[int, ...]]) -> Opt
     return score, name, voices(material)[name][index].beat
 
 
+#: Слова-связки в теме из нескольких фамилий («Bach and Mozart», «Бах и Моцарт») — не название пьесы.
+_COMPOSER_FILLER = frozenset({"and", "und", "the", "von", "van", "der", "de", "la", "le", "di", "da", "del"})
+
+
+def _name_key(text: str) -> str:
+    """Буквы имени: нижний регистр, без разделителей («Rimsky-Korsakov» → rimskykorsakov)."""
+    return re.sub(r"[^a-zа-я]+", "", text.lower().replace("ё", "е"))
+
+
+@functools.lru_cache(maxsize=1)
+def _composer_names() -> frozenset:
+    """Фамилии ``knowledge.COMPOSER_RU`` латиницей и по-русски — токены темы-композитора (#3546)."""
+    names = set()
+    for lat, ru in kn.COMPOSER_RU.items():
+        names.add(_name_key(lat))
+        names.add(_name_key(ru))
+    return frozenset(n for n in names if len(n) >= 3)
+
+
+def _composer_token(word: str, names: frozenset) -> bool:
+    """Слово — фамилия композитора (в т.ч. падеж: «моцарта», «баха»)."""
+    if word in names:
+        return True
+    return any((word.startswith(n) or n.startswith(word)) and abs(len(word) - len(n)) <= 4 for n in names)
+
+
+def composer_theme(theme: str) -> bool:
+    """Тема — только композитор(ы), без названия произведения (#3546): все значимые слова — фамилии
+    ``knowledge.COMPOSER_RU`` («моцарт», «бах и моцарт»). Есть слово пьесы («токката баха», «горный король») — нет."""
+    words = [_name_key(w) for w in re.findall(r"\w+", theme or "")]
+    words = [w for w in words if len(w) >= 3 and w not in _COMPOSER_FILLER]
+    return bool(words) and all(_composer_token(w, _composer_names()) for w in words)
+
+
+def motif_references(theme: str, references: Sequence[str] = ()) -> Tuple[str, ...]:
+    """RTTTL-эталоны главного мотива для темы (#3546).
+
+    Тема — композитор, не произведение: эталоны — разные пьесы автора, порог ``THEME_REF_MATCH_MIN`` неприменим
+    → ``()`` (первое проведение, :func:`for_theme`). Иначе — ``references`` без изменений (эталон той же пьесы)."""
+    return () if composer_theme(theme) else tuple(references)
+
+
 def for_theme(material: ScoreMaterial, rtttls: Sequence[str],
               match_min: float = kn.THEME_REF_MATCH_MIN) -> Tuple[ScoreMaterial, Optional[int]]:
     """Материал и такт главного мотива по RTTTL-эталонам того же произведения (общий механизм, не под одну пьесу):
@@ -794,5 +837,5 @@ def material_unfit(material: ScoreMaterial, bpm: int, root: int, mode: str,
 __all__ = ["DEVELOPMENT", "HOOK_BARS", "HookError", "MAX_FOLDED_SHARE", "OCTAVE_SPANS", "RHYTHM_SECTIONS",
            "develop", "diatonic", "fit_register", "for_theme", "from_material", "from_notes",
            "from_rtttl", "hook_defect", "material_hook", "material_scale", "material_unfit", "pick_phrase",
-           "reference_contours", "rhythm_answer", "same_tune", "spill", "theme_cuts", "theme_fit", "theme_match",
+           "composer_theme", "motif_references", "reference_contours", "rhythm_answer", "same_tune", "spill", "theme_cuts", "theme_fit", "theme_match",
            "theme_span", "theme_version", "time_scale", "track_key", "tune_groups", "voices", "with_theme"]

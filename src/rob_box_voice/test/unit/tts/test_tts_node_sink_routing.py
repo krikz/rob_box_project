@@ -382,10 +382,10 @@ def test_sink_field_is_dispatched_in_exactly_one_primary_place():
 
 
 def test_voice_tts_request_legacy_payload_without_sink_still_works():
-    """Legacy payload от dialogue_node / speak_text (БЕЗ поля sink)
+    """Legacy payload от dialog_node / speak_text (БЕЗ поля sink)
     продолжает работать как раньше — старый путь в динамики.
 
-    Это критично: ``dialogue_node`` шлёт payload без sink с момента
+    Это критично: ``dialog_node`` шлёт payload без sink с момента
     создания (issue #1709, issue #988). Никаких регрессий — sink
     опциональный, default='speaker'.
     """

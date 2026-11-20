@@ -215,7 +215,11 @@ class _FakeMemory:
                 break
         return out
 
-    def search(self, query, limit=5, *, speaker_id=None):
+    def search(self, query, limit=5, *, speaker_id=None, browse_when_empty: bool = False):
+        # #4956: флаг принимаем, каталог фактов не моделируем — его покрывает
+        # test_issue_4956_fact_browse_fallback.py. Без параметра memory_search
+        # падает TypeError на browse_when_empty=True.
+        del browse_when_empty
         out = []
         for t in self._turns:
             if (

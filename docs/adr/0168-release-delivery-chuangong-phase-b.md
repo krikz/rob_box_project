@@ -35,7 +35,8 @@
   Сторонние образы compose (`eclipse/zenoh:1.6.2`, cadvisor, promtail, `ollama:latest`) записаны в `external_images`
   **по тегу, не закреплены** — честный пробел до фазы C.
 - **Бандл роли** `bundle-<роль>-<релиз>.tar.gz` — отслеживаемые git файлы `BUNDLE_PATHS[роль]` (каталог роли,
-  `docker/common`, `host/<роль>` и всё, на что compose ссылается через `../`: `src/rob_box_description` у main,
+  `docker/common`, `host/<роль>` и всё, на что compose ссылается через `../`: `src/rob_box_description` и
+  `src/rob_box_teleop` у main,
   `sound_pack`, `migrations` и скрипт ресурсного пака у sound). Содержимое — из блобов git (не из рабочей копии,
   чтобы autocrlf не менял байты), tar детерминирован (mtime 0, uid 0, сортировка): одинаковый коммит — одинаковый
   sha256. Файлы, похожие на секреты (`.env.secrets`, `.env.local`, `*.key`), сборка отвергает; `.env.secrets` и так

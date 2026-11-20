@@ -559,7 +559,7 @@ class MCPServer(Node):
         # подписчика. У этой ноды уже была история CPU-петли
         # (mcp-server-cpu-loop-2026-08-22), так что периодическая рассылка
         # мегабайтного JSON в никуда — не мелочь. Теперь публикуем один раз
-        # при старте, а late joiner'ы (dialogue_node, `ros2 topic echo`)
+        # при старте, а late joiner'ы (dialog_node, `ros2 topic echo`)
         # получают последнее сообщение из durability-кэша.
         tools_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -576,7 +576,7 @@ class MCPServer(Node):
         # /voice/music/state — JSON-снимок {state, track_id, form_ends_at,
         # stops_at, dj, finished_track_id, ts}, контракт — модуль
         # rob_box_dialog_host.music_player_state. Latched (TRANSIENT_LOCAL,
-        # KEEP_LAST 1): перезапущенный audio_node/dialogue_node сразу
+        # KEEP_LAST 1): перезапущенный audio_node/dialog_node сразу
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)

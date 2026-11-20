@@ -9,29 +9,32 @@ from dataclasses import replace
 
 import pytest
 
+from rob_box_dialog_host.tts_voice_registry import sing_preset_for
 from rob_box_mcp_tools.base import MCPToolResult
+from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, RequestMusicTool
 from rob_box_mcp_tools.engine.gen import song as sg
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenStatus, GenTicket, GenTrack, GenUnavailable
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, RequestMusicTool
 from rob_box_music.source import CacheTrack, SourceAsk, SourceContext, source_ask, source_candidates
 from rob_box_voice.sing_synth import synth_vocal_to_file
-from rob_box_dialog_host.tts_voice_registry import sing_preset_for
 
 from .test_engine_session import _rig
 
 pytestmark = pytest.mark.unit
 
-LYRICS = ("Я робот, у меня есть батарейка,\nМоя дорога — тихая железка.\nЯ еду, где не ходят поезда,\n"
-          "И светят мне ночные провода.\n\nПрипев:\nЭй, мир, я рядом, слышишь, это я,\nМоя душа — из стали и огня.\n"
-          "Эй, мир, я рядом, слышишь, это я,\nМоя душа — из стали и огня.")
+LYRICS = (
+    "Я робот, у меня есть батарейка,\nМоя дорога — тихая железка.\nЯ еду, где не ходят поезда,\n"
+    "И светят мне ночные провода.\n\nПрипев:\nЭй, мир, я рядом, слышишь, это я,\nМоя душа — из стали и огня.\n"
+    "Эй, мир, я рядом, слышишь, это я,\nМоя душа — из стали и огня."
+)
 GOOD = {"title": "Я робот", "lyrics": LYRICS}
 PHRASE = "Робот, спой песню про батарейку в стиле гранж своим голосом"
 VOICES = [("minimax", "Russian_ReliableMan"), ("minimax", "male-qn-qingse"), ("yandex", "anton")]
 
 
 # ── проверка текста ───────────────────────────────────────────────────────────
+
 
 def test_good_lyrics_pass_and_each_defect_is_named():
     assert sg.check_song("Я робот", LYRICS, "ru") == ""
@@ -60,7 +63,8 @@ def test_lyrics_are_asked_once_more_with_the_named_defect_then_refused():
 def test_second_try_may_succeed_and_llm_errors_are_not_retried():
     answers = iter([{"title": "x", "lyrics": "мало"}, GOOD])
     assert sg.write_lyrics(lambda *a: next(answers), sg.SongRequest("тема"), "ru", "{language}") == sg.Song(
-        "Я робот", LYRICS)
+        "Я робот", LYRICS
+    )
     calls = []
 
     def boom(*a):
@@ -74,11 +78,14 @@ def test_second_try_may_succeed_and_llm_errors_are_not_retried():
 
 def test_suno_tags_come_from_the_table_not_from_the_llm():
     assert sg.song_tags(sg.SongRequest("т", "grunge"), "deep male vocal") == (
-        "grunge", "90s grunge rock, loud-quiet-loud, distorted guitars, deep male vocal")
+        "grunge",
+        "90s grunge rock, loud-quiet-loud, distorted guitars, deep male vocal",
+    )
     assert sg.song_tags(sg.SongRequest("т", "нет-такого"), "")[0] == sg.DEFAULT_GENRE
 
 
 # ── текущий голос ─────────────────────────────────────────────────────────────
+
 
 def test_current_voice_is_the_provider_state():
     assert sg.current_voice("yandex") == ("yandex", "anton")  # голос ещё не известен - дефолт провайдера
@@ -89,6 +96,7 @@ def test_current_voice_is_the_provider_state():
 
 
 # ── конвейер на фейках ────────────────────────────────────────────────────────
+
 
 class FakeSuno:
     """Фейк ``MusicGenProvider``: запоминает заказ, отдаёт два варианта; ``upload`` здесь не нужен (его делает submit)."""
@@ -143,16 +151,27 @@ def _studio(library, voice=("minimax", "Russian_ReliableMan"), suno=None, lyrics
     suno = suno or FakeSuno()
     backends, sung = {name: FakeVocal(name) for name in ("minimax", "yandex", "silero")}, []
 
-    def sing(provider, voice_id, text, path):
-        sung.append((provider, voice_id, text))
-        return synth_vocal_to_file(provider, voice_id, text, path, backends=backends)
+    def sing(provider, voice_id, text, path, language=""):
+        sung.append((provider, voice_id, text, language))
+        backend = backends[provider]
+        if language:
+            backend = sg._Language(backend, language)
+        return synth_vocal_to_file(provider, voice_id, text, path, backends={**backends, provider: backend})
 
     def play(track_id):
         (played if played is not None else []).append(track_id)
         return MCPToolResult(success=True, data={"ok": True})
 
-    studio = sg.SongStudio(suno, lambda: library, lyrics or (lambda *a: GOOD), lambda: voice, play,
-                           (said if said is not None else []).append, sing=sing, clock=lambda: 0.0)
+    studio = sg.SongStudio(
+        suno,
+        lambda: library,
+        lyrics or (lambda *a: GOOD),
+        lambda: voice,
+        play,
+        (said if said is not None else []).append,
+        sing=sing,
+        clock=lambda: 0.0,
+    )
     return studio, suno, backends, sung
 
 
@@ -162,7 +181,9 @@ def test_g7_the_song_is_sung_by_the_current_voice_with_its_preset(library, provi
     studio, suno, backends, sung = _studio(library, (provider, voice))
     result = studio.make(sg.SongRequest("про батарейку", "grunge"))
     preset = sing_preset_for(provider, voice)
-    assert [s[:2] for s in sung] == [(provider, voice)] and backends[provider].presets == [preset]
+    # язык вокала — из текста заказа, не из каталога голоса: китайский голос не делает русскую песню китайской (#4973)
+    assert [s[:2] for s in sung] == [(provider, voice)]
+    assert backends[provider].presets == [replace(preset, language=sg.order_language(provider, preset.language, ""))]
     job = suno.jobs[0]
     assert (job.kind, job.vocal_gender, job.audio_weight) == ("robot_song", preset.vocal_gender, preset.audio_weight)
     assert job.style_tags == f"90s grunge rock, loud-quiet-loud, distorted guitars, {preset.tags_hint}"
@@ -178,6 +199,7 @@ def test_vocal_workdir_is_removed_after_the_order(library, tmp_path):
     studio, suno, _b, _s = _studio(library)
     studio.make(sg.SongRequest("т"))
     import os
+
     assert not os.path.exists(suno.jobs[0].audio_path)
 
 
@@ -200,6 +222,7 @@ def test_provider_failure_is_a_typed_reason_and_spends_nothing(library):
 
 
 # ── фон: итог говорит код ─────────────────────────────────────────────────────
+
 
 def _run(studio, request=None, failed=lambda why: f"не вышло:{why}"):
     """Запустить фон и дождаться, пока студия скажет итог и освободится."""
@@ -261,14 +284,19 @@ def test_second_order_while_busy_is_refused(library):
 
 # ── путь: кандидаты и чойсер ──────────────────────────────────────────────────
 
+
 def test_generate_candidate_exists_only_for_a_sing_ask_with_a_ready_executor():
     ask = source_ask(PHRASE)
     assert ask.vocal and ask.robot_voice and ask.genre == "grunge"
     ctx = SourceContext(gen_ready=True, day_left=120.0)
     options, reason = source_candidates(ask, ctx)
     assert [o.id for o in options] == ["generate:robot_song:V6"] and reason == ""
-    for blocked, why in ((replace(ctx, day_left=0.0), "budget_exhausted"), (replace(ctx, has_key=False), "no_key"),
-                         (replace(ctx, provider_ok=False), "provider_down"), (replace(ctx, gen_ready=False), "not_wired")):
+    for blocked, why in (
+        (replace(ctx, day_left=0.0), "budget_exhausted"),
+        (replace(ctx, has_key=False), "no_key"),
+        (replace(ctx, provider_ok=False), "provider_down"),
+        (replace(ctx, gen_ready=False), "not_wired"),
+    ):
         options, reason = source_candidates(ask, blocked)
         assert reason == why and options[0].id.startswith("decline:")
 
@@ -284,6 +312,7 @@ def test_cache_song_in_another_voice_is_not_offered_for_my_voice():
 
 
 # ── заказ целиком: мост, фраза ожидания, провал ───────────────────────────────
+
 
 class FakeStudio:
     """Студия без потоков: что запросили у ``launch`` и что скажет при провале."""
@@ -322,8 +351,17 @@ class FakeStudio:
 def cache(tmp_path):
     lib = GeneratedMusicLibrary(str(tmp_path / "lib"))
     for variant in (0, 1):  # инструментал гранжа — мост на время ожидания
-        lib.save_track(b"ID3inst%d" % variant, prompt="grunge", title="Robbox Grunge Test", kind="instrumental",
-                       style_key="grunge", genre="grunge", is_instrumental=True, task_id="f7cff936", variant=variant)
+        lib.save_track(
+            b"ID3inst%d" % variant,
+            prompt="grunge",
+            title="Robbox Grunge Test",
+            kind="instrumental",
+            style_key="grunge",
+            genre="grunge",
+            is_instrumental=True,
+            task_id="f7cff936",
+            variant=variant,
+        )
     return lib
 
 
@@ -334,9 +372,18 @@ def _request(rig, studio, library=None, played=None):
         played.append(track_id)
         return MCPToolResult(success=True, data={"ok": True, "track_id": f"gen_{track_id[:8]}_1", "started": True})
 
-    return RequestMusicTool(None, rig.owner, dj, melodies=lambda ids: {}, seed=lambda: 777, records=lambda ids: {},
-                            words=lambda word: ThemeHits(), gen_library=lambda: library,
-                            play_cached=play if played is not None else None, songs=studio)
+    return RequestMusicTool(
+        None,
+        rig.owner,
+        dj,
+        melodies=lambda ids: {},
+        seed=lambda: 777,
+        records=lambda ids: {},
+        words=lambda word: ThemeHits(),
+        gen_library=lambda: library,
+        play_cached=play if played is not None else None,
+        songs=studio,
+    )
 
 
 def test_sing_ask_starts_the_song_and_a_cache_bridge_with_a_code_phrase(cache):
@@ -346,7 +393,7 @@ def test_sing_ask_starts_the_song_and_a_cache_bridge_with_a_code_phrase(cache):
     assert result.success and result.data["pending"] == "song" and len(played) == 1  # мост играет
     assert result.data["source_message"].startswith("Пишу песню, пою голосом ")
     assert result.data["source_message"].endswith("минуты полторы. Пока играет своё.")
-    assert studio.requests == [sg.SongRequest(PHRASE, "grunge", "")]
+    assert studio.requests == [sg.SongRequest(PHRASE, "grunge", "", PHRASE)]  # текст заказа — в words (#4973)
 
 
 @pytest.fixture
@@ -366,8 +413,9 @@ def test_failure_phrase_is_built_by_code_from_the_reason(cache, empty):
     studio = FakeStudio()
     bridged = _request(_rig(), studio, cache, [])
     bridged.execute(intent="track", text=PHRASE, heard_text=PHRASE)
-    assert studio.failed("no_credits") == ("Песню сделать не вышло: на счёте генерации нет кредитов. "
-                                           "Играет пока своё.")
+    assert studio.failed("no_credits") == (
+        "Песню сделать не вышло: на счёте генерации нет кредитов. " "Играет пока своё."
+    )
     studio2 = FakeStudio()
     bare = _request(_rig(), studio2, empty)
     bare.execute(intent="track", text=PHRASE, heard_text=PHRASE)
@@ -456,6 +504,7 @@ def test_silero_voice_never_reaches_the_executor_and_the_chooser_declines_in_wor
 
 # ── сбой вокала: причина кодом (живой сбой 13.10 20:55 UTC: «что-то пошло не так» при TTSTimeoutError без текста) ──
 
+
 def test_every_vocal_reason_of_the_sing_backend_has_words_or_falls_back_to_vocal():
     from rob_box_music.source import REASON_WORDS
 
@@ -467,8 +516,10 @@ def test_every_vocal_reason_of_the_sing_backend_has_words_or_falls_back_to_vocal
     assert sg.failed_words("vocal_no_api_key") == "нет ключа голоса"
 
 
-@pytest.mark.parametrize("error,reason", [("TTSConnectionError", "vocal_network"), ("TTSTimeoutError", "vocal_timeout"),
-                                          ("TTSAuthError", "vocal_auth")])
+@pytest.mark.parametrize(
+    "error,reason",
+    [("TTSConnectionError", "vocal_network"), ("TTSTimeoutError", "vocal_timeout"), ("TTSAuthError", "vocal_auth")],
+)
 def test_minimax_failure_while_singing_is_spoken_with_its_cause_not_internal(library, monkeypatch, error, reason):
     """Настоящий ``_sing`` + ``MiniMaxSingBackend``: ошибка провайдера доезжает до фразы причиной, а не ``internal``;
     до Suno дело не доходит — кредиты целы."""
@@ -482,11 +533,107 @@ def test_minimax_failure_while_singing_is_spoken_with_its_cause_not_internal(lib
             Down.calls += 1
             raise getattr(errors, error)("ReadError", provider="minimax")
 
-    monkeypatch.setattr(sing_synth, "default_backends",
-                        lambda: {"minimax": sing_synth.MiniMaxSingBackend(provider=Down())})
+    monkeypatch.setattr(
+        sing_synth, "default_backends", lambda: {"minimax": sing_synth.MiniMaxSingBackend(provider=Down())}
+    )
     said, suno = [], FakeSuno()
-    studio = sg.SongStudio(suno, lambda: library, lambda *a: GOOD, lambda: ("minimax", "male-qn-qingse"),
-                           lambda t: MCPToolResult(success=True), said.append, clock=lambda: 0.0)
+    studio = sg.SongStudio(
+        suno,
+        lambda: library,
+        lambda *a: GOOD,
+        lambda: ("minimax", "male-qn-qingse"),
+        lambda t: MCPToolResult(success=True),
+        said.append,
+        clock=lambda: 0.0,
+    )
     _run(studio)
     assert said == [f"не вышло:{reason}"] and not suno.jobs and library.count == 0
     assert Down.calls == (1 if error == "TTSAuthError" else 2)  # обрыв/таймаут — один повтор, ключ — нет
+
+
+# ── дословные слова песни (#4973) ─────────────────────────────────────────────
+
+#: Нейтральные образцы, не чьи-то слова: длины хватает на ``MIN_CHARS``/``MIN_LINES``, доли — на ``SCRIPT_SHARE``.
+_ZH_LINE = "春风轻轻吹过安静的小山坡上白云慢慢飘向远方"
+_RU_LINE = "ветер тихо дует над рекою"
+ZH_LYRICS = "\n".join([_ZH_LINE] * 6) + "\n"
+RU_LYRICS = "\n".join([_RU_LINE] * 6) + "\n"
+MIXED_LYRICS = "\n".join([_RU_LINE] * 6 + [_ZH_LINE]) + "\n"  # доли: русский 0.86, китайский 0.14
+
+
+def test_text_language_follows_the_dominant_script_and_russian_stays_russian():
+    """Язык заказа — из письменности текста: CJK → zh, русский → ru (защита прогона 13.10), смесь — по доле."""
+    assert sg.text_language(ZH_LYRICS) == "zh" and sg.text_language(RU_LYRICS) == "ru"
+    assert sg.text_language(MIXED_LYRICS) == "ru"  # доминирует кириллица
+    assert sg.text_language("春风 ветер") == ""  # доли ниже SCRIPT_SHARE — язык не задан
+    assert sg.order_language("minimax", "zh", "") == "ru"  # слов нет — язык робота, как раньше
+    assert sg.order_language("minimax", "zh", ZH_LYRICS) == "zh"
+    assert sg.order_language("minimax", "zh", RU_LYRICS) == "ru"
+    assert sg.order_language("yandex", "ru", ZH_LYRICS) == "zh"  # язык текста, не голоса
+
+
+def test_verbatim_lyrics_skip_the_writer_pass_check_song_and_set_the_vocal_language(library):
+    """Поданные слова поются дословно: LLM их не переписывает, ``check_song`` не обходится, язык вокала — из текста."""
+    studio, suno, backends, sung = _studio(library, ("minimax", "male-qn-qingse"))
+
+    def boom(*_args):
+        raise AssertionError("LLM не должна писать текст, когда слова поданы")
+
+    studio._lyrics = boom
+    result = studio.make(sg.SongRequest("Весенний ветер", "rock", "", ZH_LYRICS))
+    assert sung[0][2] == ZH_LYRICS.strip() and suno.jobs[0].lyrics == ZH_LYRICS.strip()
+    assert backends["minimax"].presets[0].language == "zh"  # language_boost китайский, не русский
+    assert result.title == "Весенний ветер"
+    # русский текст на том же голосе остаётся русским — защита прогона 13.10
+    studio.make(sg.SongRequest("Тихий ветер", "rock", "", RU_LYRICS))
+    assert backends["minimax"].presets[1].language == "ru"
+
+
+def test_verbatim_lyrics_that_fail_check_song_are_refused_not_rewritten(library):
+    studio, *_ = _studio(library)
+    with pytest.raises(sg.SongFailed) as err:
+        studio.make(sg.SongRequest("Ветер", "rock", "", "春风\n"))  # короче MIN_CHARS и MIN_LINES
+    assert err.value.reason == "lyrics" and "строк" in err.value.detail
+
+
+def test_explicit_theme_beats_heard_text_and_empty_theme_falls_back(empty):
+    """Оба порядка аргументов: непустой theme важнее heard_text; пустой theme берёт heard_text (#4973)."""
+    from rob_box_mcp_tools.engine.song_order import song_request
+
+    args = ("track", ZH_LYRICS, None, "rock", "t9", "а где слова")
+    assert song_request(args, "grunge") == sg.SongRequest(ZH_LYRICS, "grunge", "", ZH_LYRICS)
+    fallback = song_request(("track", "", None, "rock", "t9", PHRASE), "grunge")
+    assert fallback == sg.SongRequest(PHRASE, "grunge", "", PHRASE)
+    # сквозь тул: реплика просит песню, явный text доезжает до студии и heard_text его не вытесняет
+    studio = FakeStudio()
+    result = _request(_rig(), studio, empty, []).execute(
+        intent="track", text=ZH_LYRICS, heard_text="сгенерируй песню своим голосом"
+    )
+    assert result.success and studio.requests and studio.requests[0].lyrics == ZH_LYRICS
+    assert all("слов" not in r.lyrics for r in studio.requests)
+
+
+def test_voice_that_cannot_sing_the_script_is_refused_before_launch(empty):
+    """Голос, привязанный к языку, китайский текст не тянет: отказ словами кода, до заказа, без подмены голоса."""
+    studio, played = FakeStudio(), []
+    studio.voice = lambda: ("yandex", "alena")
+    result = _request(_rig(), studio, empty, played).execute(
+        intent="track", text=ZH_LYRICS, heard_text="сгенерируй песню своим голосом " + ZH_LYRICS
+    )
+    assert not result.success and result.data["reason"] == SOURCE_DECLINED and not studio.requests and not played
+    message = result.data["message"]
+    assert "китайский" in message and "Поехали" not in message and "Пишу песню" not in message
+    # тот же голос русские слова поёт — отказ только про письменность, не про сам заказ
+    russian = FakeStudio()
+    russian.voice = lambda: ("yandex", "alena")
+    ok = _request(_rig(), russian, empty, []).execute(
+        intent="track", text=RU_LYRICS, heard_text="сгенерируй песню своим голосом " + RU_LYRICS
+    )
+    assert ok.success and russian.requests and russian.requests[0].lyrics == RU_LYRICS
+    # MiniMax поёт любой язык без подмены голоса: заказ уходит, голос тот же
+    mini = FakeStudio()
+    mini.voice = lambda: ("minimax", "male-qn-qingse")
+    sung = _request(_rig(), mini, empty, []).execute(
+        intent="track", text=ZH_LYRICS, heard_text="сгенерируй песню своим голосом " + ZH_LYRICS
+    )
+    assert sung.success and mini.requests and mini.requests[0].lyrics == ZH_LYRICS

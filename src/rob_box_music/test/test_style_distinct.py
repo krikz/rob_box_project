@@ -67,6 +67,24 @@ def test_mix_of_two_styles_differs_in_scene_sweep_and_levels(a, b):
     assert sum(diff) >= 2, (a, b, diff)
 
 
+def test_breaks_sweep_is_not_the_club_slider_and_reaches_the_track():
+    """#3550: breaks больше не алиас ``_CLUB_SECTION_LPF``. Дроп прикрыт, брейк не 1200, шаги свинга — шаффл,
+    и собранный трек несёт эту кривую в ``mix.lpf`` (не только в таблице)."""
+    club, breaks = kn.STYLES["club"], kn.STYLES["breaks"]
+    assert breaks.section_lpf is not club.section_lpf
+    assert dict(breaks.section_lpf) != dict(club.section_lpf)
+    assert breaks.section_lpf["drop"] == (2200.0, 2200.0)
+    assert breaks.section_lpf["break"] != club.section_lpf["break"]
+    assert breaks.swing_steps == (2, 6, 10, 14)
+    assert breaks.swing_steps != club.swing_steps
+    track = compose(seeded_plan(seeded_profile("космос", "breaks"), 31476, set_id="s7"), 1)
+    names = [sec.name for sec in track.form.sections]
+    assert track.mix.lpf["bass"][names.index("drop")] == (2200.0, 2200.0)
+    assert track.mix.lpf["pad"][names.index("break")] == breaks.section_lpf["break"]
+    club_track = compose(seeded_plan(seeded_profile("космос", "club"), 31476, set_id="s7"), 1)
+    assert track.mix.lpf["bass"] != club_track.mix.lpf["bass"]
+
+
 def test_dj_dave_psr_layer_is_the_face_of_the_club_only():
     """psr-слой DJ_Dave (``layer_sections["sample"]``) звучит только в клубе."""
     assert [s for s in ELECTRONIC if "sample" in kn.STYLES[s].layer_sections] == ["club"]
@@ -122,3 +140,23 @@ def test_same_seed_and_theme_give_different_first_tracks_in_every_style():
     for a, b in PAIRS:
         assert seen[a][:3] != seen[b][:3] and seen[a][2] != seen[b][2], (a, b, seen[a], seen[b])
     assert len({v[3:] for v in seen.values()}) >= 5, seen
+
+
+def test_same_input_seed_salts_score_material_by_style():
+    """S7: club/breaks на одном сиде не берут один материал и его hook_fp, если тема нашла несколько партитур."""
+    from test_material import make_material
+
+    first = make_material()
+    shape = (67, 65, 64, 62, 60, 62, 64, 65)
+    second = make_material(material_id="local:ef56ab78",
+                           melody=tuple(dataclasses.replace(e, midi=shape[i % len(shape)])
+                                        for i, e in enumerate(first.melody)))
+    materials = {m.material_id: m for m in (first, second)}
+    seen = {}
+    for style in ("club", "breaks"):
+        profile = dataclasses.replace(seeded_profile("космос", style), materials=tuple(materials))
+        plan = seeded_plan(profile, 31476, n_tracks=1, set_id="s7", materials=materials)
+        track = compose(plan, 1, materials=materials)
+        seen[style] = (plan.material(1), track.history_key.hook_fingerprint)
+    assert seen["club"][0] != seen["breaks"][0], seen
+    assert seen["club"][1] != seen["breaks"][1], seen

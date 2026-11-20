@@ -10,13 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rob_box_quest.protocol.frame import FrameType
 from rob_box_quest.server.session import ClientSession
-from rob_box_quest.server.ws_server import (
-    JSON_CMD_HANDLERS,
-    NoOpBridge,
-    WSSServer,
-)
-
+from rob_box_quest.server.ws_server import JSON_CMD_HANDLERS, NoOpBridge, WSSServer
 
 EXPECTED_JSON_COMMANDS = {
     "ping",
@@ -99,6 +95,25 @@ async def test_json_cmd_dispatches_registered_handler(dispatcher, monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_json_cmd_ping_feeds_watchdog_and_echoes_pong(dispatcher) -> None:
+    """Живой клиент шлёт JSON_CMD{cmd:ping}. Обработчик обязан и накормить
+    сторож сессии, и вернуть pong с тем же ts_ms — иначе HUD теряет RTT."""
+    server, ws, session = dispatcher
+    session.mark_authenticated("0.1.0", ["webxr"])
+    before = session.last_ping_monotonic
+
+    await server._on_json_cmd(ws, session, {"cmd": "ping", "ts_ms": 1_700_000_000_123})
+
+    assert session.last_ping_monotonic >= before
+    server._send.assert_awaited_once()
+    args = server._send.await_args.args
+    assert args[1] == FrameType.JSON_EVENT
+    assert args[3]["type"] == "pong"
+    assert args[3]["ts_ms"] == 1_700_000_000_123
+    assert args[3]["server_ts_ms"] > 1_700_000_000_000
+
+
+@pytest.mark.asyncio
 async def test_unknown_json_cmd_returns_terminal_error_and_warning(
     dispatcher, caplog
 ) -> None:
@@ -116,8 +131,7 @@ async def test_unknown_json_cmd_returns_terminal_error_and_warning(
         "unknown JSON_CMD: 'not_registered'",
     )
     assert any(
-        "not_registered" in record.message
-        and "session-json-cmd" in record.message
+        "not_registered" in record.message and "session-json-cmd" in record.message
         for record in caplog.records
     )
 

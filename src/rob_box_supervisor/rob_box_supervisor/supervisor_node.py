@@ -6,7 +6,7 @@
   живут ``LockManager``/``ModeManager``/агрегатор и сервисы
   ``/avatar_arbiter/{acquire_floor,release_floor,set_avatar_mode}``.
 - Здесь (``AvatarSupervisor``) остаются:
-  * voice-управление ``dialogue_node``/``tts_node``: ``/avatar/set_voice_mode``,
+  * voice-управление ``dialog_node``/``tts_node``: ``/avatar/set_voice_mode``,
     ``/avatar/set_voice``, ``/avatar/preview_voice*`` (ADR-0028 S5, AV-27);
     AV-28 ``set_voice_preset|language`` удалены по ADR-0087 (живой путь
     смены стиля/языка — ``/avatar/voice_pipeline`` ниже);
@@ -82,7 +82,7 @@ from rob_box_supervisor import headset_speech  # noqa: E402
 from rob_box_supervisor.spoken_text import to_spoken  # noqa: E402
 from rob_box_supervisor.tars_stage import TarsStagePublisher  # noqa: E402
 # ADR-0150 PR-13 (#3708) — ТАРС на общем движке rob_box_dialog (путь v1 AgentCore удалён, #4354 A3).
-from rob_box_supervisor.operator_turns import agent_path  # noqa: E402
+from rob_box_supervisor import operator_turns  # noqa: E402
 from rob_box_dialog.knowledge import COMMAND_PROVIDERS_DEFAULT  # noqa: E402
 # voice-vr 21 — единый белый список voice-пресетов и языков (AV-28 §P7).
 # Раньше жил в ``supervisor_node`` и ``ws_server`` двумя параллельными
@@ -137,7 +137,7 @@ REASON_APPLIED = "applied"
 # отказывает клиенту. Стандартное behaviour: applied=false, reason=MONITOR_MODE_REASON.
 REASON_MONITOR = MONITOR_MODE_REASON
 
-# ADR-0066 — после merge §6 dialogue_node больше НЕ принимает параметр
+# ADR-0066 — после merge §6 dialog_node больше НЕ принимает параметр
 # ``voice_input_mode``. Управление личностью идёт через топик
 # ``/dialogue/control`` (String JSON, action: pause|resume). Внешний
 # контракт ``/avatar/set_voice_mode`` остаётся для обратной совместимости
@@ -148,8 +148,8 @@ REASON_MONITOR = MONITOR_MODE_REASON
 SET_VOICE_MODE_TOPIC: str = "/avatar/set_voice_mode"
 
 # ADR-0066 §2.1 — единый канал «оператор → личность» (pause/resume).
-# Publisher — супервизор (AvatarSupervisor), subscriber — dialogue_node.
-# QoS — RELIABLE, KEEP_LAST depth=10 (синхронизировано с dialogue_node,
+# Publisher — супервизор (AvatarSupervisor), subscriber — dialog_node.
+# QoS — RELIABLE, KEEP_LAST depth=10 (синхронизировано с dialog_node,
 # см. dialogue_node.py:200). Payload: JSON
 # ``{"action": "pause"|"resume", "reason": str, "ts_s": float}``.
 # Допустимые ``action``-значения (ADR-0066 §2.1, _on_dialogue_control
@@ -453,7 +453,7 @@ AGENT_COMMAND_TIMEOUT_S: float = 30.0
 # ленивая загрузка rob_box_supervisor_msgs больше НЕ живут здесь: всё это
 # переехало в rob_box_supervisor/arbiter_node.py (AvatarArbiter), который
 # владеет LockManager/FSM и /avatar/state. Этот модуль (AvatarSupervisor)
-# остаётся за голосом (voice-параметры dialogue_node/tts_node) и
+# остаётся за голосом (voice-параметры dialog_node/tts_node) и
 # супервизор-агентом ТАРС (/avatar/command + /avatar/stt/result → AgentCore).
 
 
@@ -497,7 +497,7 @@ class AvatarSupervisor(Node):
         # ADR-0028 S5 (обновлено в ADR-0066 §6.7) — супервизор управляет
         # личностью через топик ``/dialogue/control`` (String JSON,
         # action: pause|resume). Phase 1 транспорт — топик (см.
-        # SET_VOICE_MODE_TOPIC). dialogue_node ack-ает на
+        # SET_VOICE_MODE_TOPIC). dialog_node ack-ает на
         # ``/dialogue/control_ack`` (sub для будущей телеметрии).
         self.create_subscription(
             RosString, SET_VOICE_MODE_TOPIC, self._on_set_voice_mode, 10
@@ -554,7 +554,7 @@ class AvatarSupervisor(Node):
         # «pause личности на время обработки команды» теперь жёстко
         # зашито в ``_dialogue_control_swap`` (см. ниже).
         # ── LLM / tools / память оператора (issue #1988) ─────────────
-        # Issue #2111: default chain должен совпадать с dialogue_node
+        # Issue #2111: default chain должен совпадать с dialog_node
         # (`minimax,deepseek`) — иначе supervisor поднимается с одним
         # провайдером без API-ключа и agent не отвечает. Полный
         # health-fallback chain — отдельная карточка позже.
@@ -602,7 +602,7 @@ class AvatarSupervisor(Node):
         self._agent_core: Any = None
         # ADR-0150 PR-13 (#3708): ТАРС — общий движок rob_box_dialog (operator_turns); путь v1 AgentCore удалён
         # (#4354 A3).
-        self._agent_builder, self._agent_runner = agent_path(self)
+        self._agent_builder, self._agent_runner = operator_turns.agent_path(self)
         # Журнал ТАРС (§5.4) — тоже лениво, персист по journal_path.
         self._operator_journal: Any = None
         # Метрики супервизор-агента (issue #2232). РАНЬШЕ здесь стояла
@@ -1269,7 +1269,7 @@ class AvatarSupervisor(Node):
         """Legacy-контракт ``/avatar/set_voice_mode`` через ``/dialogue/control``.
 
         После удаления ``voice_input_mode`` (ADR-0066 §6) супервизор больше
-        НЕ ставит параметр на dialogue_node — только публикует action в
+        НЕ ставит параметр на dialog_node — только публикует action в
         ``/dialogue/control``. Маппинг (ADR-0066 §6.7):
 
         * ``respeaker`` → ``resume`` (вернуть личность к активной работе)
@@ -1785,9 +1785,9 @@ class AvatarSupervisor(Node):
     # работает по новой схеме: на входе публикуем ``pause`` в
     # ``/dialogue/control``, в ``finally`` (включая путь с исключением)
     # публикуем ``resume``. Snapshot предыдущего состояния личности НЕ
-    # нужен: dialogue_node уже идемпотентно хранит своё состояние и
+    # нужен: dialog_node уже идемпотентно хранит своё состояние и
     # ack-ает на ``/dialogue/control_ack``. Если супервизор стартует, а
-    # личность уже в SILENCED — повторный pause no-op'ит в dialogue_node
+    # личность уже в SILENCED — повторный pause no-op'ит в dialog_node
     # (см. ``_apply_operator_pause``, dialogue_node.py:2200).
     #
     # try/finally сохранён для AC #8: даже если LLM бросит исключение
@@ -1802,14 +1802,14 @@ class AvatarSupervisor(Node):
         ADR-0066 §6.7: на входе публикуем ``pause`` в ``/dialogue/control``,
         в ``finally`` (включая путь с исключением) — ``resume``. Поле
         ``prev_mode``/``_capture_current_voice_mode`` больше не нужны:
-        dialogue_node сам знает свой FSM-стейт и ack-ает, супервизор лишь
+        dialog_node сам знает свой FSM-стейт и ack-ает, супервизор лишь
         дёргает переходы pause↔resume.
 
         В monitor-режиме ``_publish_dialogue_control`` всё равно публикует
-        (мы не знаем, опубликовал ли кто-то до нас) — dialogue_node всё
+        (мы не знаем, опубликовал ли кто-то до нас) — dialog_node всё
         равно идемпотентен, но в логе будет видна попытка apply даже в
         monitor. Тест-инвариант: в monitor поведение **не проверяется** на
-        идемпотентность dialogue_node (мы лишь тестируем, что swap шлёт
+        идемпотентность dialog_node (мы лишь тестируем, что swap шлёт
         две команды).
         """
         # Входим в режим «оператор работает».
@@ -1830,7 +1830,7 @@ class AvatarSupervisor(Node):
             yield
         finally:
             # Восстанавливаем личность — ВСЕГДА, включая путь с исключением
-            # (AC #8). resume из не-paused состояния в dialogue_node —
+            # (AC #8). resume из не-paused состояния в dialog_node —
             # no-op + ack с текущим состоянием (§2.5 ADR-0066), так что
             # безопасно даже если pause не дошёл.
             applied_out = self._publish_dialogue_control(
@@ -1976,14 +1976,14 @@ class AvatarSupervisor(Node):
                         f"[issue #2113] show_metrics tool registration "
                         f"failed: {exc}"
                     )
-            # Issue #3299 — ``list_faces``: список лиц из /data/faces (:ro).
-            # Локальный инструмент ТАРС (в MCP-каталог не попадает —
-            # личность его не видит, ADR-0123).
+            # Issue #3655 — ``list_faces``: список у владельца
+            # ``/perception/people`` (OP_LIST). Диск ``/data/faces`` на Sound
+            # не читаем. Локальный инструмент ТАРС, в MCP не попадает (ADR-0123).
             from rob_box_supervisor.face_roster_tool import (  # noqa: PLC0415
                 register_list_faces_tool,
             )
 
-            register_list_faces_tool(registry)
+            register_list_faces_tool(registry, node=self)
             provider.update_tools(
                 [
                     {
@@ -2188,7 +2188,7 @@ class AvatarSupervisor(Node):
         # (см. _capture_current_voice_mode), в active-режиме Phase 2
         # заменит на настоящий GetParameters.
         #
-        # ADR-0066 §6.7 — snapshot больше не нужен: dialogue_node сам
+        # ADR-0066 §6.7 — snapshot больше не нужен: dialog_node сам
         # знает свой FSM-стейт. Swap публикует ``pause`` на входе и
         # ``resume`` в finally без предварительного capture.
 
@@ -2477,7 +2477,7 @@ class AvatarSupervisor(Node):
         )
         llm = self._grip_llm
         if llm is None:
-            llm = self._build_operator_llm()
+            llm = operator_turns.build_operator_llm(self)
             if llm is None:
                 self._log.warning("GripPipeline: no LLM provider — direct TTS")
                 return None

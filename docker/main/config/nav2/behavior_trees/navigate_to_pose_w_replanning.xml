@@ -6,14 +6,43 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
+        <!-- #4682: не пересчитывать годный путь каждый герц. У стены Depot
+             план раз в секунду менял обход, робот метался и не доезжал.
+             Дерево Humble navigate_w_recovery_and_replanning_only_if_path_becomes_invalid:
+             новый план только если цель обновилась или IsPathValid отказал. -->
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <Fallback>
+              <ReactiveSequence>
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
+        <!-- #4475: путь есть, нос упёрт в перегородку или торец, сдвига с начала
+             цели нет — FollowPath стоит (path=0). WouldSpinOnStall пишет угол
+             free_spin в {turn_spin_dist}; следом Spin, потом FollowPath.
+             Угла нет — узел FAILURE, доска получает 0: Humble Spin на 0 рад сразу
+             SUCCEEDED (spin.cpp, remaining_yaw < 1e-6) и колёс не трогает.
+             is_recovery=false: Humble Spin по умолчанию is_recovery=true и на
+             каждом старте TurnThenFollow (в т.ч. Spin 0) делает
+             increment_recovery_count. Разворот до курса — не recovery; счётчик
+             и Spin/Wait RoundRobin — только после провала progress (FollowPath)
+             или невалидного пути (ComputePath), как у NavigateRecovery. -->
         <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <Sequence name="TurnThenFollow">
+            <Fallback name="PublishTurnAngle">
+              <WouldSpinOnStall path="{path}" turn_spin_dist="{turn_spin_dist}"/>
+              <SetBlackboard output_key="turn_spin_dist" value="0.0"/>
+            </Fallback>
+            <Spin spin_dist="{turn_spin_dist}" is_recovery="false"/>
+            <FollowPath path="{path}" controller_id="FollowPath"/>
+          </Sequence>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
@@ -24,9 +53,15 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
+          <!-- #4607 / прогон 18:47Z: выбор угла остаётся в Python
+               (rob_box_sim.corner_backup). Узел Script (BehaviorTree.CPP v4)
+               Humble Nav2 1.1.20 / BT.CPP v3 не знает: «Node not recognized:
+               Script», bt_navigator не активируется, цели не едут.
+               Зазоры впереди/сзади в дерево не приходят, поэтому без Script
+               ветка BackUp невыбираема. Здесь прежний Spin, как до #4785.
+               Не заглушка, которая всегда делает backup. -->
           <Spin spin_dist="1.57"/>
           <Wait wait_duration="5"/>
-          <BackUp backup_dist="0.30" backup_speed="0.05"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

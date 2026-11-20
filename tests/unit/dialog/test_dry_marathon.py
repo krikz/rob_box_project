@@ -216,6 +216,92 @@ def test_3881_speaker_changed_mid_turn_is_rejected_and_reported(make_env):
     assert env.stand.memory.get_facts() == []
 
 
+# ── #4694: память как условие другой просьбы ────────────────────────────────────────────────────────────────────────
+
+
+N908_TEXT = "Робот, а теперь найди мне рецепт борща, только учти то, что ты про меня знаешь."
+N908 = step("n908_search_borsch_memory", N908_TEXT, expect_tools=["memory_context"],
+            keywords=["свёкла", "не ем лук даже жареный"], must_not=["memory_save"])
+PLAIN_BORSCH = step("n908_plain_borsch", "Робот, найди мне рецепт борща.", keywords=["свёкла"],
+                    must_not=["memory_search", "memory_context", "memory_save"])
+
+
+def _borsch_rule(env, msgs, tools):
+    facts = [str(f.get("fact") or "") for f in query_data(msgs).get("facts", [])]
+    details = "; ".join(fact for fact in facts if fact)
+    return {"speech": f"Борщ: свёкла, капуста, картошка. {details}".strip()}
+
+
+def _with_food_facts(env):
+    person = env.stand.speakers.register("anton", "Саша")
+    env.stand.memory.save_fact("не ем лук даже жареный", category="preference", speaker_id=person)
+    env.stand.memory.save_fact("зелёный чай без сахара", category="preference", speaker_id=person)
+    return env
+
+
+def test_4694_n908_memory_condition_reads_real_speaker_facts_before_the_recipe(make_env):
+    env = _with_food_facts(make_env(_borsch_rule))
+    report = env.run(N908)
+    assert report.verdict == dm.PASS, report.fail
+    assert report.tools == ["memory_context"]
+    assert "не ем лук даже жареный" in report.said[-1]
+    data = query_data(env.inner.calls[0].messages)
+    assert any(f.get("fact") == "зелёный чай без сахара" for f in data["facts"])
+
+
+def test_4694_plain_recipe_does_not_read_or_write_memory(make_env):
+    env = _with_food_facts(make_env(_borsch_rule))
+    report = env.run(PLAIN_BORSCH)
+    assert report.verdict == dm.PASS, report.fail
+    assert not set(report.tools) & {"memory_search", "memory_context", "memory_save"}
+
+
+N1006 = step("n1006_session_reset", "Робот, новая сессия, забудь этот разговор.")
+N1007 = step("n1007_no_leak", "Робот, о чём мы с тобой только что говорили?")
+N1009 = step("n1009_memory_context_after_reset", "Робот, поищи в памяти, какой чай я пью.",
+             expect_tools=["memory_search"], keywords=["зелёный чай без сахара"])
+
+
+def _tea_after_reset_rule(env, msgs, tools):
+    found = [r["content"] for r in query_data(msgs).get("results", [])]
+    if found:
+        return {"speech": f"Ты пьёшь {found[0]}."}
+    if "<speaker_memory>" in user_text(msgs):
+        return {"speech": "Ты пьёшь зелёный чай без сахара."}
+    return {"actions": [{"tool": "memory_search", "args": {"query": "какой чай пьёт Саша"}}]}
+
+
+def test_4694_n1009_new_session_hides_snapshot_memory_but_preserves_facts(make_env):
+    env = _with_food_facts(make_env(_tea_after_reset_rule))
+    facts_before = env.stand.memory.get_facts()
+    env.run(N1006)
+    assert env.stand.session.snapshot.epoch == 1
+    env.run(N1007)
+    calls_before = len(env.inner.calls)
+
+    report = env.run(N1009)
+
+    assert "<speaker_memory>" not in user_text(env.inner.calls[calls_before].messages)
+    assert report.verdict == dm.PASS, report.fail
+    assert report.tools == ["memory_search"]
+    assert env.stand.memory.get_facts() == facts_before
+
+
+def test_4694_n1007_no_snapshot_memory_right_after_new_session(make_env):
+    """Промежуточный контракт между n1006 и n1009: скрытая «новой сессией» автоматическая память не
+    возвращается на середине эпохи. «О чём мы говорили?» — не вопрос о «памяти» словами: фикс, подогнанный
+    под один шаг n1009 (спрятать снимок только на нём или только под «поищи в памяти»), здесь красный —
+    одноходового GREEN у n1009 не выходит."""
+    env = _with_food_facts(make_env(_tea_after_reset_rule))
+    env.run(N1006)
+    calls_before = len(env.inner.calls)
+
+    report = env.run(N1007)
+
+    assert "<speaker_memory>" not in user_text(env.inner.calls[calls_before].messages)
+    assert report.tools == ["memory_search"]  # факты достаёт тул, а не автоматический раздел снимка
+
+
 # ── #3892: бэклог с авторством каждой фразы ───────────────────────────────────────────────────────────────────────
 
 

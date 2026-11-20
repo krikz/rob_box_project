@@ -9,7 +9,7 @@ After Phase 6 v2 / W7 this module is a *thin transport*:
 * Status / navigation / volume / music / mapping handlers used to call the
   ToolProvider through ``_invoke_tool``. They now forward the command
   intent to ``/voice/stt/utterance`` so the unified AgentCore/harness
-  pipeline (``dialogue_node``) can decide what to do with it.
+  pipeline (``dialog_node``) can decide what to do with it.
 
 All handlers receive ``context.bot_data["node"]`` — our TelegramNode
 instance which exposes ROS 2 publishers and on-demand camera frames
@@ -58,7 +58,7 @@ def _forward(node, text: str, chat_id=None) -> None:
 
     ``chat_id`` is passed through to ``forward_to_stt`` which puts it into the
     ``Utterance.chat_id`` source field (issue #1195) — commands are explicit
-    intents, so the dialogue_node wake-word gate must not drop them.
+    intents, so the dialog_node wake-word gate must not drop them.
     """
     node.forward_to_stt(text, chat_id=chat_id)
 

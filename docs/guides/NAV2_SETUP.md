@@ -176,8 +176,8 @@ allow_unknown: true      # Разрешить проходить через не
 ```
 RecoveryNode (6 retries)
 ├── PipelineSequence
-│   ├── RateController (1 Hz replanning)
-│   │   └── ComputePathToPose
+│   ├── RateController (1 Hz)
+│   │   └── ComputePathToPose только если цель новая или путь не годен
 │   └── FollowPath
 └── ReactiveFallback (если застряли)
     ├── GoalUpdated (новая цель → прервать recovery)

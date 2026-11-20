@@ -695,9 +695,10 @@ def _from_material(style: kn.Style, spec: FormSpec, material_id: Optional[str],
         _LOG.info("🎵 [music] material=%s нет среди переданных — хук темы", material_id)
         return None
     try:
+        refs = hooks.motif_references(
+            profile.theme, [melodies[i] for i in profile.theme_hooks if i in melodies])
         material, anchor, motif, key = hooks.material_hook(
-            material, [melodies[i] for i in profile.theme_hooks if i in melodies], profile.bpm, profile.root,
-            profile.mode, hook_register(style), theme_limit(spec))
+            material, refs, profile.bpm, profile.root, profile.mode, hook_register(style), theme_limit(spec))
         scale = hooks.material_scale(material, profile.bpm)
         phrase = hooks.pick_phrase(material, anchor)
         span = hooks.theme_span(material, phrase)

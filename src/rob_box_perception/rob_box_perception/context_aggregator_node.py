@@ -6,7 +6,7 @@ Perception Context Aggregator node.
 Собирает данные со всех источников → публикует unified события.
 
 Архитектура:
-  [Sensors] → Context Aggregator → [PerceptionEvent] → dialogue_node
+  [Sensors] → Context Aggregator → [PerceptionEvent] → dialog_node
 
 НЕ думает, НЕ принимает решений - только сбор и публикация.
 

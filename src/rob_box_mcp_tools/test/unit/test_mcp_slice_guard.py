@@ -6,7 +6,7 @@
     «Оператор вне среза получает отказ на исполнение ``operator.*``
     инструмента, а не на показ схем»
 
-То есть когда ``dialogue_node`` (имеет только срезы ``core`` +
+То есть когда ``dialog_node`` (имеет только срезы ``core`` +
 ``personality``) шлёт ``/mcp/execute`` с ``tool_name='say'`` (входит в
 ``operator.speech``), ``mcp_server`` ОБЯЗАН:
 
@@ -113,7 +113,7 @@ def _execute_request_with_authority(
 
 
 # ---------------------------------------------------------------------------
-# Минимальный in-memory классификатор: dialogue_node имеет только core+personality.
+# Минимальный in-memory классификатор: dialog_node имеет только core+personality.
 # ---------------------------------------------------------------------------
 #
 # Это — «синтетический» источник истины (matches ADR-0052: данные живут в
@@ -142,10 +142,10 @@ _AUTHORITY = ToolSliceAuthority.from_mapping(
 
 
 def test_dod1_dialogue_node_blocked_from_operator_speech_say() -> None:
-    """DoD-1 acceptance: ``dialogue_node`` НЕ может исполнить ``say``.
+    """DoD-1 acceptance: ``dialog_node`` НЕ может исполнить ``say``.
 
-    ``say`` объявлен в ``operator``. ``dialogue_node`` имеет только
-    ``core`` + ``personality``. Объединение срезов dialogue_node не
+    ``say`` объявлен в ``operator``. ``dialog_node`` имеет только
+    ``core`` + ``personality``. Объединение срезов dialog_node не
     содержит ``say`` → slice-гард ОБЯЗАН вернуть ``allowed=False`` и
     опубликовать ``success=False`` на ``/mcp/result``.
 
@@ -154,7 +154,7 @@ def test_dod1_dialogue_node_blocked_from_operator_speech_say() -> None:
     * ``success=False`` (отказ, не silent drop);
     * ``tool_name`` и ``request_id`` в ответе (корреляция для агента);
     * ``error`` упоминает имя инструмента и причину отказа;
-    * причина отказа содержит ``dialogue_node`` — чтобы оператор
+    * причина отказа содержит ``dialog_node`` — чтобы оператор
       понимал, *кто* именно был за пределами среза.
     """
     response = _execute_request_with_authority(
@@ -185,7 +185,7 @@ def test_dod1_dialogue_node_blocked_from_operator_speech_say() -> None:
 
 
 def test_dod1_dialogue_node_blocked_from_operator_admin_read_logs() -> None:
-    """DoD-1 контраст: ``dialogue_node`` тоже не имеет ``read_logs``.
+    """DoD-1 контраст: ``dialog_node`` тоже не имеет ``read_logs``.
 
     ``read_logs`` — самый «громкий» операторский тул: может вернуть
     ``DEEPSEEK_API_KEY=...`` из логов. Slice-гард должен зарезать его

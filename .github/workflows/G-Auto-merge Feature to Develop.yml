@@ -21,6 +21,10 @@ jobs:
       - name: Create PR to develop
         run: |
           BRANCH="${GITHUB_REF#refs/heads/}"
+          if [ "$BRANCH" = "feature/lyrical" ]; then
+            echo "lyrical не мержится в develop"
+            exit 0
+          fi
           if [ -z "$(gh pr list --head "$BRANCH" --base develop --json number -q '.[0].number')" ]; then
             gh pr create --base develop --head "$BRANCH" --title "Auto-merge: $BRANCH to develop" --body "Auto-merge from $BRANCH" --label auto || true
           fi

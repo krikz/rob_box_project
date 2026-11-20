@@ -13,11 +13,13 @@
   <depend>std_msgs</depend>
   <depend>rob_box_dialog_msgs</depend>
   <depend>rob_box_perception_msgs</depend>
-  <depend>rob_box_dialog</depend>
+  <!-- ADR-0167 Ш3 (#4932): ядро ставится pip'ом (rob-box-dialog-core@тег), не colcon'ом.
+       exec_depend — нужно на запуске, сборке ROS-пакета не мешает. -->
+  <exec_depend>rob_box_dialog</exec_depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
-  <depend>rob_box_core</depend>
+  <exec_depend>rob_box_core</exec_depend>
   <!-- AV-14 (issue #1906): single codec for /avatar/state lives in
        rob_box_supervisor.core.state (encode_for_ros_string /
        decode_from_ros_string). We only import the pure-Python module

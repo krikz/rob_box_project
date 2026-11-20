@@ -1,0 +1,4 @@
+services:
+  nav2:
+    volumes:
+      - ${M1_GOAL_PROBE_MOUNT:?}:/opt/ros/humble/lib/libcontroller_server_core.so:ro

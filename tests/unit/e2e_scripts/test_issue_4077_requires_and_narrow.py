@@ -173,6 +173,15 @@ def test_n907_search_needs_success_not_request_line():
     assert not _verdict("n907_search_space", request, ok, DONE)["missing"]
 
 
+def test_n902_sound_must_be_ui_bell():
+    snd = "[mcp_server]: ✅ Инструмент play_sound выполнен успешно"
+    wrong = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'robot_happy'}"
+    right = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'ui_bell'}"
+    assert _verdict("n902_sound_doorbell", snd, DONE)["missing"]
+    assert _verdict("n902_sound_doorbell", wrong, snd, DONE)["missing"]
+    assert not _verdict("n902_sound_doorbell", right, snd, DONE)["missing"]
+
+
 def test_n903_animation_must_be_police_lights():
     done = "[mcp_server]: ✅ Инструмент play_animation выполнен успешно"
     snd = "[mcp_server]: ✅ Инструмент play_sound выполнен успешно"

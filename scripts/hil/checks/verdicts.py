@@ -14,6 +14,7 @@
 ``rob_box_teleop/proximity.py`` (``ALARMS``), формат строки зоны — ``proximity.describe``.
 
     python verdicts.py <сценарий> <каталог> [--mode on|off] [--owner ИМЯ] [--need "к1 к2"] [--grace S]
+        [--allowance S]
 Код выхода: 0 PASS, 1 FAIL, 2 NOT_TRIGGERED/NO_DATA. Строка вердикта дописывается в ``<каталог>/../verdicts.txt``.
 """
 
@@ -164,7 +165,13 @@ def load_proximity(path: Path = PROXIMITY_FILE):
 
 _TTS = re.compile(r"TTS: .*?text=(['\"])(.*)\1\s*$")
 _TRIGGER = re.compile(r"Триггер: (\S+)")
-_ZONE = re.compile(r"зона (\w+) → (\w+) \(до корпуса ([0-9.]+|—)")
+_ZONE = re.compile(r"зона (\w+) → (\w+) \(до корпуса ([0-9.]+|—) м\)(?: в точке \(([+-][0-9.]+), ([+-][0-9.]+)\))?")
+#: Коридор хода защиты (#4438): полоса корпуса ± corridor_margin_m. Габарит — footprint Nav2
+#: (nav2_params.yaml: y ±0.3025), запас коридора — proximity.Thresholds.corridor_margin_m (0.05).
+#: Точка стопа с |y| больше этого — вне коридора: по решению Шифу 10.11 стопа по ней быть не должно.
+CORRIDOR_HALF_M = 0.3525
+#: Стоп внутри коридора не позже этого зазора (proximity.Thresholds.stop_m). Ниже — защита пропустила порог.
+STOP_GAP_MIN_M = 0.19
 
 
 def tts(events: Sequence[Event]) -> List[Tuple[float, str]]:
@@ -187,14 +194,15 @@ def triggers(events: Sequence[Event], names: Sequence[str], since: float, until:
     return out
 
 
-def zone_transitions(events: Sequence[Event]) -> List[Tuple[float, str, str, float]]:
-    """Смены зоны защиты: (время, было, стало, зазор до корпуса или nan)."""
+def zone_transitions(events: Sequence[Event]) -> List[Tuple[float, str, str, float, Optional[Tuple[float, float]]]]:
+    """Смены зоны защиты: (время, было, стало, зазор до корпуса или nan, точка в base_footprint или None)."""
     out = []
     for e in events:
         m = _ZONE.search(e.text)
         if m:
             gap = math.nan if m.group(3) == "—" else float(m.group(3))
-            out.append((e.t, m.group(1), m.group(2), gap))
+            point = (float(m.group(4)), float(m.group(5))) if m.group(4) else None
+            out.append((e.t, m.group(1), m.group(2), gap, point))
     return out
 
 
@@ -385,6 +393,203 @@ def v_orphan_natural(probe: Sequence[Event], watchdog: Sequence[Event], grace_s:
     return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с после провала FollowPath нет и mux = 0"]))
 
 
+def observed_follow_goals(probe: Sequence[Event]) -> List[str]:
+    """#4647: цели FollowPath, которые в этой пробе реально были ACTIVE.
+
+    Терминал без ACTIVE не считается.
+    """
+    seen: List[str] = []
+    for e in kinds(probe, "FP_STATUS"):
+        goal = e.fields.get("goal")
+        if not goal or goal in seen:
+            continue
+        if e.fields.get("status") in ACTIVE:
+            seen.append(goal)
+    return seen
+
+
+def _abort_window_bad(window: float, allowance_s: float, grace_s: float) -> List[str]:
+    if window > allowance_s + grace_s:
+        return [f"abort позже allowance {allowance_s:.0f} с + grace {grace_s:.0f} с: {window:.1f} с"]
+    return []
+
+
+def _abort_log_bad(nav2: Sequence[Event], allowance_s: float) -> Tuple[List[str], List[Event], List[Event]]:
+    """Один Aborting handle и строка progress checker.
+
+    Второй цикл allowance — terminate_all не сработал.
+    """
+    aborts = grep(nav2, r"Aborting handle")
+    progress = grep(nav2, r"Failed to make progress")
+    bad: List[str] = []
+    if len(aborts) != 1:
+        bad.append(
+            f"Aborting handle: {len(aborts)} "
+            f"(ждали 1: terminate_all не должен дать второй цикл {allowance_s:.0f} с)"
+        )
+    if not progress:
+        bad.append("в nav2.log нет «Failed to make progress» — abort не от progress checker")
+    return bad, aborts, progress
+
+
+def _after_abort_bad(probe: Sequence[Event], abort_at: float, grace_s: float) -> List[str]:
+    """После abort: нет активного FollowPath, mux = 0, нет ложного SUCCEEDED."""
+    bad: List[str] = []
+    if any(e.fields.get("status") == "SUCCEEDED" for e in kinds(probe, "NAV_RESULT", "FP_STATUS")):
+        bad.append("ложный «приехал»: в пробе есть SUCCEEDED")
+    still = follow_active_at(probe, abort_at + grace_s)
+    if still:
+        bad.append(f"через {grace_s} с FollowPath ещё активен: {','.join(g[:8] for g in still)}")
+    moving = moving_mux(probe, abort_at + grace_s, math.inf)
+    if moving:
+        m = moving[0]
+        bad.append(
+            f"после abort выход twist_mux ≠ 0: sim={_sim(m):.2f} v={m.fields.get('v')} w={m.fields.get('w')}"
+        )
+    return bad
+
+
+def v_doorway(probe: Sequence[Event], guard: Sequence[Event], opening: Tuple[float, float]) -> Verdict:
+    """Регресс проёма 0.90 м: цель доехала, и в проёме защита не входила в stop.
+
+    ``opening`` — участок проёма по x правды Gazebo. Стоп, пока корпус внутри него, — FAIL: косяк
+    проёма 0.90 м вне коридора хода, тормозить по нему защита не должна (решение Шифу 05.11 и 10.11).
+    Стоп вне участка не считается. Не доехала — тоже FAIL.
+    """
+    sc = ("#4365", "doorway")
+    if not probe:
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
+    result = kinds(probe, "NAV_RESULT")
+    status = result[-1].fields.get("status") if result else "нет"
+    lo, hi = opening
+    inside = [e for e in kinds(probe, "TRACK") if lo <= e.num("x") <= hi]
+    stops = [z for z in zone_transitions(guard) if z[2] == "stop"]
+    stopped_inside = [z for z in stops if any(abs(z[0] - e.t) <= 0.3 for e in inside)]
+    facts = [
+        f"итог цели: {status}",
+        f"точек правды в проёме x∈[{lo:.1f}, {hi:.1f}]: {len(inside)}",
+        f"входов в stop, пока корпус в проёме: {len(stopped_inside)}",
+    ]
+    if status != "SUCCEEDED" or stopped_inside:
+        return Verdict(*sc, FAIL, tuple(facts))
+    if not inside:
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + ["правда Gazebo проём не пересекала — не проверено"]))
+    return Verdict(*sc, PASS, tuple(facts))
+
+
+def v_controller_abort(
+    probe: Sequence[Event], nav2: Sequence[Event], grace_s: float, allowance_s: float
+) -> Verdict:
+    """#4770: FollowPath уже принят, progress checker абортит, terminate_all гасит и pending.
+
+    Не ``nav_aborted``: без принятого FollowPath вердикт NOT_TRIGGERED
+    (план не построен — проверка слабая).
+    Счётчик — только цели, которые в этой пробе были ACTIVE (#4647).
+    """
+    sc = ("#4770", "controller_abort")
+    if not probe:
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
+    observed = observed_follow_goals(probe)
+    held = [e for e in kinds(probe, "FP_HELD") if e.fields.get("goal") in observed]
+    if not observed or not held:
+        return Verdict(
+            *sc,
+            NOT_TRIGGERED,
+            (
+                "FollowPath не был принят и удержан — это не abort контроллера (план мог не построиться)",
+            ),
+        )
+    facts = [f"наблюдавшихся целей FollowPath: {len(observed)}"]
+    nav_end = [e for e in kinds(probe, "NAV_RESULT") if e.fields.get("status") in ("ABORTED", "SUCCEEDED", "CANCELED")]
+    aborted = [e for e in nav_end if e.fields.get("status") == "ABORTED"]
+    if not aborted:
+        status = nav_end[-1].fields.get("status") if nav_end else "нет"
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + [f"NavigateToPose не ABORTED (итог {status})"]))
+    abort_at = _sim(aborted[0])
+    log_bad, aborts, progress = _abort_log_bad(nav2, allowance_s)
+    facts += [f"Aborting handle: {len(aborts)}", f"Failed to make progress: {len(progress)}"]
+    fp_abort = [
+        e
+        for e in kinds(probe, "FP_STATUS")
+        if e.fields.get("goal") in observed and e.fields.get("status") == "ABORTED" and _sim(e) <= abort_at + 1.0
+    ]
+    bad = list(log_bad)
+    if not fp_abort:
+        bad.append("принятый FollowPath не ушёл в ABORTED вместе с целью")
+    window = abort_at - _sim(held[0])
+    facts.append(f"от удержания до ABORTED: {window:.1f} с sim")
+    bad += _abort_window_bad(window, allowance_s, grace_s)
+    bad += _after_abort_bad(probe, abort_at, grace_s)
+    facts.append(f"проверок abort: {len(aborted)}")
+    if bad:
+        return Verdict(*sc, FAIL, tuple(bad + facts))
+    return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с FollowPath нет и mux = 0"]))
+
+
+def _drop_facts(probe: Sequence[Event], mark: str) -> Tuple[List[str], Optional[Event], List[str]]:
+    """Общее для kill и host-cancel: маркер, наблюдавшиеся цели, терминал NavigateToPose."""
+    observed = observed_follow_goals(probe)
+    marks = kinds(probe, mark)
+    facts = [f"наблюдавшихся целей FollowPath: {len(observed)}"]
+    return facts, (marks[0] if marks else None), observed
+
+
+def _drop_verdict(sc, probe: Sequence[Event], grace_s: float, mark: str, missing: str) -> Verdict:
+    """После маркера: родитель терминален, FollowPath погашен, mux=0, нет SUCCEEDED.
+
+    Маркера нет или FollowPath не был ACTIVE — NOT_TRIGGERED, не PASS (#4647).
+    """
+    if not probe:
+        return Verdict(*sc, NO_DATA, (NO_PROBE,))
+    facts, mark_ev, observed = _drop_facts(probe, mark)
+    if mark_ev is None or not observed:
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + [missing]))
+    t_mark = _sim(mark_ev)
+    parent_end = [
+        e
+        for e in kinds(probe, "NAV_STATUS")
+        if e.fields.get("status") in TERMINAL_FAIL and _sim(e) >= t_mark - 0.05
+    ]
+    if not parent_end:
+        return Verdict(*sc, NOT_TRIGGERED, tuple(facts + ["родительская цель после маркера не терминальна"]))
+    abort_at = _sim(parent_end[0])
+    bad = _after_abort_bad(probe, abort_at, grace_s)
+    still_fp = [
+        e
+        for e in kinds(probe, "FP_STATUS")
+        if e.fields.get("goal") in observed and e.fields.get("status") in ACTIVE and _sim(e) > abort_at + grace_s
+    ]
+    if still_fp:
+        bad.append("принятый FollowPath жив после grace")
+    facts.append(f"родитель {parent_end[0].fields.get('status')} sim={abort_at:.2f}")
+    facts.append(f"проверок: {len(parent_end)}")
+    if bad:
+        return Verdict(*sc, FAIL, tuple(bad + facts))
+    return Verdict(*sc, PASS, tuple(facts + [f"через {grace_s} с FollowPath нет и mux = 0"]))
+
+
+def v_client_kill(probe: Sequence[Event], grace_s: float) -> Verdict:
+    """#4435: клиент убит без cancel_goal. Успех только если робот всё равно встал."""
+    return _drop_verdict(
+        ("#4435", "client_kill"),
+        probe,
+        grace_s,
+        "CLIENT_KILLED",
+        "нет CLIENT_KILLED или FollowPath не был принят — kill не проверен",
+    )
+
+
+def v_host_cancel(probe: Sequence[Event], grace_s: float) -> Verdict:
+    """#4435: ``ros2 action cancel`` с хоста, не наш тул. Дерево или сторож должны снять FollowPath."""
+    return _drop_verdict(
+        ("#4435", "host_cancel"),
+        probe,
+        grace_s,
+        "HOST_CANCEL",
+        "нет HOST_CANCEL или FollowPath не был принят — отмена с хоста не проверена",
+    )
+
+
 def v_tool_halt(probe: Sequence[Event], grace_s: float) -> Verdict:
     """#4435/#4456: после провала цели тула навигации (из диалога) через ``grace_s`` нет FollowPath и mux = 0."""
     sc = ("#4435", "tool_halt")
@@ -505,6 +710,21 @@ class ZoneRun:
         return [z for z in zone_transitions(self.guard) if z[2] == "stop" and lo <= z[0] <= hi]
 
 
+def _stop_gap_fault(gap: float, point: Optional[Tuple[float, float]]) -> Optional[str]:
+    """Почему стоп нарушает порог; None — зазор честный.
+
+    Внутри коридора хода зазор меньше ``STOP_GAP_MIN_M`` — защита пропустила порог 0.20 м (#4365).
+    Вне коридора зазор 0.16–0.19 м — торец сбоку, стопа быть не должно (решение Шифу 10.11, #4438).
+    """
+    if point is None or math.isnan(gap):
+        return None
+    if abs(point[1]) <= CORRIDOR_HALF_M and gap < STOP_GAP_MIN_M:
+        return f"зазор {gap:.2f} м внутри коридора (|y|={abs(point[1]):.2f} ≤ {CORRIDOR_HALF_M}) — порог 0.20 пропущен"
+    if abs(point[1]) > CORRIDOR_HALF_M and gap < 0.20:
+        return f"стоп по точке вне коридора (|y|={abs(point[1]):.2f} > {CORRIDOR_HALF_M}) при зазоре {gap:.2f} м"
+    return None
+
+
 def _hold_drift(probe: Sequence[Event]) -> Optional[float]:
     """Сдвиг правды Gazebo от EM_ON + 0.5 с до конца толкания (м): стоп держит, пока команда толкает."""
     em = kinds(probe, "EM_ON")
@@ -538,7 +758,7 @@ def v_zone(run: ZoneRun, px) -> Verdict:
                 f"зазор впереди в конце: {end[0].text if end else '?'}",
             ),
         )
-    t_stop, prev, _, gap = stops[0]
+    t_stop, prev, _, gap, point = stops[0]
     alarm = px.ALARMS[px.ZONE_STOP]
     lo, hi = run.window()
     beeps = triggers(run.voice, (alarm.sound,), lo, hi)
@@ -552,8 +772,12 @@ def v_zone(run: ZoneRun, px) -> Verdict:
         f"«{alarm.phrase}»: {len(said)}" + (f", через {said[0][0] - t_stop:+.2f} с" if said else ""),
         f"маячок {alarm.animation}: {run.lights} запросов",
     ]
+    fault = _stop_gap_fault(gap, point)
+    if fault:
+        facts.append(fault)
     bad = (
         not (gap > 0.0)
+        or fault is not None
         or drift is None
         or drift > HOLD_DRIFT_M
         or not beeps
@@ -563,6 +787,28 @@ def v_zone(run: ZoneRun, px) -> Verdict:
         or said[0][0] - t_stop > SPEECH_LAG_S
     )
     return Verdict(*sc, FAIL if bad else PASS, tuple(facts))
+
+
+def v_corner_stop(guard: Sequence[Event]) -> Verdict:
+    """#4631: стоп у угла корпуса на пути. Строка стопа несёт зазор и точку в ``base_footprint``.
+
+    PASS — точка внутри коридора хода и зазор не меньше ``STOP_GAP_MIN_M`` (защита встала не позже 0.20 м).
+    FAIL — зазор меньше порога внутри коридора, либо стоп по точке вне коридора (решение Шифу 10.11, #4438).
+    NOT_TRIGGERED — входа в stop не было: угол на пути не проверен.
+    """
+    sc = ("#4631", "corner")
+    stops = [z for z in zone_transitions(guard) if z[2] == "stop"]
+    if not stops:
+        return Verdict(*sc, NOT_TRIGGERED, ("в журнале защиты нет входа в stop — угол на пути не проверен",))
+    _, prev, _, gap, point = stops[0]
+    where = "точка не напечатана" if point is None else f"точка ({point[0]:+.2f}, {point[1]:+.2f})"
+    facts = [f"зона {prev} → stop, до корпуса {gap:.2f} м, {where}"]
+    fault = _stop_gap_fault(gap, point)
+    if point is None:
+        fault = "строка стопа без точки — коридор хода не проверить"
+    if fault:
+        return Verdict(*sc, FAIL, tuple(facts + [fault]))
+    return Verdict(*sc, PASS, tuple(facts + [f"зазор {gap:.2f} м ≥ {STOP_GAP_MIN_M} внутри коридора хода"]))
 
 
 def v_guard_sound(run: ZoneRun, px, mode: str, env_text: str) -> Verdict:
@@ -576,7 +822,7 @@ def v_guard_sound(run: ZoneRun, px, mode: str, env_text: str) -> Verdict:
         f"env proximity-guard: HIL_GUARD_SOUND={env.get(px.GUARD_SOUND_ENV, 'unset')} "
         f"USE_SIM_TIME={env.get(px.SIM_TIME_ENV, 'unset')}"
     ]
-    if env.get(px.GUARD_SOUND_ENV, "on") != mode or env.get(px.SIM_TIME_ENV) != "true":
+    if env.get(px.GUARD_SOUND_ENV, "off") != mode or env.get(px.SIM_TIME_ENV) != "true":
         return Verdict(*sc, FAIL, tuple(facts + [f"контейнер не в режиме {mode} или не в HIL"]))
     stops = run.stops()
     if not stops:
@@ -650,6 +896,14 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
         return v_orphan_natural(probe, parse_docker(_read(d, "watchdog.log")), args.grace)
     if scenario == "tool_halt":
         return v_tool_halt(probe, args.grace)
+    if scenario == "controller_abort":
+        return v_controller_abort(probe, parse_docker(_read(d, "nav2.log")), args.grace, args.allowance)
+    if scenario == "client_kill":
+        return v_client_kill(probe, args.grace)
+    if scenario == "host_cancel":
+        return v_host_cancel(probe, args.grace)
+    if scenario == "doorway":
+        return v_doorway(probe, parse_docker(_read(d, "guard.log")), (args.opening_lo, args.opening_hi))
     voice = parse_docker(_read(d, "voice.log"))
     if scenario == "nav_aborted":
         return v_nav_aborted(voice, load_phrases())
@@ -660,6 +914,8 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
     px = load_proximity()
     if scenario == "zone":
         return v_zone(_zone_run(d, px), px)
+    if scenario == "corner":
+        return v_corner_stop(parse_docker(_read(d, "guard.log")))
     if scenario == "guard_sound":
         return v_guard_sound(_zone_run(d, px), px, args.mode, "\n".join(_read(d, "env.txt")))
     raise SystemExit(f"неизвестный сценарий {scenario}")
@@ -673,6 +929,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--owner", default="")
     ap.add_argument("--need", default="")
     ap.add_argument("--grace", type=float, default=DEFAULT_GRACE_S)
+    # movement_time_allowance боевого FollowPath (nav2_params.yaml). Не крутим ради PASS.
+    ap.add_argument("--allowance", type=float, default=30.0)
+    # Участок проёма по x правды Gazebo (сценарий doorway, мир polygon, проём 0.90 м на x=2).
+    ap.add_argument("--opening-lo", dest="opening_lo", type=float, default=1.2)
+    ap.add_argument("--opening-hi", dest="opening_hi", type=float, default=2.8)
     args = ap.parse_args(argv)
     verdict = evaluate(args.scenario, args.dir, args)
     print(verdict.line())

@@ -676,7 +676,7 @@ class TestAvatarArbiterPublishHeartbeat(unittest.TestCase):
 
 
 class TestAvatarArbiterDoesNotMutateExternalState(unittest.TestCase):
-    """Monitor-режим НЕ меняет twist_mux / dialogue_node (ADR-0028 §4.5)."""
+    """Monitor-режим НЕ меняет twist_mux / dialog_node (ADR-0028 §4.5)."""
 
     def setUp(self) -> None:
         self.node = AvatarArbiter()
@@ -692,9 +692,9 @@ class TestAvatarArbiterDoesNotMutateExternalState(unittest.TestCase):
             self.assertNotIn("twist_mux", t)
 
     def test_no_set_parameter_calls_for_dialogue(self) -> None:
-        """Нода в Phase 1 НЕ правит параметры dialogue_node (нет service-client'а)."""
+        """Нода в Phase 1 НЕ правит параметры dialog_node (нет service-client'а)."""
         # Доказательство: нода не создаёт service-client'ов, только service-servers.
-        # Это структурная гарантия — никаких side-effects на dialogue_node.
+        # Это структурная гарантия — никаких side-effects на dialog_node.
         # (Phase 2 active-режим может добавить, но только под mode=active.)
         self.assertEqual(self.node._publishers, self.node._publishers)  # smoke
         # На всякий случай: нет ни одного publisher-а на /voice/ или /dialogue/
@@ -1368,12 +1368,14 @@ class TestTeleopLockPublishers(unittest.TestCase):
     """ADR-0081 R1/R3 — avatar_arbiter публикует twist_mux-lock /teleop_lock.
 
     Покрывает:
-    - наличие publisher-а на /teleop_lock (Bool, latched);
+    - наличие publisher-а на /teleop_lock (Bool, VOLATILE+RELIABLE, #4694);
     - переход floor acquired → released → expired, и как меняется
       публикация;
     - публикацию БЕЗ de-dup: значение уходит в топик каждый тик
       безусловно (ADR-0081 §5.4 — иначе одиночную публикацию по фронту
-      затирает чужой публикатор на том же топике за 50 мс).
+      затирает чужой публикатор на том же топике за 50 мс);
+    - опоздавшего VOLATILE-подписчика: текущие True и False доходят
+      следующим тиком, без подписки в момент первого publish.
 
     Watchdog-а (`/teleop_lock_watchdog`) НЕТ — ADR-0081 Q2/R2 отменяет
     его: аппаратура(100) выше lock-а(90), залипший lock при падении
@@ -1397,13 +1399,14 @@ class TestTeleopLockPublishers(unittest.TestCase):
         # Период из TELEOP_LOCK_PUBLISH_PERIOD_S (0.05 с).
         self.assertIn(0.05, timer_periods)
 
-    def test_teleop_lock_uses_latched_qos(self) -> None:
-        """Latched (transient_local) QoS — иначе twist_mux при реконнекте
-        может пропустить True и потерять блокировку (false negative)."""
+    def test_teleop_lock_qos_matches_twist_mux(self) -> None:
+        """#4694: twist_mux LockTopicHandle подписан SystemDefaultsQoS
+        (durability VOLATILE). TRANSIENT_LOCAL с ним не стыкуется —
+        опоздавший mux не видит замок. Издатель VOLATILE+RELIABLE,
+        текущее значение догоняет следующий тик 20 Гц."""
         pub = self.node._publishers["/teleop_lock"]
-        # mock-rclpy conftest хранит qos через ``QoSProfile.__init__``;
-        # проверяем, что durability был transient_local.
-        self.assertEqual(getattr(pub, "durability", None), "transient_local")
+        self.assertEqual(getattr(pub, "durability", None), "volatile")
+        self.assertEqual(getattr(pub, "reliability", None), "reliable")
 
     # ── happy path: floor acquired → release ─────────────────────────
     def test_acquire_releases_publishes_true_then_false(self) -> None:
@@ -1511,6 +1514,59 @@ class TestTeleopLockPublishers(unittest.TestCase):
         self.node._release_lock_manager_floor("quest", LockFloor.TELEOP)
         self.node._publish_teleop_locks()
         self.assertFalse(teleop_pub.published[-1].data)
+
+    # ── #4694: опоздавший VOLATILE-подписчик видит текущее значение ──
+    def test_late_volatile_subscriber_sees_current_true_and_false(self) -> None:
+        """#4694: опоздавший VOLATILE-подписчик (twist_mux, ros2 topic echo)
+        не был подписан в момент первого publish и всё равно получает
+        текущее True и текущее False следующим тиком.
+
+        TRANSIENT_LOCAL такому подписчику последнее значение не отдаёт
+        (QoS несовместим) — поэтому издатель VOLATILE и шлёт значение
+        каждый тик. False публикуется только когда floor свободен.
+        """
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        pub = self.node._publishers["/teleop_lock"]
+
+        class _VolatileSub:
+            """Подписчик, которого не было в момент первого publish."""
+
+            def __init__(self) -> None:
+                self.seen: list[bool] = []
+
+            def attach(self) -> None:
+                pub.subscribers.append(self)
+
+            def on_msg(self, msg: Any) -> None:
+                self.seen.append(bool(msg.data))
+
+        self.assertFalse(pub.subscribers)
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertEqual([m.data for m in pub.published], [True])
+
+        late = _VolatileSub()
+        late.attach()
+        self.node._publish_teleop_locks()
+        self.assertEqual(late.seen, [True])
+
+        self.node._lock_manager.release("quest", LockFloor.TELEOP)
+        self.node._publish_teleop_locks()
+        self.assertEqual(late.seen, [True, False])
+        # До attach подписчик пуст: первое True ему не досталось из истории.
+        self.assertEqual(len(pub.published), 3)
+
+    def test_false_not_published_while_floor_held(self) -> None:
+        """Гейт не ослабляем: пока holder(TELEOP) есть, data=False не уходит."""
+        from rob_box_supervisor.core import Floor as LockFloor
+
+        self.node._lock_manager.acquire("quest", LockFloor.TELEOP)
+        pub = self.node._publishers["/teleop_lock"]
+        for _ in range(3):
+            self.node._publish_teleop_locks()
+        self.assertTrue(pub.published)
+        self.assertTrue(all(m.data for m in pub.published))
 
     # ── guard: ошибка в holder() не валит таймер ─────────────────────
     def test_publish_survives_lock_manager_error(self) -> None:

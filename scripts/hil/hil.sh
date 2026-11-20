@@ -9,6 +9,8 @@
 #
 # on:
 #   1. проверки: ssh до четырёх машин, настройки, пути карт и реестра (не боевые), образ сима;
+#      read-only проба e2e_mode робота (e2e_probe) до любых записей на Pi — продолжает ТОЛЬКО
+#      по достоверному false: рекреация voice-assistant сбросила бы e2e_mode марафона (#4686);
 #   2. замок HIL_LOCK (/tmp/hil.lock) на Main Pi — деплой его видит и не идёт;
 #   3. Main: docker stop ros2-control lslidar — моторы (CAN → VESC) получают команды
 #      только от ros2-control; Vision: docker stop oak-d ceiling-camera;
@@ -21,9 +23,14 @@
 #      В контейнере gazebo сторож (docker/sim/hil_run.sh): при живом /controller_manager
 #      робота Gazebo не стартует, второй контроллер позже — Gazebo гасится;
 #   6. ждём: в графе ровно один /controller_manager, контейнер ros2-control не работает —
-#      значит, единственный контроллер — Gazebo. Иначе сим гасится, робот остаётся без моторов.
-# off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
-#   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
+#      значит, единственный контроллер — Gazebo; у /diff_drive_controller/cmd_vel_unstamped
+#      ровно один подписчик (§5.1). Иначе сим гасится, робот остаётся без моторов.
+# off: сим гасится первым, затем на Main — Created-контейнеры MAIN_SIM_TIME (в т.ч. с
+#   hash-префиксом вроде abe6c83d1f0a_imu-filter) docker rm, иначе следующий recreate
+#   Conflict; дальше Vision и Sound `docker compose up -d --no-deps` тех же сервисов с
+#   теми же образами (закреплены по работающим контейнерам), замок снимается;
+#   восстановление пересоздаёт voice-assistant — активный e2e_mode сбросится: громкое
+#   предупреждение в логе, сам off не блокируем (restore возвращает моторы, #4686);
 #   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
 #   Состояние «до»: сразу после замка on пишет running|restarting|exited|absent каждого затрагиваемого
 #   сервиса в HIL_PRE_STATE (Main Pi). off сверяет с ним: сервис был нерабочим до on и таким остался —
@@ -76,6 +83,33 @@ rpi() {  # rpi <host> <подкоманда> <аргументы>...
     local args=() a
     for a in "$@"; do args+=("$(q "$a")"); done
     rsh "$host" "bash $REMOTE_PI ${args[*]}"
+}
+
+# e2e_probe: read-only проба e2e_mode /speaker_id_node внутри ${SOUND_SWITCH[0]}.
+# stdout — «true|false» только по подтверждённому ответу узла; rc≠0 — пробы не было
+# (нет контейнера/ros, пустой или битый вывод). Ничего на Pi не пишет и от Pi ничего
+# не требует (в отличие от remote_pi.sh) — зовётся до push_helpers, чтобы отказ не
+# оставил следов на Pi (#4686).
+e2e_probe() {
+    # Одинарные кавычки в q('...') намеренны: этот скрипт раскрывается удалённым
+    # bash -c на Sound Pi, локального раскрытия $( ) и $out здесь быть не должно.
+    # shellcheck disable=SC2016
+    rsh "$HIL_SOUND_HOST" "docker exec $(q "${SOUND_SWITCH[0]}") bash -c $(q 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; out=$(ros2 param get /speaker_id_node e2e_mode --no-daemon 2>/dev/null | grep -aoE "Boolean value is: (True|False)" | tail -1); [ -n "$out" ] || exit 9; case "$out" in *True*) printf true ;; *) printf false ;; esac')"
+}
+
+# e2e_guard: on/off пересоздают ${SOUND_SWITCH[@]} (docker compose up -d), а рекреация
+# контейнера поднимает speaker_id_node с e2e_mode=false по умолчанию — марафон/e2e-прогон
+# теряет режим посреди актов (#4686). Fail-closed: продолжать можно только по достоверному
+# false; true, пустой/битый вывод и ненулевой probe — отказ/предупреждение.
+e2e_guard() {  # $1 = abort|warn
+    local st rc=0
+    st=$(e2e_probe 2>/dev/null) || rc=$?
+    if [ "$rc" -ne 0 ] || [ "$st" != false ]; then
+        if [ "$1" = abort ]; then
+            die "на Sound Pi не подтверждён выключенный e2e-режим (${SOUND_SWITCH[0]}: probe rc=$rc, ответ='${st:-пусто}'): пересоздание контейнера сбросит e2e_mode и сломает e2e-прогон; дождись его конца или сними режим вручную (issue #4686)"
+        fi
+        log "⚠️ e2e-режим ${SOUND_SWITCH[0]} не подтверждён выключенным (probe rc=$rc, ответ='${st:-пусто}'): restore всё равно сбросит e2e_mode (#4686) — чужой e2e-прогон придётся повторить"
+    fi
 }
 
 # ── Состояние сервисов «до on» (решение «сломан до on → предупреждение» принимает код) ──
@@ -253,16 +287,140 @@ sim_gazebo_state() {
 sim_cm_count() {
     rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -" || echo -
 }
+# Подписчики /diff_drive_controller/cmd_vel_unstamped (§5.1): норма HIL — 1 (только Gazebo).
+# «-» — gazebo не работает или topic info не ответил.
+CMD_VEL_UNSTAMPED="/diff_drive_controller/cmd_vel_unstamped"
+sim_cmd_vel_subs() {
+    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh ros2 topic info $(q "$CMD_VEL_UNSTAMPED") 2>/dev/null | sed -n 's/^Subscription count: *//p' | tail -n 1 | grep -E '^[0-9]+$' || echo -" || echo -
+}
 sim_down() {
     log "песочница: гашу zenoh-router и gazebo ($HIL_SIM_PROJECT)"
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
 }
+# Мир до первой цели Depot (#4694): PASS только по трём фактам (args/mount/SDF).
+# Обязательность решает код (world_check.py --gate-required): HIL_EXPECT_WORLD=depot
+# или точный world:=/sim_video/world.sdf. Обычный polygon без переменной — молчит.
+# world.sdf.old гейт не включает.
+sim_world_gate_required() {  # sim_world_gate_required <expect> <args>
+    local ans
+    ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --gate-required "$1" --args "$2" 2>/dev/null || true)
+    [ "$ans" = required ]
+}
+# Копия Compose на песочнице — штатный Depot? (полный маршрут, M1, R7).
+# Код печатает required|skip. Пустой ответ — не «skip»: файл не прочитан.
+sim_on_must_check_depot() {  # sim_on_must_check_depot <expect> <локальный файл compose>
+    local ans
+    ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --on-must-check "$1" --compose-file "$2" 2>/dev/null || true)
+    [ "$ans" = required ]
+}
+sim_check_expect_world() {
+    local expect="$1" gz="$HIL_SIM_PREFIX-gazebo" args mounts wpath sdf image line rc=0 tmp
+    args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$gz")" 2>/dev/null || true)
+    mounts=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' $(q "$gz")" 2>/dev/null || true)
+    image=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.Image}}' $(q "$gz")" 2>/dev/null || true)
+    wpath=""
+    case "$args" in
+        *world:=*) wpath="${args#*world:=}"; wpath="${wpath%% *}" ;;
+    esac
+    sdf=""
+    if [ -n "$wpath" ]; then
+        sdf=$(rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$gz") cat $(q "$wpath") 2>/dev/null" || true)
+    fi
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        mkdir -p "$HIL_WORLD_CHECK_DIR"
+        # Бриф 15:44 UTC: каталог Compose, команда Gazebo, SHA SDF, ID образа.
+        printf '%s\n' "$HIL_SANDBOX_REPO" >"$HIL_WORLD_CHECK_DIR/compose_dir.txt"
+        printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_args.txt"
+        printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_command.txt"
+        printf '%s\n' "$mounts" >"$HIL_WORLD_CHECK_DIR/gazebo_mounts.txt"
+        printf '%s\n' "$image" >"$HIL_WORLD_CHECK_DIR/gazebo_image_id.txt"
+        if [ -n "$sdf" ]; then
+            printf '%s' "$sdf" | sha256sum | awk '{print $1}' >"$HIL_WORLD_CHECK_DIR/sdf.sha256"
+        else
+            printf 'missing\n' >"$HIL_WORLD_CHECK_DIR/sdf.sha256"
+        fi
+    fi
+    tmp=$(mktemp -d)
+    printf '%s\n' "$mounts" >"$tmp/mounts"
+    printf '%s' "$sdf" >"$tmp/sdf"
+    line=$(python3 -X utf8 "$HERE/checks/world_check.py" "$expect" \
+        --args "$args" --mounts-file "$tmp/mounts" --sdf-file "$tmp/sdf") || rc=$?
+    rm -rf "$tmp"
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        printf '%s\n' "$line" >"$HIL_WORLD_CHECK_DIR/verdict.txt"
+    fi
+    if [ "$rc" -ne 0 ]; then
+        sim_down
+        die "$line; hil.sh off"
+    fi
+    log "мир: $line"
+}
 
 # ── Main Pi: контур навигации в HIL ───────────────────────────────────────
 
+# created_containers_to_rm: stdin «ID NAMES STATUS…» (как docker ps --format),
+# аргументы — имена сервисов. stdout — ID со статусом Created, чьё имя равно
+# сервису или оканчивается на _сервис / -сервис (hash-префикс compose v1,
+# project-svc[-N] v2). Up/Exited/Paused не трогаем — только Created.
+created_containers_to_rm() {
+    local id name status cand tail svc
+    while read -r id name status _; do
+        [ -n "${id:-}" ] && [ -n "${name:-}" ] || continue
+        case "$status" in
+            Created | created) ;;
+            *) continue ;;
+        esac
+        cand="$name"
+        tail="${name##*-}"
+        case "$tail" in
+            "" | *[!0-9]*) ;;
+            *) cand="${name%-*}" ;;
+        esac
+        for svc in "$@"; do
+            case "$name" in
+                "$svc" | *_"$svc" | *-"$svc") printf '%s\n' "$id"; continue 2 ;;
+            esac
+            if [ "$cand" != "$name" ]; then
+                case "$cand" in
+                    "$svc" | *_"$svc" | *-"$svc") printf '%s\n' "$id"; continue 2 ;;
+                esac
+            fi
+        done
+    done
+}
+
+# Убрать Created-контейнеры MAIN_SIM_TIME на Main до recreate: осиротевший
+# abe6c83d1f0a_imu-filter (и аналоги) иначе даёт Conflict на следующем up.
+main_rm_created_sim() {
+    local list ids line
+    list=$(rsh "$HIL_MAIN_HOST" "docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'") || true
+    ids=$(printf '%s\n' "$list" | created_containers_to_rm "${MAIN_SIM_TIME[@]}")
+    [ -n "$ids" ] || return 0
+    line=$(printf '%s\n' "$ids" | tr '\n' ' ')
+    line=${line% }
+    log "Main: docker rm Created контура HIL: $line"
+    # shellcheck disable=SC2086
+    rsh "$HIL_MAIN_HOST" "docker rm $line" || log "⚠️  docker rm Created не полностью ($line)"
+}
+
 # compose up сервисов контура (on и restart): sim time, карта HIL_MAPS_DIR, режим rtabmap HIL_RTABMAP_MODE.
+# HIL_NAV2TUNE_COMPOSE — необязательный четвёртый -f (повтор M1, #4694). Пусто — три файла, как раньше.
+# HIL_GOAL_PROBE_COMPOSE — необязательный пятый -f (проба goal-checker, #4945), только вместе с
+# M1_GOAL_PROBE_MOUNT: compose пробы требует переменную (${M1_GOAL_PROBE_MOUNT:?}).
+# off эти файлы не читает: боевой nav2 поднимается без оверлея и без пробы.
 main_sim_up() {  # main_sim_up [флаги compose up] <сервисы>...
-    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") up -d --no-deps --pull never $*"
+    main_rm_created_sim
+    local extra=""
+    local probe_env=""
+    if [ -n "${HIL_NAV2TUNE_COMPOSE:-}" ]; then
+        extra="-f $(q "$HIL_NAV2TUNE_COMPOSE")"
+    fi
+    if [ -n "${HIL_GOAL_PROBE_COMPOSE:-}" ]; then
+        extra="$extra -f $(q "$HIL_GOAL_PROBE_COMPOSE")"
+        probe_env="M1_GOAL_PROBE_MOUNT=$(q "${M1_GOAL_PROBE_MOUNT:-}")"
+    fi
+    # shellcheck disable=SC2086
+    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") NAV2TUNE_OVERLAYS=$(q "${NAV2TUNE_OVERLAYS:-}") $probe_env docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") $extra up -d --no-deps --pull never $*"
 }
 
 # ── Команды ───────────────────────────────────────────────────────────────
@@ -282,11 +440,32 @@ preflight() {
     log "ROBOT_ID=$HIL_ROBOT_ID, песочница $HIL_SANDBOX_IP (iface=${HIL_SANDBOX_IFACE:-—}), роутеры робота: $HIL_ROBOT_ROUTERS"
 }
 
+validate_hil_run_token() {
+    if [ -n "${HIL_RUN_TOKEN:-}" ] && ! [[ "$HIL_RUN_TOKEN" =~ ^[0-9a-f]{32}$ ]]; then
+        die "HIL_RUN_TOKEN: ожидались 32 строчных шестнадцатеричных цифры"
+    fi
+}
+
+check_hil_off_owner() {
+    validate_hil_run_token
+    [ -n "${HIL_RUN_TOKEN:-}" ] || return 0
+    local lock
+    lock=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_LOCK") 2>/dev/null") || die "off: замок HIL не прочитан"
+    [[ "$lock" == "HIL on since "*" token=$HIL_RUN_TOKEN maps=$HIL_MAPS_DIR" ]] \
+        || die "off: замок HIL принадлежит другому запуску"
+}
+
 cmd_on() {
+    validate_hil_run_token
     preflight
+    e2e_guard abort
     push_helpers
     local who
-    who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP maps=$HIL_MAPS_DIR"
+    who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP"
+    if [ -n "${HIL_RUN_TOKEN:-}" ]; then
+        who+=" token=$HIL_RUN_TOKEN"
+    fi
+    who+=" maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
 
     log "состояние сервисов до on → $HIL_MAIN_HOST:$HIL_PRE_STATE"
@@ -330,11 +509,32 @@ cmd_on() {
         *" running "*) die "ros2-control снова работает ($st) — Gazebo не поднимаю; hil.sh off" ;;
     esac
 
+    # До compose up: копия — штатный Depot (runvideo, M1, R7) или expect=depot.
+    # Гейт обязателен и при потере overlay (#4694). Polygon без env — молчит.
+    _depot_compose=$(mktemp)
+    if ! rsh "$HIL_SANDBOX_HOST" "cat $(q "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml")" >"$_depot_compose"; then
+        rm -f "$_depot_compose"
+        die "WORLD_MISMATCH: compose.hil.yaml не прочитан, Gazebo не поднимаю"
+    fi
+    if sim_on_must_check_depot "${HIL_EXPECT_WORLD:-}" "$_depot_compose"; then
+        export HIL_EXPECT_WORLD=depot
+        log "мир: копия Compose — Depot, проверка обязательна до первой цели"
+    elif [ -n "${HIL_EXPECT_WORLD:-}" ] && [ "${HIL_EXPECT_WORLD}" != depot ]; then
+        rm -f "$_depot_compose"
+        die "WORLD_MISMATCH: HIL_EXPECT_WORLD=${HIL_EXPECT_WORLD} (только depot или пусто)"
+    fi
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        mkdir -p "$HIL_WORLD_CHECK_DIR"
+        cp "$_depot_compose" "$HIL_WORLD_CHECK_DIR/compose.hil.yaml"
+        printf '%s\n' "$HIL_SANDBOX_REPO" >"$HIL_WORLD_CHECK_DIR/compose_dir.txt"
+    fi
+    rm -f "$_depot_compose"
+
     log "песочница: поднимаю ${SIM_SERVICES[*]} (мир $HIL_SIM_WORLD)"
     sim_compose up -d --no-build "${SIM_SERVICES[@]}" || { sim_down; die "песочница: compose up не прошёл; робот без моторов, hil.sh off"; }
 
-    log "жду ровно один /controller_manager (Gazebo), до $HIL_WAIT_CM_S с"
-    local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz
+    log "жду ровно один /controller_manager и одного подписчика $CMD_VEL_UNSTAMPED (§5.1), до $HIL_WAIT_CM_S с"
+    local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz subs
     while :; do
         gz=$(sim_gazebo_state)
         case "$gz" in
@@ -350,16 +550,36 @@ cmd_on() {
             *" running "*) sim_down; die "ros2-control робота работает ($st) — Gazebo погашен; hil.sh off" ;;
         esac
         if [ "$cm" = 1 ]; then
-            log "✅ /controller_manager ровно один, ros2-control робота: ${st#ros2-control }"
-            break
-        fi
-        if [ "$cm" != 0 ] && [ "$cm" != - ]; then
+            # §5.1: один подписчик cmd_vel_unstamped (Gazebo); два — ещё слушает ros2-control.
+            subs=$(sim_cmd_vel_subs)
+            if [ "$subs" = 1 ]; then
+                log "✅ /controller_manager ровно один, $CMD_VEL_UNSTAMPED подписчиков: 1, ros2-control робота: ${st#ros2-control }"
+                break
+            fi
+            if [ "$subs" != 0 ] && [ "$subs" != - ]; then
+                sim_down
+                die "$CMD_VEL_UNSTAMPED подписчиков: $subs (ждали 1) — Gazebo погашен; hil.sh off"
+            fi
+        elif [ "$cm" != 0 ] && [ "$cm" != - ]; then
             sim_down
             die "/controller_manager в графе: $cm (ждали 1) — Gazebo погашен; hil.sh off"
         fi
-        [ "$(date +%s)" -lt "$deadline" ] || { sim_down; die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"; }
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            sim_down
+            if [ "$cm" = 1 ]; then
+                die "за $HIL_WAIT_CM_S с у $CMD_VEL_UNSTAMPED не ровно 1 подписчик (сейчас ${subs:--}); hil.sh off"
+            fi
+            die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"
+        fi
         sleep 5
     done
+    # Гейт до «HIL включён» / первой цели. Обязательность решает код, не case в shell:
+    # HIL_EXPECT_WORLD=depot (штатный сценарий сам его выставляет) или точный
+    # world:=/sim_video/world.sdf. Обычный polygon без переменной и world.sdf.old — молчит (#4694).
+    _depot_args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null || true)
+    if sim_world_gate_required "${HIL_EXPECT_WORLD:-}" "$_depot_args"; then
+        sim_check_expect_world depot
+    fi
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."
     cmd_status
 }
@@ -401,6 +621,7 @@ cmd_restart() {
 }
 
 cmd_off() {
+    check_hil_off_owner
     check_net
     check_hil_registry
     local host
@@ -408,6 +629,7 @@ cmd_off() {
         rsh "$host" true || die "нет ssh до $host"
     done
     resolve_robot_id
+    e2e_guard warn
     push_helpers
     # Сначала сим: иначе вернувшийся ros2-control встретит второй /controller_manager.
     sim_down
@@ -420,6 +642,7 @@ cmd_off() {
 
     log "Main: возвращаю ${MAIN_SIM_TIME[*]} ${MAIN_STOP[*]} (боевое окружение, те же образы)"
     rpi "$HIL_MAIN_HOST" pin "$HIL_MAIN_DIR" "$HIL_REMOTE_DIR/main.images.yaml"
+    main_rm_created_sim
     rpi "$HIL_MAIN_HOST" compose "$HIL_MAIN_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/main.images.yaml" \
         up -d --no-deps --pull never "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}"
     log "Vision: возвращаю ${VISION_STOP[*]}"
@@ -487,6 +710,7 @@ cmd_off() {
     if [ "$bad" != 0 ]; then
         die "не всё вернулось (см. выше: ❌) — замок $HIL_LOCK оставлен"
     fi
+    check_hil_off_owner
     rsh "$HIL_MAIN_HOST" "rm -f -- $(q "$HIL_PRE_STATE")" || true
     rpi "$HIL_MAIN_HOST" lock-release "$HIL_LOCK"
     local tail_note=""
@@ -531,7 +755,9 @@ cmd_status() {
     local gz
     gz=$(sim_gazebo_state)
     case "$gz" in
-        running*) echo "── /controller_manager в графе (сторож в gazebo): $(sim_cm_count) (норма HIL — 1)" ;;
+        running*)
+            echo "── /controller_manager в графе (сторож в gazebo): $(sim_cm_count) (норма HIL — 1)"
+            echo "── $CMD_VEL_UNSTAMPED подписчиков: $(sim_cmd_vel_subs) (норма HIL — 1)" ;;
         *) echo "── gazebo: $gz" ;;
     esac
 }

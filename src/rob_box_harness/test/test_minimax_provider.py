@@ -1613,7 +1613,7 @@ async def test_http_transport_401_is_translated_to_auth_error() -> None:
 async def test_stream_cancel_closes_inner_stream() -> None:
     """Issue #1280 — cancelling the consumer must abort the HTTP stream.
 
-    When the user barges in (new STT input), ``dialogue_node`` cancels
+    When the user barges in (new STT input), ``dialog_node`` cancels
     the run task. The harness ``MiniMaxProvider.stream`` must then
     cancel its background runner AND close the inner stream. Before the
     fix the background ``_runner`` task was never cancelled — the HTTP

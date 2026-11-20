@@ -62,6 +62,16 @@ CRITICAL_DEMOTED_TO_WARNING = [
 PROXIMITY_BLIND_RE = re.compile(r"\[proximity_guard\]: .*нет свежих скана или одометрии", re.IGNORECASE)
 PROXIMITY_RECOVERED_RE = re.compile(r"\[proximity_guard\]: .*скан и одометрия идут — зона под контролем", re.IGNORECASE)
 PROXIMITY_BLIND_DEMOTION = r"\[proximity_guard\]: .*нет свежих скана или одометрии"
+# Эхо health_monitor — не лог самой ноды. print_report режет msg до 60 символов и
+# переписывает строку как `[LEVEL] <node> (Ns ago): <msg[:60]>`
+# (health_monitor.py:136-137), поэтому после `]` идёт ` (42s ago)`, а не `:`.
+# PROXIMITY_BLIND_RE это не матчит. Класс отдельный: эхо — дубль собственной строки
+# ноды, если она в дампе есть, и самостоятельный critical, если её нет. Само эхо
+# никогда не двигает окно возврата (возврат виден только из полной строки ноды).
+HEALTH_MONITOR_PROXIMITY_ECHO_RE = re.compile(
+    r"\[(?:ERROR|FATAL|WARN)\] proximity_guard \(\d+s ago\): .*нет свежих скана или одометрии",
+    re.IGNORECASE,
+)
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
@@ -195,7 +205,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # (e.g. `ros2 topic list | head`) already hung up. Benign — the follow-up
     # BrokenPipeError line is already excluded above (retro 15.08 t_a14ac65d).
     r"exception ignored in:",
-    # dialogue_node INFO success echo: "process_input returned: ... error=None"
+    # dialog_node INFO success echo: "process_input returned: ... error=None"
     # is the normal turn-completion line — error=None means NO error. The bare
     # \berror\b matcher hits "error=None" and would file a false deploy-critical
     # issue on a fully green round (retro 15.08 t_29230e6f, issue #1335: deploy
@@ -302,8 +312,8 @@ CRITICAL_EXCLUDE_COMMON = [
     # preload separately; the deploy gate must not file a critical
     # issue every time it repeats.
     r"failure in server /n_free node \d+ not found",
-    # dialogue_node user_input echo (deploy run 33308557595, 30.08
-    # 11:17, kanban t_fe19566c, issue #1737): dialogue_node logs the
+    # dialog_node user_input echo (deploy run 33308557595, 30.08
+    # 11:17, kanban t_fe19566c, issue #1737): dialog_node logs the
     # entire `user_input='...'` payload it forwards to the LLM, so a
     # user who literally said the words "[CRITICAL]" / "[ERROR]" /
     # "traceback" in a sentence gets that text echoed verbatim into
@@ -312,12 +322,12 @@ CRITICAL_EXCLUDE_COMMON = [
     # deploy-critical issue even though no system error happened -
     # the robot is happily processing a turn. Excluding every
     # `user_input='` echo makes the rule tight (LLM payload is
-    # structured; a real dialogue_node crash shows up in a different
+    # structured; a real dialog_node crash shows up in a different
     # log shape, e.g. `Traceback (most recent call last):` followed by
     # a Python exception line that does NOT match `user_input='`).
     #
     # Issue #1834 (deploy run 33450019127, 31.08 23:17, kanban
-    # t_65a41c8c): dialogue_node formats the same payload via
+    # t_65a41c8c): dialog_node formats the same payload via
     # `{user_input!r}` (Python repr, see dialogue_node.py:4557).
     # Python's repr() picks SINGLE quotes by default but switches to
     # DOUBLE quotes whenever the string contains a `'` and no `"` -
@@ -333,14 +343,14 @@ CRITICAL_EXCLUDE_COMMON = [
     # `Traceback (most recent call last):` header followed by an
     # exception line that does not contain `user_input=...`).
     r"""user_input=['"]""",
-    # dialogue_node synthetic-retreat log line (deploy run 34908172365,
+    # dialog_node synthetic-retreat log line (deploy run 34908172365,
     # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395): the DJ Bug B
     # synchronous retry path emits a single-shot
     # `_dispatch_turn(raw_user_command=user_input, is_synthetic=True)`
     # whose reminder payload is `[CRITICAL] В прошлом цикле ты НЕ вызвал
     # compose_music` (see dialogue_node.py:_build_dj_retry_prompt).
     # rclpy prints that user_input as a turn-start line in the form
-    # `[dialogue_node-N]   [<pid>] user: '<payload>'` (the `[<pid>]`
+    # `[dialog_node-N]   [<pid>] user: '<payload>'` (the `[<pid>]`
     # slot is the logger's process-id formatter; the value varies per
     # container restart). The CRITICAL_MATCH_RE `\bcritical\b` part of
     # that line is purely the reminder text, not a deployment failure
@@ -348,7 +358,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # (issue #992 Bug C), and a successful follow-up turn is logged a
     # few lines later without errors. The exclusion is scoped to the
     # `[CRITICAL]` marker + `не вызвал`/`ни один` phrasing so a real
-    # dialogue_node crash on the same container (which prints a
+    # dialog_node crash on the same container (which prints a
     # `Traceback (most recent call last):` header followed by an
     # exception line) is still reported. The negative test
     # `test_dialogue_node_dj_retry_critical_reminder_still_reports_real_traceback`
@@ -368,11 +378,11 @@ CRITICAL_EXCLUDE_COMMON = [
     # deploy-critical issue on every green run until sclang finishes
     # preloading.
     r"music stack validation found non-critical errors \(degraded but usable\)",
-    # dialogue_node bare "Traceback" header without the exact
+    # dialog_node bare "Traceback" header without the exact
     # column-zero shape covered by the rule above (issue #1335 retro
     # 15.08 covered only `^traceback \(most recent call last\):$`,
-    # but ROS2 node loggers prepend a `[dialogue_node-4]` prefix
-    # before the header, so the line `[dialogue_node-4] Traceback
+    # but ROS2 node loggers prepend a `[dialog_node-4]` prefix
+    # before the header, so the line `[dialog_node-4] Traceback
     # (most recent call last):` slips through and triggers a
     # deploy-critical issue on otherwise green runs - deploy run
     # 33315845764, 30.08 14:08, kanban t_fe19566c, issue #1737). The
@@ -400,8 +410,8 @@ CRITICAL_EXCLUDE_COMMON = [
     # `[stt_attempt] yandex:error->vosk:error->rejected`) do not match
     # the `vosk:ok` half and continue to surface as critical issues.
     r"\[stt_attempt\][^]]*yandex:error[^]]*vosk:ok",
-    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
-    # 08:42, kanban t_c9c7238c, issue #1877): dialogue_node's babble
+    # dialog_node self-recovery echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): dialog_node's babble
     # guard logs `[issue 992 Bug D] LLM babble detected — retrying
     # once with CRITICAL reminder (head=...)` at WARN level when the
     # metalanguage detector trips on the LLM's reply. The literal
@@ -649,7 +659,7 @@ WARNING_EXCLUDE_COMMON = [
     # explicit "Ignore this warning if the ini file does not exist yet" —
     # rtabmap creates the file on shutdown, benign (round-117).
     r"section .* in /config/rtabmap/rtabmap.ini doesn't exist",
-    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
+    # dialog_node self-recovery echo (deploy run 33609815109, 02.09
     # 08:42, kanban t_c9c7238c, issue #1877): the babble/tool-skipped
     # retry notifications in dialogue_node.py:3564 and 4023 log at
     # `[WARN]` severity, and the message text contains the literal
@@ -759,7 +769,7 @@ WARNING_EXCLUDE_COMMON = [
     # (music_guard.py:386-388, `_log_warning`). The Main Pi's
     # perception/health_monitor subscribes to the shared /rosout
     # bus and re-echoes the same line under
-    # `[WARN] dialogue_node (Ns ago): ...` — the bare `warn` token
+    # `[WARN] dialog_node (Ns ago): ...` — the bare `warn` token
     # in the echo trips WARNING_MATCH_RE in the main scope and
     # produces a false-positive deploy warning on every run where
     # the LLM happened to satisfy a vocal request without the
@@ -975,15 +985,36 @@ def _critical_exclude_patterns(log_text: str, scope: str) -> list[str]:
     return patterns + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
 
 
+def _is_health_monitor_proximity_echo(line: str) -> bool:
+    """Эхо health_monitor строки proximity_guard, не собственный лог ноды.
+
+    Формат печатает print_report: `[LEVEL] proximity_guard (Ns ago): <msg[:60]>`.
+    Обрезка до 60 символов срезает хвост «зона НЕ контролируется», поэтому
+    возврат из эха не читается и эхо само окно возврата не двигает.
+    """
+    return bool(HEALTH_MONITOR_PROXIMITY_ECHO_RE.search(line))
+
+
+def _proximity_own_blind_present(log_text: str) -> bool:
+    """В дампе есть собственная (не эхо) строка слепоты proximity_guard."""
+    return any(
+        PROXIMITY_BLIND_RE.search(line) and not _is_health_monitor_proximity_echo(line)
+        for line in log_text.splitlines()
+    )
+
+
 def _proximity_guard_recovered(log_text: str) -> bool:
     """True, если последнее состояние proximity_guard в дампе — «зона под контролем».
 
     Нода пишет ERROR при каждом переходе в «слепой» режим и INFO при каждом возврате,
     поэтому решает порядок строк: стартовая гонка (ERROR, затем INFO) — шум, ERROR без
-    возврата после него — настоящая потеря скана или одометрии.
+    возврата после него — настоящая потеря скана или одометрии. Эхо health_monitor в
+    счёт не идёт: оно обрезано до 60 символов и не является строкой ноды.
     """
     state = None
     for line in log_text.splitlines():
+        if _is_health_monitor_proximity_echo(line):
+            continue
         if PROXIMITY_BLIND_RE.search(line):
             state = False
         elif PROXIMITY_RECOVERED_RE.search(line):
@@ -1014,6 +1045,25 @@ def _classify_error_like_line(
     return "critical"
 
 
+def _classify_with_proximity_echo(
+    line: str,
+    exclude_patterns: Iterable[str],
+    demoted_patterns: Iterable[str],
+    *,
+    own_blind_present: bool,
+) -> str | None:
+    """Классификация с правилом дубля эха proximity_guard.
+
+    Эхо — не самостоятельный пункт, только когда в дампе уже есть собственная
+    строка слепоты ноды (её и так классифицирует окно возврата). Без собственной
+    строки эхо остаётся critical: понижать его нечем, возврата из обрезки не видно.
+    """
+    severity = _classify_error_like_line(line, exclude_patterns, demoted_patterns)
+    if severity == "critical" and own_blind_present and _is_health_monitor_proximity_echo(line):
+        return None
+    return severity
+
+
 def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
@@ -1023,9 +1073,13 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
     demoted = list(CRITICAL_DEMOTED_TO_WARNING)
     if _proximity_guard_recovered(log_text):
         demoted.append(PROXIMITY_BLIND_DEMOTION)
+    own_blind = _proximity_own_blind_present(log_text)
     if severity == "critical":
         for line in lines:
-            if _classify_error_like_line(line, critical_patterns, demoted) == "critical":
+            if (
+                _classify_with_proximity_echo(line, critical_patterns, demoted, own_blind_present=own_blind)
+                == "critical"
+            ):
                 return line
         return None
 
@@ -1034,10 +1088,8 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         # Warning — это и строка со словом warn/warning, и строка, понижённая из
         # critical (см. _classify_error_like_line): без второго условия понижённые
         # строки пропали бы из отчёта совсем, а не стали предупреждением.
-        if not (
-            WARNING_MATCH_RE.search(line)
-            or _classify_error_like_line(line, critical_patterns, demoted) == "warning"
-        ):
+        classified = _classify_with_proximity_echo(line, critical_patterns, demoted, own_blind_present=own_blind)
+        if not (WARNING_MATCH_RE.search(line) or classified == "warning"):
             continue
         if _matches_any(patterns, line):
             continue

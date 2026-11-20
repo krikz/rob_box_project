@@ -22,8 +22,17 @@
 #   * ``ros2 param get`` печатает то, что печатает ros2cli:
 #     «Boolean value is: True|False» / «String value is: <v>».
 #
+# Часы робота — одни на ``date`` и на метки ``{NOW-x}`` в логе. Раньше ``date +%s.%N``
+# отдавал часы хоста, а ``{NOW-x}`` считался от ``date`` внутри awk: два источника, и
+# харнесс, который честно спит по разнице часов робота и метки лога (``barge_hold``),
+# в тесте видел разницу ноль. Смещение — $FAKE_ROBOT_SKEW_S (секунды, по умолчанию 0).
+#
 # Логи контейнера voice-assistant (``docker logs voice-assistant ...``) —
-# содержимое $FAKE_ROBOT_LOG (если задан). ``echo X > /proc/1/fd/1`` внутри
+# содержимое $FAKE_ROBOT_LOG (если задан) плюс $FAKE_ROBOT_STATE/pid1_stdout (stdout PID-1, как у настоящего
+# docker logs; #4951 — инъекция пишет туда строку «ПРИНЯТО») плюс $FAKE_ROBOT_STATE/reaction_log
+# (ход робота на инъекцию, #4951: шаблон ``inject_reaction`` разворачивает ros_stubs/rclpy при реплике
+# с provider="e2e_harness"; нет шаблона — робот на инъекцию не реагирует).
+# ``echo X > /proc/1/fd/1`` внутри
 # ``docker exec voice-assistant`` дописывается в $FAKE_ROBOT_STATE/pid1_stdout
 # (НЕ в /proc/1/fd/1 машины, на которой идёт тест). Каждая строка вызова
 # журналируется в $FAKE_ROBOT_STATE/ssh_calls.
@@ -49,6 +58,21 @@ set -u
 mkdir -p "$FAKE_ROBOT_STATE"
 printf '%s\n' "$*" >> "$FAKE_ROBOT_STATE/ssh_calls"
 
+# date робота: тот же now, от которого awk ниже разворачивает ``{NOW-x}``. Хостовый date
+# остаётся для всего, что фейк зовёт сам (timeout, awk -v now).
+_robot_date() {
+    local fmt="${1:-}" off="${FAKE_ROBOT_SKEW_S:-0}"
+    # LC_ALL=C: ru_RU печатает десятичную запятую, и barge_hold отбрасывает часы робота
+    # как «не число» (case *[!0-9.]*), засыпая по E2E_ANCHOR_NOW -- то есть не засыпая.
+    case "$fmt" in
+        "+%s.%N") LC_ALL=C awk -v off="$off" 'BEGIN{printf "%.9f\n", systime() + off}' ;;
+        "+%s") LC_ALL=C awk -v off="$off" 'BEGIN{printf "%d\n", systime() + off}' ;;
+        "-u +%Y-%m-%dT%H:%M:%SZ" | "+%Y-%m-%dT%H:%M:%SZ")
+            LC_ALL=C awk -v off="$off" 'BEGIN{print strftime("%Y-%m-%dT%H:%M:%SZ", systime() + off, 1)}' ;;
+        *) return 1 ;;
+    esac
+}
+
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _STUBS="$_HERE/ros_stubs"
 _SRC="$(cd "$_HERE/../../.." && pwd)/src"
@@ -64,6 +88,15 @@ _unsupported() {
 
 _pfile() {  # $1=node $2=name
     printf '%s/param_%s\n' "$FAKE_ROBOT_STATE" "$(printf '%s%s' "$1" "$2" | tr '/' '_')"
+}
+
+# _expand_now FILE — метки ``{NOW-x}`` в строках FILE -> ROS-время «x секунд назад» по часам фейк-робота.
+_expand_now() {
+    LC_ALL=C awk -v now="$(_robot_date "+%s.%N")" '
+        { while (match($0, /\{NOW-[0-9.]+\}/)) {
+              d = substr($0, RSTART + 5, RLENGTH - 6)
+              $0 = substr($0, 1, RSTART - 1) sprintf("%.2f", now - d) substr($0, RSTART + RLENGTH) }
+          print }' "$1"
 }
 
 # ``timeout N ros2 service call ...`` -- ros2 здесь функция, внешний timeout её не видит; остальное -- настоящий timeout.
@@ -139,11 +172,15 @@ docker() {
             # #3857: события v2 (``📊 [turn] ... stage=done``, ``🗣️ SpeechEvent started|finished
             # speech_id=...``). Метка ``{NOW-3.5}`` в логе -- «3.5 с назад» по часам фейк-робота:
             # харнесс сравнивает ROS-время строки с ``date +%s.%N`` робота.
-            [ -n "${FAKE_ROBOT_LOG:-}" ] && awk -v now="$(date +%s.%N)" '
-                { while (match($0, /\{NOW-[0-9.]+\}/)) {
-                      d = substr($0, RSTART + 5, RLENGTH - 6)
-                      $0 = substr($0, 1, RSTART - 1) sprintf("%.2f", now - d) substr($0, RSTART + RLENGTH) }
-                  print }' "$FAKE_ROBOT_LOG"
+            [ -n "${FAKE_ROBOT_LOG:-}" ] && _expand_now "$FAKE_ROBOT_LOG"
+            # #4951: настоящий ``docker logs`` отдаёт stdout PID-1 вместе с логом ноды, а харнесс пишет
+            # строку приёма инъекции в ``/proc/1/fd/1`` (в фейке -- pid1_stdout). Без этого судья
+            # инъекции не увидит «✅ ПРИНЯТО (e2e_harness)» и шаг станет injection_unverified.
+            [ -f "$FAKE_ROBOT_STATE/pid1_stdout" ] && cat "$FAKE_ROBOT_STATE/pid1_stdout"
+            # #4951: ход робота на инъекцию харнесса (шаблон inject_reaction, пишет ros_stubs/rclpy при
+            # публикации с provider="e2e_harness"). Идёт ПОСЛЕ строки приёма -- как в жизни, где судья
+            # видит [turn] после «ПРИНЯТО». Шаблона нет -- робот не реагирует, это честный FAIL теста.
+            [ -f "$FAKE_ROBOT_STATE/reaction_log" ] && _expand_now "$FAKE_ROBOT_STATE/reaction_log"
             return 0
             ;;
         exec:voice-assistant)
@@ -176,4 +213,10 @@ docker() {
     esac
 }
 
+# ``date ...`` робота — его часы, не хоста (см. _robot_date). Не наш формат — настоящий date.
+case "$1" in
+    "date +%s.%N" | "date +%s" | "date -u +%Y-%m-%dT%H:%M:%SZ" | "date +%Y-%m-%dT%H:%M:%SZ")
+        _robot_date "${1#date }"
+        exit $? ;;
+esac
 eval "$1"

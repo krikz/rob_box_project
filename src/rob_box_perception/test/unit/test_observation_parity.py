@@ -28,8 +28,10 @@ import pytest
 
 _HERE = Path(__file__).resolve()
 _PKG_ROOT = _HERE.parents[2]
-if str(_PKG_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PKG_ROOT))
+_CORE_ROOT = _HERE.parents[3] / 'rob_box_core'
+for _root in (_PKG_ROOT, _CORE_ROOT):
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
 
 _MSGS_ROOT = _HERE.parents[3] / 'rob_box_perception_msgs'
 _OBSERVATION_MSG = _MSGS_ROOT / 'msg' / 'Observation.msg'

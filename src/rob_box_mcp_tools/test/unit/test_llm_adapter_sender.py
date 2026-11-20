@@ -3,20 +3,20 @@
 Фон
 ----
 До #2132 ``LLMToolCallAdapter.__init__`` был жёстко зашит на
-``sender="dialogue_node"``. Это означало, что ``avatar_supervisor``
-(ТАРС) подписывал свои ``/mcp/execute`` запросы как ``dialogue_node``.
+``sender="dialog_node"``. Это означало, что ``avatar_supervisor``
+(ТАРС) подписывал свои ``/mcp/execute`` запросы как ``dialog_node``.
 На стороне ``mcp_server`` это проходило auth-гард (HMAC валиден), но
 срез-гард применял срезы *личности* (``core`` + ``personality``) к
 запросам, у которых фактический отправитель — оператор. Результат:
 все операторские инструменты (``say``, ``dialogue_pause``,
 ``ros2_node_status`` и т.д.) резались «🛇 Slice blocked 'say' для
-sender='dialogue_node'».
+sender='dialog_node'».
 
 Что фиксирует этот файл
 ------------------------
 
 1. ``DEFAULT_ALLOWED_SENDERS`` теперь явно содержит
-   ``avatar_supervisor`` (раньше там были только ``dialogue_node`` и
+   ``avatar_supervisor`` (раньше там были только ``dialog_node`` и
    ``harness`` — это отрезало бы подпись на этапе verify, ДО среза).
 2. ``LLMToolCallAdapter`` подписывает запрос именем, которое вернул
    ``node.get_name()``, а не жёстким литералом.
@@ -183,7 +183,7 @@ def _import_mcp_auth():
 
 
 class TestAllowedSenders:
-    """Без #2132 ``DEFAULT_ALLOWED_SENDERS`` = ``{dialogue_node, harness}``.
+    """Без #2132 ``DEFAULT_ALLOWED_SENDERS`` = ``{dialog_node, harness}``.
 
     Подпись ``avatar_supervisor`` отклонялась на этапе
     ``sender not in self._allowed_senders`` — ДО среза. Сейчас
@@ -236,7 +236,7 @@ class TestAllowedSenders:
 class TestAdapterSenderFromNodeName:
     """Главный DoD-тест карточки #2132.
 
-    До фикса здесь был жёсткий литерал ``sender="dialogue_node"`` —
+    До фикса здесь был жёсткий литерал ``sender="dialog_node"`` —
     проверка через node.get_name() невозможна (тест бы прошёл и
     ДО, и ПОСЛЕ фикса). Поэтому мы смотрим на **результат подписи**:
     sender, который попадает в HMAC ``auth.sender``, должен
@@ -271,7 +271,7 @@ class TestAdapterSenderFromNodeName:
     def test_avatar_supervisor_signs_as_avatar_supervisor(self) -> None:
         """Главный DoD #2132: ``avatar_supervisor`` подписывает как сам себя.
 
-        До фикса здесь возвращалось ``dialogue_node`` — и эта подпись
+        До фикса здесь возвращалось ``dialog_node`` — и эта подпись
         проходила auth-гард (HMAC валиден), но срезы применялись от
         личности, что и ломало ТАРС.
         """

@@ -6,7 +6,9 @@ envelope's ``t0`` and the player snapshot's ``started_at`` (Sound and Vision
 clocks are kept in sync by chrony).
 
 Priority, highest first: side test frame > ``sleep`` (no voice owner for
-``voice_timeout_s``) > ``wakeup`` (start / voice is back) > LLM face scene (``apply_face``, slots of
+``voice_timeout_s``, or nobody in frame and no utterance for ``SOCIAL_SLEEP_AFTER_S``
+while music is off, #3780 C) > ``wakeup`` (start / voice is back / a face or a voice)
+> LLM face scene (``apply_face``, slots of
 ``rob_box_dialog.face_scene``; ``clear_face`` on failed/silenced) > talking (``SpeechEvent`` / envelope) >
 requested scene (``play_animation`` / ``ExpressionRequest``) > driving (turn signal / brake light by
 ``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > silence (taped mouth, #3984) > music > idle. Rear lights outside the scenes
@@ -23,7 +25,7 @@ import numpy as np
 from rob_box_core.speech_client import ANY_AGENT, SpeakingWatch, event_outcome
 from rob_box_dialog import expression as _expression
 from rob_box_dialog.knowledge import (FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S, MUSIC_DEFAULT_BPM,
-                                      MUSIC_SCENE_MIN_S)
+                                      MUSIC_SCENE_MIN_S, SOCIAL_SLEEP_AFTER_S)
 
 from led_matrix_effects import lamps as R
 
@@ -228,6 +230,9 @@ class FaceDirector:
         self._speech_hang_until = -math.inf
         self._voice_seen = now          # grace: the voice owner has voice_timeout_s to show up
         self._asleep = False
+        self.social_sleep_after_s = SOCIAL_SLEEP_AFTER_S
+        self._frame_clear = False       # no successful empty frame yet: absence is not "nobody"
+        self._someone_at = now          # a face in frame or an utterance; the 10 min count from here
         self._wake_until = now + SCENES['wakeup'].period
         self._request: Optional[Tuple[str, float]] = None
         self._overlay: Optional[Tuple[Mapping[str, str], float]] = None
@@ -243,6 +248,16 @@ class FaceDirector:
     def voice_seen(self, now: float) -> None:
         """Any sign of the voice owner (a message, a publisher in the graph)."""
         self._voice_seen = now
+
+    def note_someone(self, now: float) -> None:
+        """A face in the frame or an utterance: the quiet count starts over. Wakes a social sleep."""
+        self._someone_at = now
+
+    def note_frame(self, clear: bool, now: float) -> None:
+        """One camera frame ran. ``clear`` — nobody in it (not «the camera is down»)."""
+        self._frame_clear = clear
+        if not clear:
+            self.note_someone(now)
 
     def on_speech_event(self, event, now: float) -> None:
         """``SpeechEvent`` of the speech owner: the face talks while a reply of any agent sounds
@@ -335,16 +350,25 @@ class FaceDirector:
         return now < self.mouth.until() + self.speaking_hang_s
 
     def _voice_alive(self, now: float) -> bool:
-        alive = now - self._voice_seen < self.voice_timeout_s
-        if alive and self._asleep:
+        return now - self._voice_seen < self.voice_timeout_s
+
+    def _social_asleep(self, now: float) -> bool:
+        """Nobody addressed it and the frame is empty for ``social_sleep_after_s``, and the music is off."""
+        if self.music.scene(now) or not self._frame_clear:
+            return False
+        return now - self._someone_at >= self.social_sleep_after_s
+
+    def _asleep_now(self, now: float) -> bool:
+        asleep = not self._voice_alive(now) or self._social_asleep(now)
+        if not asleep and self._asleep:
             self._wake_until = now + SCENES['wakeup'].period
-        self._asleep = not alive
-        return alive
+        self._asleep = asleep
+        return asleep
 
     def choose(self, now: float) -> Tuple[str, FaceContext]:
         rear = self.rear_theme_at(now)
         base = FaceContext(rear_theme=rear)
-        if not self._voice_alive(now):
+        if self._asleep_now(now):
             return 'sleep', base
         if now < self._wake_until:
             return 'wakeup', base
