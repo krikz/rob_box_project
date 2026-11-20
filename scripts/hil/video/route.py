@@ -36,8 +36,15 @@ GOALS = [  # Depot; M — картография (карта пуста), R — 
 ]
 TIMEOUT = 200.0
 # Допуски general_goal_checker из nav2_params.yaml для проверки HIL-результата по GT.
+# Это вердикт goal checker (hil_result / inside_sent_goal), не планка приёмки Depot.
 XY_GOAL_TOLERANCE = 0.25
 YAW_GOAL_TOLERANCE = 0.30
+# Планка приёмки Depot по истине Gazebo: docs/shifu-decisions.md#d-20261120-depot-gt-032-035
+# (0.32 м / 0.35 рад; источник — Telegram-директива координатору, 20.11.2026 15:23 UTC).
+# Заменяет 0.30/0.30 из #d-20261120-depot-m4-yaw. Штатный чекер Nav2 — XY_GOAL_TOLERANCE /
+# YAW_GOAL_TOLERANCE выше, не эта планка.
+ACCEPT_XY_TOLERANCE = 0.32
+ACCEPT_YAW_TOLERANCE = 0.35
 # local_costmap.tf_buffer_duration (nav2_params.yaml): сколько costmap держит историю TF.
 # Тот же предел — ждать кадр odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели.
 TF_BUFFER_S = 30.0
@@ -84,10 +91,61 @@ def hil_result(nav_status, gt, goal):
     """STATUS_SUCCEEDED только если поза в допусках xy и yaw от отправленной цели.
 
     Nav2 закрывает FollowPath по хвосту плана / stateful latch. TIMEOUT не переименовываем.
+    Вердикт goal checker (0.25 м / 0.30 рад), не планка приёмки Depot.
     """
     if nav_status != "STATUS_SUCCEEDED":
         return nav_status
     return nav_status if inside_sent_goal(gt, goal) else "OUTSIDE_TOLERANCE"
+
+
+def _over(err, tol):
+    """Ошибка больше допуска. Нет числа или nan — тоже промах, не выдуманный ноль."""
+    return err is None or not math.isfinite(err) or err > tol
+
+
+# Nav2 закрыл цель успешно. OUTSIDE_TOLERANCE — тот же успех, но поза вне допуска
+# чекера 0.25 м / 0.30 рад; по #d-20261120-depot-gt-032-035 такая точка всё равно
+# засчитывается, если истина Gazebo внутри планки. Остальное (REJECTED, CANCELED,
+# INTERRUPTED, ABORTED, неизвестное) — не успех.
+_ACCEPT_OK_STATUS = frozenset({"STATUS_SUCCEEDED", "OUTSIDE_TOLERANCE"})
+
+
+def _accept_fail_reasons(nav_status, xy_err, yaw_err, dur, timeout):
+    """Почему точка не прошла приёмку. Пустой список — PASS. TIMEOUT не переименовываем."""
+    reasons = []
+    if nav_status == "TIMEOUT" or dur is None or not math.isfinite(dur) or dur > timeout:
+        reasons.append("timeout")
+    elif nav_status not in _ACCEPT_OK_STATUS:
+        reasons.append("not_succeeded")
+    if _over(xy_err, ACCEPT_XY_TOLERANCE):
+        reasons.append("xy")
+    if _over(yaw_err, ACCEPT_YAW_TOLERANCE):
+        reasons.append("yaw")
+    return reasons
+
+
+def accept_point(nav_status, xy_err, yaw_err, dur, timeout=TIMEOUT):
+    """Приёмка одной точки Depot по истине Gazebo (docs/shifu-decisions.md#d-20261120-depot-gt-032-035).
+
+    PASS только если Nav2 сообщил успех (STATUS_SUCCEEDED или OUTSIDE_TOLERANCE —
+    успех вне допуска чекера), xy ≤ 0.32 м, |yaw| ≤ 0.35 рад и dur ≤ TIMEOUT (200 с).
+    ``hil_result`` не трогает: тот считает допуск goal checker.
+    Вернуть ``(verdict, reasons)``: ``("PASS", [])`` либо
+    ``("FAIL", ["timeout"|"not_succeeded"|"xy"|"yaw", ...])``.
+    """
+    reasons = _accept_fail_reasons(nav_status, xy_err, yaw_err, dur, timeout)
+    return ("FAIL", reasons) if reasons else ("PASS", [])
+
+
+def acceptance_line(rows):
+    """Итог маршрута: ``ПРИЁМКА (0.32 м / 0.35 рад): N/M PASS`` и FAIL с причиной.
+
+    ``rows`` — ``(name, "PASS"|"FAIL", reasons)``. ``N/M`` — сколько точек проехали.
+    """
+    passed = sum(1 for _name, verdict, _reasons in rows if verdict == "PASS")
+    head = f"ПРИЁМКА ({ACCEPT_XY_TOLERANCE:.2f} м / {ACCEPT_YAW_TOLERANCE:.2f} рад): {passed}/{len(rows)} PASS"
+    fails = [f"{name} FAIL ({', '.join(reasons)})" for name, verdict, reasons in rows if verdict != "PASS"]
+    return head if not fails else head + "; " + "; ".join(fails)
 
 
 def ts():
@@ -140,6 +198,7 @@ class Mon(Node):
         self.plan_stamp = None
         self.plan_tail = None
         self.tf_buffer = None
+        self.last_accept = None
         self.create_subscription(Odometry, "/sim/ground_truth/odom", self.on_gt, 10)
         self.create_subscription(Twist, "/cmd_vel_emergency", self.on_em, 10)
         self.create_subscription(Twist, YAW_TOPIC, self.on_yaw, 10)
@@ -353,24 +412,31 @@ def _send(n, cl, name, goal, target, last_pose, timeout, stop):
     result = "REJECTED" if gh is None or not gh.accepted else _wait_result(n, gh, timeout, stop)
     e_sim, e_fr = n.simt(), nframes()
     err = math.dist(n.gt[:2], last_pose[:2]) if n.gt else float("nan")
+    yaw_err = yaw_err_rad(n.gt[2], last_pose[2]) if n.gt else float("nan")
+    dur = e_sim - s_sim
     result = hil_result(result, n.gt, last_pose)
+    verdict, reasons = accept_point(result, err, yaw_err, dur, timeout)
     em = n.em_episodes - em0
+    why = ",".join(reasons) if reasons else "-"
     print(
-        f"{ts()} GOAL_END {name} result={result} sim={e_sim:.2f} frame={e_fr} dur_sim={e_sim - s_sim:.1f} "
-        f"err={err:.3f} em_episodes={em} recoveries={n.recoveries} gt={n.gt}",
+        f"{ts()} GOAL_END {name} result={result} sim={e_sim:.2f} frame={e_fr} dur_sim={dur:.1f} "
+        f"err={err:.3f} em_episodes={em} recoveries={n.recoveries} gt={n.gt} accept={verdict} why={why}",
         flush=True,
     )
-    return result, em
+    return result, em, (verdict, reasons)
 
 
 def run_goal(n, cl, name, x, y, yaw, timeout=TIMEOUT, stop=None):
     """Одна цель NavigateToPose (yaw в градусах): GOAL_START/GOAL_END в лог; вернуть (итог, эпизоды защиты).
 
     ``stop()`` → True (сигнал оператора) — цель отменяется, итог ``INTERRUPTED``.
+    Вердикт приёмки — в ``n.last_accept`` как ``(name, PASS|FAIL, reasons)``; пара возврата прежняя.
     """
     g = NavigateToPose.Goal()
     g.pose = _pose(x, y, yaw)
-    return _send(n, cl, name, g, f"({x},{y},{yaw})", (x, y, yaw), timeout, stop)
+    result, em, accept = _send(n, cl, name, g, f"({x},{y},{yaw})", (x, y, yaw), timeout, stop)
+    n.last_accept = (name, *accept)
+    return result, em
 
 
 def run_lane(n, cl, name, poses, timeout, stop=None):
@@ -384,7 +450,7 @@ def run_lane(n, cl, name, poses, timeout, stop=None):
     g.poses = [_pose(*p) for p in poses]
     n.poses_remaining = len(poses)
     target = "[" + " ".join(f"({x},{y},{yaw})" for x, y, yaw in poses) + "]"
-    result, em = _send(n, cl, name, g, target, poses[-1], timeout, stop)
+    result, em, _accept = _send(n, cl, name, g, target, poses[-1], timeout, stop)
     print(f"{ts()} LANE_FEEDBACK {name} poses={len(poses)} remaining={n.poses_remaining}", flush=True)
     return result, em, n.poses_remaining
 
@@ -399,11 +465,14 @@ def main():
     order = sys.argv[1:] or [g[0] for g in goals]
     unknown = [name for name in order if name not in by_name]
     assert not unknown, f"нет целей {unknown}; есть {sorted(by_name)}"
+    points = []
     for name, x, y, yaw in [by_name[name] for name in order]:
         run_goal(n, cl, name, x, y, yaw)
+        points.append(n.last_accept)
         t1 = time.time()
         while time.time() - t1 < 1.5:
             rclpy.spin_once(n, timeout_sec=0.05)
+    print(acceptance_line(points), flush=True)
     rclpy.shutdown()
 
 
