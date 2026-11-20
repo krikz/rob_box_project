@@ -32,20 +32,38 @@ _CORE_TOPS = (
 )
 
 
-def pin_from_dockerfile(repo: Path = _REPO) -> str:
-    """Тег ``rob_box_dialog_core@`` из Dockerfile voice-assistant. Нет строки — ошибка, не догадка."""
-    dockerfile = repo / "docker" / "sound" / "voice_assistant" / "Dockerfile"
+def pin_in(dockerfile: Path) -> str:
+    """Тег ``rob_box_dialog_core@`` из одного Dockerfile. Нет строки — ошибка, не догадка."""
     match = _PIN_RE.search(dockerfile.read_text(encoding="utf-8"))
     if not match:
         raise SystemExit(f"пин rob_box_dialog_core@ не найден в {dockerfile}")
     return match.group(1)
 
 
+def pin_from_dockerfile(repo: Path = _REPO) -> str:
+    """Тег ядра. voice-assistant и telegram_bot обязаны нести один и тот же.
+
+    Расхождение — дырка: образ телеграма молча останется на старом теге. Источник
+    истины — voice Dockerfile; telegram сверяется с ним, второго хардкода нет.
+    """
+    voice = repo / "docker" / "sound" / "voice_assistant" / "Dockerfile"
+    telegram = repo / "docker" / "sound" / "telegram_bot" / "Dockerfile"
+    pin = pin_in(voice)
+    other = pin_in(telegram)
+    if other != pin:
+        raise SystemExit(
+            f"пины ядра разошлись: voice-assistant {pin}, telegram_bot {other}"
+        )
+    return pin
+
+
 def src_dirs(repo: Path = _REPO) -> list[Path]:
     return [repo / "src" / name for name in _CORE_TOPS]
 
 
-def probe(python: str, pin: str, planted: list[Path] | None = None) -> subprocess.CompletedProcess[str]:
+def probe(
+    python: str, pin: str, planted: list[Path] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Чистый интерпретатор: ни cwd, ни PYTHONPATH. Подмену передаём аргументом.
 
     Флаг ``-P`` на 3.10 нет, ``-I`` выкидывает PYTHONPATH — поэтому путь явный.
@@ -55,7 +73,15 @@ def probe(python: str, pin: str, planted: list[Path] | None = None) -> subproces
     env.pop("PYTHONPATH", None)
     call = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='probe')['run_probe']()"
     return subprocess.run(
-        [python, "-I", "-c", call, str(Path(__file__).resolve()), pin, *(str(path) for path in (planted or []))],
+        [
+            python,
+            "-I",
+            "-c",
+            call,
+            str(Path(__file__).resolve()),
+            pin,
+            *(str(path) for path in (planted or [])),
+        ],
         capture_output=True,
         text=True,
         env=env,
@@ -84,7 +110,11 @@ def run_probe() -> None:
     if "site-packages" not in origin.parts:
         raise SystemExit(f"импорт не из site-packages: {origin}")
     planted_resolved = {Path(entry).resolve() for entry in planted}
-    ahead = [entry for entry in sys.path if entry and Path(entry).resolve() in planted_resolved]
+    ahead = [
+        entry
+        for entry in sys.path
+        if entry and Path(entry).resolve() in planted_resolved
+    ]
     if ahead:
         raise SystemExit("подмена: src на sys.path раньше пакета: " + ", ".join(ahead))
     # Версия в metadata тега может не совпасть с именем тега. Сверяем direct_url: pip пишет туда тег.
