@@ -33,7 +33,9 @@ from pathlib import Path
 from tests.unit.e2e_scripts.test_issue_2846_registration_verdict import extract_scenario_loop
 from tests.unit.e2e_scripts.test_issue_3857_event_waits import speech, turn_done
 from tests.unit.e2e_scripts.test_issue_3857_run_step import extract_function
-from tests.unit.e2e_scripts.test_issue_3989_recover import SCRIPTS_DIR, _run_step, needs_bash
+from tests.unit.e2e_scripts.test_issue_3989_recover import (
+    SCRIPTS_DIR, SILENCED_TURN, _run_step, heard, needs_bash, no_wake,
+)
 from tests.unit.e2e_scripts.test_issue_4694_stt_garbage_retry import GARBAGE, GARBAGE_AGAIN, KINDS, _names, _scenario
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -48,6 +50,7 @@ E2E_SCRIPT = SCRIPTS_DIR / "e2e_voice_test.sh"
 LIB = SCRIPTS_DIR / "e2e_voice_lib.sh"
 
 STEP = 'run_step "Робот, говори." anton a cycle; echo "RC=$?"'
+STEP_WAKE = 'run_step "Робот, мы тут немного пошумим" anton a cycle; echo "RC=$?"'
 # step_stt_inject и robot_ros живут в основном скрипте, stt_inject_command и _emit_container_log -- в LIB.
 EXTRA = ("robot_ros", "step_stt_inject")
 
@@ -215,9 +218,10 @@ def test_the_injection_is_wired_once_per_step_and_judged_by_the_topic():
     assert lib_src.count('msg.source, msg.provider = Utterance.SOURCE_RESPEAKER, "e2e_harness"') == 1
     assert lib_src.count('_emit_container_log "✅ ПРИНЯТО (e2e_harness): ${text}"') == 1
     assert lib_src.count('python3 "$(_events_py)" inject') == 1
-    # входы: финал шага + потолки обоих повторов
-    assert main_src.count('step_stt_inject "$label"') == 3
+    # входы: финал шага + потолки обоих повторов + no_wake после wake_replay (#4951, акт 2 n210)
+    assert main_src.count('step_stt_inject "$label"') == 4
     assert main_src.count('if [ "$reason" = "inject" ] && step_stt_inject "$label" "${text:-}"; then') == 2
+    assert main_src.count('if step_stt_inject "$label" "${text:-}"; then') == 1
     assert main_src.count('--fallback "${E2E_STT_INJECT_FALLBACK:-1}" --injected "${E2E_STEP_STT_INJECTED:-0}"') == 2
     assert main_src.count("step_stt_inject() {") == 1
     # один заход за шаг и маркер: инъекция не маскируется под чистый PASS
@@ -329,6 +333,99 @@ class TestRunStepInjection:
         assert "E2E_STEP a FAIL no_accept" not in out
         assert len(_journal(state / "utterances")) == 1
         assert not (state / "pid1_stdout").exists()
+
+
+# -- bash: no_wake после wake_replay -- последняя попытка топиком (#4951, акт 2 n210) ---------------------
+
+def _no_wake_log():
+    """Фраза шага принята без вейка и ушла в бэклог -- тот же формат, что no_wake() в #3989."""
+    return heard("ребят мы пошумим", "{NOW-11}") + no_wake("{NOW-10}")
+
+
+_WAKE_KINDS = (
+    "E2E_STEP_RECOVER_KINDS=no_wake,silenced,wake_replay; E2E_STEP_RECOVERED=''; "
+    "E2E_STEP_WAKE_REPLAYED=''; E2E_STEP_WAKE_ATTEMPT=''"
+)
+
+
+@needs_bash
+class TestNoWakeThenInject:
+    """Акт 2 n210 (run 44789967142): фраза без вейка, wake_replay исчерпан, инъекции в логе не было.
+
+    ``step_wake_replay`` возвращает 0, и case 4) писал ``FAIL turn_no_wake`` до вызова ``step_stt_inject``.
+    Теперь перед FAIL -- один вызов. silenced не трогаем (#3989).
+    """
+
+    def test_wake_exhausted_then_the_topic_delivers_the_phrase_and_the_step_is_recovered(self, tmp_path):
+        state = _state(tmp_path)
+        miss = _no_wake_log()
+        out, err, _, played = _run_step(
+            tmp_path, miss, [heard("робот", "{NOW-12}"), miss, miss], STEP_WAKE, _WAKE_KINDS, extra=EXTRA,
+        )
+        assert "RC=0" in out, (out, err)
+        assert "E2E_STEP a OK recovered_stt_inject after_recover_wake_replay wake_attempt=3/3" in out
+        assert "RECOVERED=stt_inject" in out
+        assert out.count("E2E_RECOVER stt_inject a ") == 1 and "text=«Робот, мы тут немного пошумим»" in out
+        assert "E2E_STEP a FAIL" not in out
+        assert "ход после инъекции есть" in out
+        assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
+        assert _journal(state / "utterances") == [
+            {"text": "Робот, мы тут немного пошумим", "source": "respeaker", "provider": "e2e_harness"}
+        ]
+
+    def test_inject_that_does_not_land_keeps_the_honest_fail_with_inject_failed(self, tmp_path):
+        state = _state(tmp_path)
+        miss = _no_wake_log()
+        out, err, _, played = _run_step(
+            tmp_path, miss, [heard("робот", "{NOW-12}"), miss, miss], STEP_WAKE,
+            _WAKE_KINDS + "; stt_inject_command() { return 1; }", extra=EXTRA,
+        )
+        assert "RC=1" in out, (out, err)
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 inject_failed" in out
+        assert "E2E_STEP a OK" not in out
+        assert "инъекции не было -- шаг судится как раньше" in out
+        assert not (state / "utterances").exists()
+        assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
+
+    def test_fallback_off_does_not_publish_and_marks_inject_failed(self, tmp_path):
+        state = _state(tmp_path)
+        miss = _no_wake_log()
+        out, err, _, _ = _run_step(
+            tmp_path, miss, [heard("робот", "{NOW-12}"), miss, miss], STEP_WAKE,
+            _WAKE_KINDS + "; E2E_STT_INJECT_FALLBACK=0", extra=EXTRA,
+        )
+        assert "RC=1" in out, (out, err)
+        assert "инъекция команды в топик выключена (E2E_STT_INJECT_FALLBACK=0)" in out
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 inject_failed" in out
+        assert not (state / "utterances").exists()
+
+    def test_already_injected_step_is_not_injected_again(self, tmp_path):
+        state = _state(tmp_path)
+        miss = _no_wake_log()
+        out, err, _, _ = _run_step(
+            tmp_path, miss, [heard("робот", "{NOW-12}"), miss, miss], STEP_WAKE,
+            _WAKE_KINDS + "; E2E_STEP_STT_INJECTED=1", extra=EXTRA,
+        )
+        assert "RC=1" in out, (out, err)
+        assert "инъекция в этом шаге уже была -- второго захода нет (#4951)" in out
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 inject_failed" in out
+        assert not (state / "utterances").exists()
+
+    def test_silenced_turn_is_not_injected(self, tmp_path):
+        """#3989: тишина -- не класс инъекции. case 4) для silenced не зовёт step_stt_inject."""
+        state = _state(tmp_path)
+        out, err, _, played = _run_step(
+            tmp_path, SILENCED_TURN, [], STEP_WAKE,
+            "E2E_STEP_RECOVER_KINDS=wake_replay; E2E_STEP_RECOVERED=''; E2E_STEP_WAKE_REPLAYED=''",
+            extra=EXTRA,
+        )
+        assert "RC=1" in out, (out, err)
+        assert "E2E_STEP a FAIL turn_silenced" in out
+        assert "inject_failed" not in out
+        assert "инъекц" not in out
+        assert "/voice/stt/utterance" not in out
+        assert not (state / "utterances").exists()
+        assert _names(played) == ["cmd_a_eq.wav"]
 
 
 # -- bash: итог шага в scenario-цикле -- recovered, не чистый PASS -------------------------------------------

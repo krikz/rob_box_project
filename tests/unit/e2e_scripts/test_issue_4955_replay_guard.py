@@ -114,7 +114,8 @@ class TestReplayGuard:
         """B-негатив: повтор теряет вейк, и подхват не помогает -- честный FAIL (RC=1), не PASS.
 
         ``wake_retry`` разрешает попытки 1 и 2, поэтому после stt-повтора фраза шага звучит ещё дважды
-        (wake_attempt 2/3 и 3/3) и только потом FAIL ``after_recover_wake_replay``. PLAY_COUNT=4:
+        (wake_attempt 2/3 и 3/3) и только потом FAIL ``after_recover_wake_replay``. После no_wake харнесс
+        пробует инъекцию, она не ложится, и метка ``inject_failed`` — честная часть FAIL. PLAY_COUNT=4:
         первая попытка + stt_replay + два wake replay. ``after_recover_stt_replay`` здесь быть не должно:
         повтор получил тот же шанс, что первая попытка."""
         first = heard(N812_MISS, "{NOW-30}") + REPLY
@@ -124,7 +125,7 @@ class TestReplayGuard:
         assert "RC=1" in out, (out, err)
         assert (
             "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay "
-            "wake_attempt=3/3 stt_attempt=2/3 (no_wake)"
+            "wake_attempt=3/3 stt_attempt=2/3 inject_failed (no_wake)"
         ) in out, out
         assert "after_recover_stt_replay" not in out
         assert "OK recovered" not in out

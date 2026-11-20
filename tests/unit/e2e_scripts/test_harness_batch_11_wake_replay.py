@@ -234,7 +234,10 @@ class TestRunStepWakeReplay:
         out, err, _, played = _run_step(tmp_path, N301, [heard("робот", "{NOW-12}"), miss, miss], STEP, KINDS)
         assert "RC=1" in out and "PLAY_COUNT=4" in out, (out, err)
         assert out.count("E2E_RECOVER wake_replay a ") == 2
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3" in out
+        # #4951: case 4) зовёт step_stt_inject перед FAIL. Этот прогон функцию не подключает
+        # (её нет в наборе _run_step) -- вызов падает, маркер inject_failed честно остаётся.
+        # Живой заход топиком -- TestNoWakeThenInject.
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 inject_failed" in out
         assert "повтора фразы нет (attempts_exhausted, wake_attempt=3/3)" in out
         assert _names(played) == ["cmd_a_eq.wav", "rec_no_wake_a_eq.wav", "cmd_a_eq.wav", "cmd_a_eq.wav"]
 
