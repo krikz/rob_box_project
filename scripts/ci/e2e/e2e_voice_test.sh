@@ -2292,6 +2292,10 @@ step_wake_replay() {  # $1=label $2=safe
 #
 # #4741/#4738 + Шифу 17.11: heard≠expected без stt_keys (ниже, цикл step_stt_replay) -- тот же потолок, не один повтор.
 # Каждая попытка пишет stt_attempt=N/max; в вердикте шага счётчик тот же. Падение тула и отказ действия не повторяются.
+# #4955 (n812/n903, марафон #4950): у шага без stt_keys той же проверки исхода не было -- харнесс повторял фразу
+# поверх уже исполненного хода (все паттерны шага в окне первой попытки), повтор терял вейк и шаг краснел за харнесс.
+# Теперь повтор разрешён судьёй stt_miss_retry, но исход шага уже в окне -- повтора нет, шаг судится по первому
+# исполнению (тот же лог, что у ветки #4196). Исчерпание (retry=0, attempts_exhausted) эту проверку не проходит.
 _stt_step_executed() {  # $1=label $2=начало окна первой попытки; rc 0 -- исход шага в окне уже есть
     local -a pats=()
     [ -n "${patterns_json:-}" ] && [ "$patterns_json" != "[]" ] || return 1
@@ -2383,6 +2387,14 @@ step_stt_replay() {  # $1=label $2=safe
             else
                 log "STEP ${label}: услышано «${heard:-}» -- повтора по промаху STT нет (${reason}, stt_attempt=${attempt}/${max})"
             fi
+            return 0
+        fi
+        # #4955: судья разрешил повтор, но исход шага (его паттерны и сверка music_compare) в окне первой попытки
+        # уже есть -- команда исполнена, второй раз дал бы другой исход. Повтора нет, шаг судится по первому
+        # исполнению. Паттернов нет -- исход не определён, повтор как раньше. Второй промах сюда не входит:
+        # у него retry=0 (attempts_exhausted), проверка стоит только на пути retry=1.
+        if _stt_step_executed "$label" "${STEP_BEFORE:-$BEFORE}"; then
+            log "STEP ${label}: STT промах (услышано «${heard}», ждали «${text}»), но исход шага в окне уже есть -- команда исполнена, повтора нет (stt_replay не нужен), шаг судится по первому исполнению"
             return 0
         fi
         E2E_STEP_STT_ATTEMPT=$((attempt + 1))
@@ -2826,6 +2838,19 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
         case "${E2E_WAIT_RC:-0}" in
             0|1) step_stt_replay "$label" "$safe" ;;
         esac
+        # #4955 (n812/n903): повтор stt_replay сам потерял вейк (E2E_WAIT_RC=4, no_wake) -- первой попытке на этот
+        # исход давались step_recover и step_wake_replay, повтору нет, и case 4) писал жёсткий FAIL
+        # turn_no_wake after_recover_stt_replay. Тот же шанс, только когда повтор реально был
+        # (E2E_STEP_STT_REPLAYED=1): step_recover сам скажет «восстановление уже было» (фразу «Робот!» второй раз
+        # не играет -- это нормально), step_wake_replay играет фразу шага ещё раз. Первую попытку, silenced,
+        # barge_in и ветку #4196 не трогаем. После блока вердикт-case судит по новому E2E_WAIT_RC: успех --
+        # «OK recovered_wake_replay», не чистый PASS; вейк так и не пробился -- честный FAIL как раньше.
+        if [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] \
+            && [ "${E2E_STEP_STT_REPLAYED:-}" = "1" ]; then
+            step_recover "$label" "$text" "$voice" "$safe"
+            [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "no_wake" ] \
+                && step_wake_replay "$label" "$safe"
+        fi
         # #4951: повтор stt_replay сам мог кончиться тишиной с мусором в ПРИНЯТО -- этот класс судит мусорный
         # цикл (его потолок ведёт к инъекции). Гейт while внутри: не silenced -- no-op.
         [ "${E2E_WAIT_RC:-0}" = "4" ] && [ "${E2E_REPLY_VERDICT:-}" = "silenced" ] && step_stt_garbage_retry "$label" "$safe"
