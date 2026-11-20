@@ -258,7 +258,11 @@ class MemorySearchTool(MCPTool):
             return _no_person()
 
         try:
-            results = memory.search(query, limit=limit, speaker_id=speaker_id)
+            # #4956: каталог фактов — только от инструмента. Прямой search()
+            # без флага остаётся пустым на несовпадении (#3890).
+            results = memory.search(
+                query, limit=limit, speaker_id=speaker_id, browse_when_empty=True
+            )
             self.log_info(
                 f"[memory_search] query={query[:40]!r} speaker={speaker_id} "
                 f"→ {len(results)} results "

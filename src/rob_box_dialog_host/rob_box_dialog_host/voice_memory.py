@@ -587,6 +587,7 @@ class VoiceMemory:
         query: str,
         limit: int = 5,
         speaker_id: Optional[str] = None,
+        browse_when_empty: bool = False,
     ) -> List[Dict]:
         """
         Search stored user facts AND conversation turns (issue #2793).
@@ -614,6 +615,11 @@ class VoiceMemory:
                         ``speaker_id`` OR legacy global rows (NULL).
                         ``None`` returns all rows regardless of speaker
                         (used by the LLM with no current biometric context).
+            browse_when_empty: If True and both fact and turn searches are
+                        empty, return the speaker's fact catalog
+                        (``source="fact_browse"``, #4956) instead of ``[]``.
+                        Default False keeps the #3890 contract for direct
+                        callers.
 
         Returns:
             List of dicts: {id, session_id, role, content, timestamp,
@@ -622,9 +628,8 @@ class VoiceMemory:
             (``MemorySearchTool``) can tell a saved fact apart from a
             historical conversation line instead of presenting both as an
             undifferentiated "turn". ``source`` = "fact" | "fts" | "vec" |
-            "hybrid".
-            Пустой результат (ни факты, ни реплики) → каталог фактов
-            говорящего, ``source="fact_browse"`` (#4956).
+            "hybrid" | "fact_browse" (только при ``browse_when_empty=True``
+            и пустом поиске, #4956).
         """
         if not query or not query.strip() or limit <= 0:
             return []
@@ -643,9 +648,11 @@ class VoiceMemory:
         # #4956: fallback живёт здесь, а не в _fact_search. Подстрока «еда»
         # не входит в «не ест лук», вектор на стенде мёртв (Ollama нет),
         # а после new_session окно реплик пустое — модель видит «в памяти
-        # ничего нет». Каталог отдаём только когда оба поиска пусты: иначе
-        # он вытеснил бы найденные реплики и размыл точные попадания.
-        if not fact_hits and not turn_hits:
+        # ничего нет». Каталог — только по флагу и только когда оба поиска
+        # пусты: иначе он вытеснил бы найденные реплики. Дефолт False, чтобы
+        # прямой search() не ломал контракт #3890 (ложный запрос → []).
+        # Каталог просит memory_search (browse_when_empty=True).
+        if browse_when_empty and not fact_hits and not turn_hits:
             return self._browse_facts(limit, speaker_id=speaker_id)
 
         return fact_hits + turn_hits
