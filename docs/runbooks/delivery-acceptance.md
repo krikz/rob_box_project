@@ -17,7 +17,8 @@ rbt_infra ADR-0003. Карточки: #4375, #4694.
 |---|---|
 | Подпись minisign, fetch, stage, report | `compose down/up`, symlink `current`, host-миграции |
 | Adoption доказанного legacy-стека | Реальное переключение стека |
-| Dry-run `preflight` / `activate` / `rollback` (план, `execute=false`) | Автоматический откат после health fail |
+| Dry-run `preflight` / `activate` / `rollback` (план, `execute=false`) | Живой откат после health fail (compose/symlink на роботе) |
+| Автоматический откат после health fail на офлайн-стенде: Sound `unhealthy` → прежний digest, Main не стартует (`fleet_op.run`, PR #4925) | — |
 | Блокировки: HIL-lock, dirty/hotpatch, bad signature, no space | Ритуал biguan/chuguan на роботе |
 | `F: Update Robot` action=`status` | action=`update`/`rollback`/`cancel` с тикетом |
 
@@ -68,33 +69,37 @@ rbt_infra ADR-0003. Карточки: #4375, #4694.
 
 **PASS (офлайн сейчас):** activate с `Health(status=unhealthy, …)` → `state=blocked`,
 `reason=health_check_failed`, detail = сырая строка. История не переписана.
-Состояние **не** `rollback_planned` (авто-откат из health ещё не вызван — см. §1.4).
+Состояние **не** `rollback_planned` (этот путь activate откат не вызывает — см. §1.4).
 
 **PASS (живо, фаза C):** переключение не остаётся на сломанном релизе; см. §1.4.
 
-### 1.4 Автоматический откат **[фаза C]** — критерии отдельно от §2.1
+### 1.4 Автоматический откат **[код] офлайн-стенд; [фаза C] живой откат** — критерии отдельно от §2.1
 
-Задумка ADR-0003 / ADR-0168: после fail health агент **сам** активирует `previous`
+Задумка ADR-0003 / ADR-0168: после fail health агент **сам** возвращает `previous`
 (порядок ролей тот же, **без** ручного `chuangong rollback` / workflow).
 
 | Критерий | Авто-откат (§1.4) | Ручной откат (§2.1) |
 |---|---|---|
 | Кто инициирует | health fail → код агента | оператор CLI / workflow |
-| Офлайн сейчас | `blocked` / `health_check_failed`; **нет** `rollback_planned` из одного activate | явный `rollback()` → `rollback_planned`, план `execute=false` |
+| Офлайн сейчас | Два разных пути. `activate` + unhealthy → `blocked` / `health_check_failed`, **нет** `rollback_planned`. `fleet_op.run`: Sound `unhealthy` → прежний digest Sound и Vision, Main не стартует (PR #4925) | явный `rollback()` → `rollback_planned`, план `execute=false` |
 | История current/previous | не меняется (отказ) | не меняется (только план) |
 | Стек compose/symlink | не тронут | не тронут |
 | Живо, фаза C | robot на previous **без** ручного входа | robot на previous **после** ручного rollback |
 
-**Сейчас [код]:** health fail только блокирует activate. `rollback()` **не** вызывается
-из health и **не** execute-ит compose. Авто-связь health→rollback — код фазы C, не промпт.
+**Сейчас [код]:** два офлайн-пути, оба без compose. `activate` + unhealthy только
+блокирует: `rollback()` из этого health **не** вызывается. `fleet_op.run` (PR #4925)
+на mock-стенде сам откатывает: Sound `unhealthy` → Sound и Vision на digest предыдущего
+релиза, Main не стартует, пульт `error`, не `updated`. Это не живой откат и не execute
+compose/symlink.
 
-**PASS (офлайн до фазы C):** S2 — activate + unhealthy → `blocked`/`health_check_failed`,
-не `rollback_planned`, история прежняя. Это доказательство **отказа**, не авто-отката
-и не восстановления стека.
+**PASS (офлайн):** S2 — activate + unhealthy → `blocked`/`health_check_failed`,
+не `rollback_planned`, история прежняя. Это доказательство **отказа** activate, не
+восстановления стека. Откат digest на офлайн-стенде — `test_sound_health_failure_restores_previous_digest_and_does_not_start_main`
+(PR #4925: 22 passed; живого переключения не было).
 
 **PASS (живо, фаза C):** сломанный релиз → без ручного `F: Update Robot` robot снова на
-previous; raw: state.json, docker ps, journal chuangong. Пока execute нет — в чеклисте
-`NOT_IMPLEMENTED`, не PASS.
+previous; raw: state.json, docker ps, journal chuangong. Живого отката ещё не было —
+в чеклисте `NOT_IMPLEMENTED`, не PASS.
 
 Восстановление стека доказывает тест исполнителя, не эта фикстура.
 
@@ -262,8 +267,9 @@ python scripts/testing/delivery_acceptance_checklist.py
 1. Замок стенда, HIL off если нужен update, backup previous staged.
 2. Baseline status — три узла.
 3. Исправный релиз — update — raw `docker ps` и state.json.
-4. Сломанный релиз (inject unhealthy) — **авто-откат** §1.4: previous без ручного входа;
-   отдельно — **ручной** rollback §2.1: после явного `chuangong rollback` / workflow.
+4. Сломанный релиз (inject unhealthy) — **живой авто-откат** §1.4: previous без ручного
+   входа. Офлайн-откат digest (PR #4925) это окно не закрывает: живого переключения не было.
+   Отдельно — **ручной** rollback §2.1: после явного `chuangong rollback` / workflow.
    Офлайн-фикстуры S2/S3 это не заменяют (отказ и план, не стек).
 5. Повторить §2.2–2.5 точечно на железе.
 6. biguan/chuguan — по выбранному Шифу варианту A/B/C; иначе `NOT_IMPLEMENTED`.
@@ -279,16 +285,17 @@ python scripts/testing/delivery_acceptance_checklist.py
 |---|---|---|---|
 | S0 | baseline observe | `available`, подпись ok | `test_baseline_observe_signed_release` |
 | S1 | исправный релиз (stage+activate dry-run) | `staged` → `activation_planned` | `test_healthy_release_activation_planned` |
-| S2 | health unhealthy → **отказ** (авто-откат ещё не вызван) | `blocked`/`health_check_failed`; **не** `rollback_planned` | `test_failing_release_health_blocks` |
+| S2 | health unhealthy → **отказ** activate (этот путь откат не вызывает) | `blocked`/`health_check_failed`; **не** `rollback_planned` | `test_failing_release_health_blocks` |
 | S3 | **ручной** rollback plan (оператор) | `rollback_planned`, `execute=false`; история не swap | `test_manual_rollback_plan` |
 | S4 | bad signature | `fetch_error`/`bad_signature`, диск пуст | `test_bad_signature_rejected` |
 | S5 | HIL-lock | `blocked`/`hil_locked` | `test_hil_lock_blocks_activation` |
 | S6 | hotpatch dirty | `blocked`/`dirty` | `test_hotpatch_dirty_blocks_activation` |
 | S7 | отказ одной роли | одна `fetch_error`, другая ok | `test_single_role_fetch_failure` |
 
-S2 и S3 — **разные** критерии: S2 = отказ activate (задел авто §1.4, без вызова rollback);
-S3 = явный ручной `rollback()` (§2.1). Ни S2, ни S3 не доказывают восстановление стека:
-восстановление стека доказывает тест исполнителя, не эта фикстура.
+S2 и S3 — **разные** критерии: S2 = отказ activate (этот путь rollback не вызывает);
+S3 = явный ручной `rollback()` (§2.1). Ни S2, ни S3 не доказывают восстановление стека.
+Офлайн-откат digest после health fail — `fleet_op.run`, PR #4925 (§1.4); живой откат —
+отдельное окно фазы C.
 
 Контраст S1 vs S4 обязан использовать **один** API: `chuangong.minisign.verify`
 (прямо или через `fetch_release` / `tick`).
