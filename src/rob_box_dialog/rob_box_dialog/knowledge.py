@@ -521,8 +521,10 @@ class VoiceStepWords:
     направление уже известно (STT его искажает: «тараторь» → «ораторь»); слово другой команды Tier-1 (стоп, тишина,
     громкость) пересказом не бывает. ``simile`` - «как …» до конца части: образ просьбы («как диктор в старом кино»),
     только если шаг в реплике есть («говори как пират» - не шаг); ``likeness`` - основы образов, которые сами шаг, но
-    только после «как» («как диктор» - тон ниже; голое «диктор» - не просьба, и срез тулов по нему голос не
-    открывает). ``filler`` - служебные слова сверх ``GRAMMAR_FILLER`` и ``STOP_LEAD_WORDS``; ``joins`` - союзы между
+    только после «как» («говори как диктор» - тон ниже; голое «как диктор» и «скажи как диктор» - не просьба). Канал
+    склеивает «говори басом» в чужое слово, и до образа доходит «как диктор» (#4984): чужое слово до образа шаг не
+    отменяет, слово таблицы - отменяет. Голое «диктор» - не просьба, и срез тулов по нему голос не открывает.
+    ``filler`` - служебные слова сверх ``GRAMMAR_FILLER`` и ``STOP_LEAD_WORDS``; ``joins`` - союзы между
     частями: непокрытая часть после союза или знака препинания - новая просьба (``Tier1Command.rest``)."""
 
     requests: Mapping[Tuple[str, str], Tuple[str, ...]]
@@ -568,6 +570,7 @@ VOICE_STEP = VoiceStepWords(
     manner_gap=("так",),
     inverse=("наоборот", "оборот"),
     simile=("как",),
+    # «диктор» - образ, не просьба: шаг даёт «говори как диктор» и (#4984) чужое слово перед «как диктор».
     likeness=MappingProxyType({("set_pitch", "lower"): ("диктор",)}),
     filler=("голосом", "голос", "тоном", "тон", "темпом", "темп", "речь", "речи", "теперь", "лучше", "более", "чем",
             "можешь", "своим", "режиме", "с", "со"),
@@ -4263,3 +4266,37 @@ def resolve_wake_word_namespaces(
     personality = loaded.get("personality") or list(personality_fallback)
     operator = loaded.get("operator") or list(operator_fallback)
     return personality, operator
+
+
+def dialog_words() -> FrozenSet[str]:
+    """Слова таблиц этого модуля, строчными, без «ё».
+
+    Один обход значений модуля (не классов и не приватных имён): грамматика шага отличает слово таблицы от чужого
+    (#4984). Докстринги и комментарии в обход не входят.
+    """
+    return _DIALOG_WORDS
+
+
+def _dialog_tokens(value: Any, seen: set) -> Iterable[str]:
+    """Токены значения таблицы: строка режется, отображение и набор обходятся, каждый объект один раз."""
+    if id(value) in seen or isinstance(value, (bytes, int, float, bool, type(None), type)):
+        return
+    seen.add(id(value))
+    if isinstance(value, str):
+        yield from (token.lower().replace("ё", "е") for token in _WORD_TOKEN.findall(value))
+        return
+    nested: Any = ()
+    if isinstance(value, Mapping):
+        nested = tuple(value.keys()) + tuple(value.values())
+    elif isinstance(value, (Sequence, set, frozenset)):
+        nested = value
+    elif hasattr(value, "__dataclass_fields__"):
+        nested = tuple(getattr(value, name) for name in value.__dataclass_fields__)
+    for item in nested:
+        yield from _dialog_tokens(item, seen)
+
+
+_WORD_TOKEN = re.compile(r"[\w-]+", re.UNICODE)
+_DIALOG_WORDS: FrozenSet[str] = frozenset(_dialog_tokens(tuple(
+    value for name, value in tuple(globals().items())
+    if not name.startswith("_") and not isinstance(value, type)), set()))
