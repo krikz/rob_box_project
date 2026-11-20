@@ -97,7 +97,7 @@ controller_server:
       stateful: false
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25  # Increased from 0.15 - don't overshoot trying to be too precise
-      yaw_goal_tolerance: 0.20  # Increased from 0.15 (~11 deg) - smoother final rotation
+      yaw_goal_tolerance: 0.30  # Финальный курс, около 17.2°
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: true

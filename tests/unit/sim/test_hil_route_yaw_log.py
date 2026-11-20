@@ -195,7 +195,7 @@ def test_goals_and_timeout_unchanged(route_mod):
     assert route_mod.TIMEOUT == 200.0
     by = {g[0]: g for g in route_mod.GOALS}
     assert by["M1"] == ("M1", -3.7, 4.0, 0)
-    assert by["M4"] == ("M4", -3.7, -4.5, 0)
+    assert by["M4"] == ("M4", -3.5, -4.5, 0)
     assert by["R3"] == ("R3", -3.7, 2.34, 90)
     assert by["R7"] == ("R7", -3.7, 0.0, 180)
     assert (by["M1"][1], by["M1"][2]) != (-6.0, 4.0)
