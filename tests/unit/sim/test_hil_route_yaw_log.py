@@ -84,6 +84,8 @@ def _cmd_line(out):
 def route_mod(monkeypatch):
     for name in ROS_MODULES:
         monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    sys.modules["rclpy"].spin_until_future_complete = lambda *a, **k: None
+    sys.modules["rclpy"].spin_once = lambda *a, **k: None
     sys.modules["rclpy.action"].ActionClient = object
     sys.modules["rclpy.node"].Node = FakeNode
     sys.modules["rclpy.parameter"].Parameter = FakeParameter
@@ -189,6 +191,67 @@ def test_plan_line_none_when_no_path(route_mod, capsys):
     line = _plan_line(capsys.readouterr().out)
     assert "stamp=none" in line
     assert "x=none" in line and "y=none" in line and "yaw=none" in line
+
+
+def test_accept_point_uses_shifu_plank_not_goal_checker(route_mod):
+    """Планка приёмки 0.30/0.30 (d-20261120-depot-m4-yaw), не допуск goal checker 0.25/0.30."""
+    assert route_mod.ACCEPT_XY_TOLERANCE == pytest.approx(0.30)
+    assert route_mod.ACCEPT_YAW_TOLERANCE == pytest.approx(0.30)
+    assert route_mod.XY_GOAL_TOLERANCE == 0.25  # goal checker не сдвинут
+
+    # (a) 0.274 м / 0.179 рад, не таймаут: checker сказал бы OUTSIDE_TOLERANCE, приёмка — PASS.
+    verdict, reasons = route_mod.accept_point("OUTSIDE_TOLERANCE", 0.274, 0.179, 40.0)
+    assert (verdict, reasons) == ("PASS", [])
+
+    # (b) 0.313 м / 0.380 рад — за обеими планками.
+    verdict, reasons = route_mod.accept_point("OUTSIDE_TOLERANCE", 0.313, 0.380, 40.0)
+    assert verdict == "FAIL"
+    assert reasons == ["xy", "yaw"]
+
+    # (c) TIMEOUT при 0.24 м / 0.21 рад: таймаут не переименовываем, точка не PASS.
+    verdict, reasons = route_mod.accept_point("TIMEOUT", 0.24, 0.21, 200.1)
+    assert verdict == "FAIL"
+    assert reasons == ["timeout"]
+    assert route_mod.hil_result("TIMEOUT", (-3.5, -4.5, 0.0), (-3.5, -4.5, 0.0)) == "TIMEOUT"
+
+
+def test_acceptance_line_names_failed_points_and_why(route_mod):
+    """Итог маршрута: N/M PASS и каждая FAIL-точка с причиной."""
+    rows = [
+        ("M1", "PASS", []),
+        ("M3", "FAIL", ["xy"]),
+        ("M4", "FAIL", ["timeout"]),
+        ("R4", "FAIL", ["yaw"]),
+    ]
+    line = route_mod.acceptance_line(rows)
+    assert line.startswith("ПРИЁМКА (0.30 м / 0.30 рад): 1/4 PASS")
+    assert "M3 FAIL (xy)" in line
+    assert "M4 FAIL (timeout)" in line
+    assert "R4 FAIL (yaw)" in line
+    assert "M1 FAIL" not in line
+
+
+def test_goal_end_keeps_old_fields_and_appends_accept(route_mod, monkeypatch, capsys):
+    """Поле accept= в конце GOAL_END; старые поля и их порядок не тронуты."""
+    n = route_mod.Mon()
+    n.gt = (-3.50, -4.26, 0.0)  # 0.24 м, курс 0
+    n.simt = lambda: 10.0
+    monkeypatch.setattr(route_mod, "nframes", lambda: 7)
+    monkeypatch.setattr(route_mod, "ts", lambda: "00:00:00.000")
+
+    class Client:
+        def send_goal_async(self, goal, feedback_callback=None):
+            return types.SimpleNamespace(result=lambda: types.SimpleNamespace(accepted=True))
+
+    monkeypatch.setattr(route_mod, "_wait_result", lambda *a, **k: "STATUS_SUCCEEDED")
+    route_mod._send(n, Client(), "M4", object(), "(-3.5,-4.5,0)", (-3.5, -4.5, 0.0), 200.0, None)
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "GOAL_END" in ln)
+    assert "result=STATUS_SUCCEEDED" in line  # 0.24 м ≤ допуска checker 0.25; приёмка тоже PASS
+    assert line.index("result=") < line.index("accept=")
+    assert "accept=PASS" in line
+    assert "why=-" in line
+    for field in ("sim=", "frame=", "dur_sim=", "err=", "em_episodes=", "recoveries=", "gt="):
+        assert field in line
 
 
 def test_goals_and_timeout_unchanged(route_mod):
