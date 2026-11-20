@@ -62,6 +62,16 @@ CRITICAL_DEMOTED_TO_WARNING = [
 PROXIMITY_BLIND_RE = re.compile(r"\[proximity_guard\]: .*нет свежих скана или одометрии", re.IGNORECASE)
 PROXIMITY_RECOVERED_RE = re.compile(r"\[proximity_guard\]: .*скан и одометрия идут — зона под контролем", re.IGNORECASE)
 PROXIMITY_BLIND_DEMOTION = r"\[proximity_guard\]: .*нет свежих скана или одометрии"
+# Эхо health_monitor — не лог самой ноды. print_report режет msg до 60 символов и
+# переписывает строку как `[LEVEL] <node> (Ns ago): <msg[:60]>`
+# (health_monitor.py:136-137), поэтому после `]` идёт ` (42s ago)`, а не `:`.
+# PROXIMITY_BLIND_RE это не матчит. Класс отдельный: эхо — дубль собственной строки
+# ноды, если она в дампе есть, и самостоятельный critical, если её нет. Само эхо
+# никогда не двигает окно возврата (возврат виден только из полной строки ноды).
+HEALTH_MONITOR_PROXIMITY_ECHO_RE = re.compile(
+    r"\[(?:ERROR|FATAL|WARN)\] proximity_guard \(\d+s ago\): .*нет свежих скана или одометрии",
+    re.IGNORECASE,
+)
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
@@ -975,15 +985,36 @@ def _critical_exclude_patterns(log_text: str, scope: str) -> list[str]:
     return patterns + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
 
 
+def _is_health_monitor_proximity_echo(line: str) -> bool:
+    """Эхо health_monitor строки proximity_guard, не собственный лог ноды.
+
+    Формат печатает print_report: `[LEVEL] proximity_guard (Ns ago): <msg[:60]>`.
+    Обрезка до 60 символов срезает хвост «зона НЕ контролируется», поэтому
+    возврат из эха не читается и эхо само окно возврата не двигает.
+    """
+    return bool(HEALTH_MONITOR_PROXIMITY_ECHO_RE.search(line))
+
+
+def _proximity_own_blind_present(log_text: str) -> bool:
+    """В дампе есть собственная (не эхо) строка слепоты proximity_guard."""
+    return any(
+        PROXIMITY_BLIND_RE.search(line) and not _is_health_monitor_proximity_echo(line)
+        for line in log_text.splitlines()
+    )
+
+
 def _proximity_guard_recovered(log_text: str) -> bool:
     """True, если последнее состояние proximity_guard в дампе — «зона под контролем».
 
     Нода пишет ERROR при каждом переходе в «слепой» режим и INFO при каждом возврате,
     поэтому решает порядок строк: стартовая гонка (ERROR, затем INFO) — шум, ERROR без
-    возврата после него — настоящая потеря скана или одометрии.
+    возврата после него — настоящая потеря скана или одометрии. Эхо health_monitor в
+    счёт не идёт: оно обрезано до 60 символов и не является строкой ноды.
     """
     state = None
     for line in log_text.splitlines():
+        if _is_health_monitor_proximity_echo(line):
+            continue
         if PROXIMITY_BLIND_RE.search(line):
             state = False
         elif PROXIMITY_RECOVERED_RE.search(line):
@@ -1014,6 +1045,25 @@ def _classify_error_like_line(
     return "critical"
 
 
+def _classify_with_proximity_echo(
+    line: str,
+    exclude_patterns: Iterable[str],
+    demoted_patterns: Iterable[str],
+    *,
+    own_blind_present: bool,
+) -> str | None:
+    """Классификация с правилом дубля эха proximity_guard.
+
+    Эхо — не самостоятельный пункт, только когда в дампе уже есть собственная
+    строка слепоты ноды (её и так классифицирует окно возврата). Без собственной
+    строки эхо остаётся critical: понижать его нечем, возврата из обрезки не видно.
+    """
+    severity = _classify_error_like_line(line, exclude_patterns, demoted_patterns)
+    if severity == "critical" and own_blind_present and _is_health_monitor_proximity_echo(line):
+        return None
+    return severity
+
+
 def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
@@ -1023,9 +1073,13 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
     demoted = list(CRITICAL_DEMOTED_TO_WARNING)
     if _proximity_guard_recovered(log_text):
         demoted.append(PROXIMITY_BLIND_DEMOTION)
+    own_blind = _proximity_own_blind_present(log_text)
     if severity == "critical":
         for line in lines:
-            if _classify_error_like_line(line, critical_patterns, demoted) == "critical":
+            if (
+                _classify_with_proximity_echo(line, critical_patterns, demoted, own_blind_present=own_blind)
+                == "critical"
+            ):
                 return line
         return None
 
@@ -1034,10 +1088,8 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         # Warning — это и строка со словом warn/warning, и строка, понижённая из
         # critical (см. _classify_error_like_line): без второго условия понижённые
         # строки пропали бы из отчёта совсем, а не стали предупреждением.
-        if not (
-            WARNING_MATCH_RE.search(line)
-            or _classify_error_like_line(line, critical_patterns, demoted) == "warning"
-        ):
+        classified = _classify_with_proximity_echo(line, critical_patterns, demoted, own_blind_present=own_blind)
+        if not (WARNING_MATCH_RE.search(line) or classified == "warning"):
             continue
         if _matches_any(patterns, line):
             continue
