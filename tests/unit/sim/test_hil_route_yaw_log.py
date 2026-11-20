@@ -194,19 +194,20 @@ def test_plan_line_none_when_no_path(route_mod, capsys):
 
 
 def test_accept_point_uses_shifu_plank_not_goal_checker(route_mod):
-    """Планка приёмки 0.30/0.30 (d-20261120-depot-m4-yaw), не допуск goal checker 0.25/0.30."""
-    assert route_mod.ACCEPT_XY_TOLERANCE == pytest.approx(0.30)
-    assert route_mod.ACCEPT_YAW_TOLERANCE == pytest.approx(0.30)
+    """Планка приёмки 0.32/0.35 (d-20261120-depot-gt-032-035), не допуск goal checker 0.25/0.30."""
+    assert route_mod.ACCEPT_XY_TOLERANCE == pytest.approx(0.32)
+    assert route_mod.ACCEPT_YAW_TOLERANCE == pytest.approx(0.35)
     assert route_mod.XY_GOAL_TOLERANCE == 0.25  # goal checker не сдвинут
+    assert route_mod.YAW_GOAL_TOLERANCE == pytest.approx(0.30)
 
     # (a) 0.274 м / 0.179 рад, не таймаут: checker сказал бы OUTSIDE_TOLERANCE, приёмка — PASS.
     verdict, reasons = route_mod.accept_point("OUTSIDE_TOLERANCE", 0.274, 0.179, 40.0)
     assert (verdict, reasons) == ("PASS", [])
 
-    # (b) 0.313 м / 0.380 рад — за обеими планками.
+    # (b) 0.313 м внутри 0.32, 0.380 рад за 0.35 — провал только по курсу.
     verdict, reasons = route_mod.accept_point("OUTSIDE_TOLERANCE", 0.313, 0.380, 40.0)
     assert verdict == "FAIL"
-    assert reasons == ["xy", "yaw"]
+    assert reasons == ["yaw"]
 
     # (c) TIMEOUT при 0.24 м / 0.21 рад: таймаут не переименовываем, точка не PASS.
     verdict, reasons = route_mod.accept_point("TIMEOUT", 0.24, 0.21, 200.1)
@@ -224,7 +225,7 @@ def test_acceptance_line_names_failed_points_and_why(route_mod):
         ("R4", "FAIL", ["yaw"]),
     ]
     line = route_mod.acceptance_line(rows)
-    assert line.startswith("ПРИЁМКА (0.30 м / 0.30 рад): 1/4 PASS")
+    assert line.startswith("ПРИЁМКА (0.32 м / 0.35 рад): 1/4 PASS")
     assert "M3 FAIL (xy)" in line
     assert "M4 FAIL (timeout)" in line
     assert "R4 FAIL (yaw)" in line
@@ -252,6 +253,35 @@ def test_goal_end_keeps_old_fields_and_appends_accept(route_mod, monkeypatch, ca
     assert "why=-" in line
     for field in ("sim=", "frame=", "dur_sim=", "err=", "em_episodes=", "recoveries=", "gt="):
         assert field in line
+
+
+def test_accept_pass_only_on_nav2_success(route_mod):
+    """PASS только при успехе Nav2. REJECTED/INTERRUPTED — FAIL, xy/yaw не спасают."""
+    verdict, reasons = route_mod.accept_point("REJECTED", 0.10, 0.10, 40.0)
+    assert (verdict, reasons) == ("FAIL", ["not_succeeded"])
+
+    verdict, reasons = route_mod.accept_point("INTERRUPTED", 0.10, 0.10, 40.0)
+    assert (verdict, reasons) == ("FAIL", ["not_succeeded"])
+
+    verdict, reasons = route_mod.accept_point("STATUS_ABORTED", 0.10, 0.10, 40.0)
+    assert (verdict, reasons) == ("FAIL", ["not_succeeded"])
+
+    verdict, reasons = route_mod.accept_point("CANCELED", 0.40, 0.40, 40.0)
+    assert (verdict, reasons) == ("FAIL", ["not_succeeded", "xy", "yaw"])
+
+    # STATUS_SUCCEEDED 0.31 м / 0.34 рад — внутри 0.32/0.35, вне чекера 0.25/0.30.
+    verdict, reasons = route_mod.accept_point("STATUS_SUCCEEDED", 0.31, 0.34, 40.0)
+    assert (verdict, reasons) == ("PASS", [])
+
+    verdict, reasons = route_mod.accept_point("STATUS_SUCCEEDED", 0.33, 0.34, 40.0)
+    assert (verdict, reasons) == ("FAIL", ["xy"])
+
+    verdict, reasons = route_mod.accept_point("OUTSIDE_TOLERANCE", 0.31, 0.36, 40.0)
+    assert (verdict, reasons) == ("FAIL", ["yaw"])
+
+    # Ровно на планке — ещё PASS; сразу за ней — FAIL.
+    assert route_mod.accept_point("STATUS_SUCCEEDED", 0.32, 0.35, 200.0) == ("PASS", [])
+    assert route_mod.accept_point("STATUS_SUCCEEDED", 0.32, 0.35, 200.1)[1] == ["timeout"]
 
 
 def test_goals_and_timeout_unchanged(route_mod):

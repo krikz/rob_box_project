@@ -39,11 +39,12 @@ TIMEOUT = 200.0
 # Это вердикт goal checker (hil_result / inside_sent_goal), не планка приёмки Depot.
 XY_GOAL_TOLERANCE = 0.25
 YAW_GOAL_TOLERANCE = 0.30
-# Планка приёмки Depot по истине Gazebo: docs/shifu-decisions.md#d-20261120-depot-m4-yaw
-# (0.30 м / 0.30 рад). Поздняя запись #d-20261120-depot-gt-032-035 говорит 0.32/0.35 и
-# помечает эту планку заменённой; код держит 0.30/0.30, пока Шифу не подтвердит смену.
-ACCEPT_XY_TOLERANCE = 0.30
-ACCEPT_YAW_TOLERANCE = 0.30
+# Планка приёмки Depot по истине Gazebo: docs/shifu-decisions.md#d-20261120-depot-gt-032-035
+# (0.32 м / 0.35 рад; источник — Telegram-директива координатору, 20.11.2026 15:23 UTC).
+# Заменяет 0.30/0.30 из #d-20261120-depot-m4-yaw. Штатный чекер Nav2 — XY_GOAL_TOLERANCE /
+# YAW_GOAL_TOLERANCE выше, не эта планка.
+ACCEPT_XY_TOLERANCE = 0.32
+ACCEPT_YAW_TOLERANCE = 0.35
 # local_costmap.tf_buffer_duration (nav2_params.yaml): сколько costmap держит историю TF.
 # Тот же предел — ждать кадр odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели.
 TF_BUFFER_S = 30.0
@@ -102,13 +103,20 @@ def _over(err, tol):
     return err is None or not math.isfinite(err) or err > tol
 
 
+# Nav2 закрыл цель успешно. OUTSIDE_TOLERANCE — тот же успех, но поза вне допуска
+# чекера 0.25 м / 0.30 рад; по #d-20261120-depot-gt-032-035 такая точка всё равно
+# засчитывается, если истина Gazebo внутри планки. Остальное (REJECTED, CANCELED,
+# INTERRUPTED, ABORTED, неизвестное) — не успех.
+_ACCEPT_OK_STATUS = frozenset({"STATUS_SUCCEEDED", "OUTSIDE_TOLERANCE"})
+
+
 def _accept_fail_reasons(nav_status, xy_err, yaw_err, dur, timeout):
     """Почему точка не прошла приёмку. Пустой список — PASS. TIMEOUT не переименовываем."""
     reasons = []
     if nav_status == "TIMEOUT" or dur is None or not math.isfinite(dur) or dur > timeout:
         reasons.append("timeout")
-    elif nav_status == "STATUS_ABORTED":
-        reasons.append("aborted")
+    elif nav_status not in _ACCEPT_OK_STATUS:
+        reasons.append("not_succeeded")
     if _over(xy_err, ACCEPT_XY_TOLERANCE):
         reasons.append("xy")
     if _over(yaw_err, ACCEPT_YAW_TOLERANCE):
@@ -117,18 +125,20 @@ def _accept_fail_reasons(nav_status, xy_err, yaw_err, dur, timeout):
 
 
 def accept_point(nav_status, xy_err, yaw_err, dur, timeout=TIMEOUT):
-    """Приёмка одной точки Depot по истине Gazebo (docs/shifu-decisions.md#d-20261120-depot-m4-yaw).
+    """Приёмка одной точки Depot по истине Gazebo (docs/shifu-decisions.md#d-20261120-depot-gt-032-035).
 
-    PASS только если итог не TIMEOUT и не STATUS_ABORTED, xy ≤ 0.30 м, |yaw| ≤ 0.30 рад
-    и dur ≤ TIMEOUT (200 с). ``hil_result`` не трогает: тот считает допуск goal checker.
-    Вернуть ``(verdict, reasons)``: ``("PASS", [])`` либо ``("FAIL", ["timeout"|"xy"|"yaw"|"aborted", ...])``.
+    PASS только если Nav2 сообщил успех (STATUS_SUCCEEDED или OUTSIDE_TOLERANCE —
+    успех вне допуска чекера), xy ≤ 0.32 м, |yaw| ≤ 0.35 рад и dur ≤ TIMEOUT (200 с).
+    ``hil_result`` не трогает: тот считает допуск goal checker.
+    Вернуть ``(verdict, reasons)``: ``("PASS", [])`` либо
+    ``("FAIL", ["timeout"|"not_succeeded"|"xy"|"yaw", ...])``.
     """
     reasons = _accept_fail_reasons(nav_status, xy_err, yaw_err, dur, timeout)
     return ("FAIL", reasons) if reasons else ("PASS", [])
 
 
 def acceptance_line(rows):
-    """Итог маршрута: ``ПРИЁМКА (0.30 м / 0.30 рад): N/M PASS`` и FAIL с причиной.
+    """Итог маршрута: ``ПРИЁМКА (0.32 м / 0.35 рад): N/M PASS`` и FAIL с причиной.
 
     ``rows`` — ``(name, "PASS"|"FAIL", reasons)``. ``N/M`` — сколько точек проехали.
     """
