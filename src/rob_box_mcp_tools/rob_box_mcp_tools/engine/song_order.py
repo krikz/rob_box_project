@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from rob_box_music.source import DECLINE, GENERATE, SONG_GEN_KINDS, Route, SourceAsk, decline_text, gen_kind
 
-from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, wait_text
+from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, verbatim_refusal, wait_text
 
 #: Код отказа пути (``engine_tools.SOURCE_DECLINED``; равенство держит тест).
 DECLINED = "music_source"
@@ -26,6 +26,32 @@ def bridge_hold(hold: Any, bridge: Any) -> Any:
     if hold is None or not bridge.success or hold.bridge_id != (bridge.data or {}).get("track_id"):
         return None
     return hold
+
+
+def song_request(args: Tuple[Any, ...], genre: str) -> SongRequest:
+    """Заказ песни из аргументов тула ``(intent, text, mood, genre, turn_id, heard_text)``.
+
+    Непустой явный аргумент ``text`` всегда важнее ``heard_text``; ``heard_text`` — только когда
+    аргумент пуст (#4973: прежнее ``args[5] or args[1]`` выбрасывало поданные слова и пело
+    выдумку по жалобе). Дословные слова идут и темой, и текстом: тема нужна ``check_song``
+    (название), текст — чтобы LLM его не переписывала."""
+    lyrics = str(args[1] or "") or str(args[5] or "")
+    return SongRequest(lyrics, genre, str(args[2] or ""), lyrics)
+
+
+def voice_refusal(provider: str, voice: str, lyrics: str) -> str:
+    """Фраза отказа до заказа, или «»: у голоса нет пресета, либо он не поёт письменность
+    поданных слов.
+
+    Отказ здесь не запускает заказ и не тратит кредитов; голос не подменяется молча
+    (#4973)."""
+    from rob_box_dialog_host.tts_voice_registry import SingPresetUnknown, sing_preset_for
+
+    try:
+        preset = sing_preset_for(provider, voice)
+    except SingPresetUnknown:
+        return f"Спеть сейчас не могу: {failed_words('no_preset')}."
+    return verbatim_refusal(provider, voice, preset.language, lyrics)
 
 
 def held_play(hold: Any) -> Optional[Callable[[str], Any]]:
@@ -76,7 +102,11 @@ class SongOrder:
         bridge = order(*args, ask=replace(ask, vocal=False, robot_voice=False, generated=False), gen_failed="pending")
         if not bridge.success and (bridge.data or {}).get("reason") != DECLINED:
             return "raw", bridge
-        request = SongRequest(str(args[5] or args[1] or ""), ask.genre, str(args[2] or ""))
+        request = song_request(args, ask.genre)
+        # до launch: заказ не уходит, голос не подменяется
+        refusal = voice_refusal(provider, voice, request.lyrics)
+        if refusal:
+            return _declined(refusal)
         hold = bridge_hold(self._hold(), bridge)
         if not studio.launch(request, lambda why: self.failed_text(ask, why, bridge.success, hold), args[4],
                              play=held_play(hold)):
