@@ -590,6 +590,34 @@ def stt_verdict(step: Mapping[str, Any], heard: str, executed: bool = False) -> 
     return verdict
 
 
+def stt_replay_inject(
+    stt_ok: bool, replayed: bool, fallback: bool, injected: bool, barge_in: bool, executed: bool
+) -> Dict[str, object]:
+    """После единственного звукового ``stt_replay`` распознанное снова разошлось с фразой шага (#4196, акт 4
+    марафона 20.11, run 44802283781, n411_pitch_bass: «говори басом» -> «галибаса»).
+
+    Один звуковой повтор уже был и слова шага снова не нашлись (``stt_ok`` ложь) -- последняя попытка не звуком,
+    а топиком: ``inject=1``. Не инжектить: звукового повтора не было, слова нашлись, инъекция шагу запрещена
+    (``fallback`` ложь), инъекция в шаге уже была, шаг перебивает речь, исход шага в окне первой попытки уже есть
+    (``executed``: второй заход дал бы другой исход, #4955). Потолок не растёт: это не вторая звуковая попытка.
+    Возвращает ``inject`` (0/1) и ``reason``."""
+    if not replayed:
+        reason = "not_replayed"
+    elif stt_ok:
+        reason = "keys_heard"
+    elif not fallback:
+        reason = "fallback_off"
+    elif injected:
+        reason = "already_injected"
+    elif barge_in:
+        reason = "barge_in"
+    elif executed:
+        reason = "executed"
+    else:
+        reason = "inject"
+    return {"inject": int(reason == "inject"), "reason": reason}
+
+
 def content_words(text: str) -> Tuple[str, ...]:
     """Слова фразы без вейка и без пунктуации: «Робот, говори.» -> ``("говори",)``."""
     return tuple(w for w in _norm(text).split() if w not in BARE_WAKE_WORDS)
@@ -1298,6 +1326,18 @@ def _cmd_stt(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_stt_replay_inject(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--stt-ok 0|1 --replayed 0|1 [--fallback 0|1] [--injected 0|1] [--barge-in 0|1] [--executed 0|1]``
+    -> ``inject=`` / ``reason=``. Решает :func:`stt_replay_inject`, не bash: после звукового повтора слова
+    шага снова не нашлись -- последняя попытка топиком, не второй звуковой повтор."""
+    _emit(stt_replay_inject(
+        stt_ok=opts["--stt-ok"] == "1", replayed=opts["--replayed"] == "1",
+        fallback=opts["--fallback"] == "1", injected=opts["--injected"] == "1",
+        barge_in=opts["--barge-in"] == "1", executed=opts["--executed"] == "1",
+    ))
+    return 0
+
+
 def _cmd_stt_retry(opts: Dict[str, str], flags: List[str]) -> int:
     """``--text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]``
     -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает
@@ -1427,7 +1467,7 @@ COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProx
     "policy": _cmd_policy, "recovery": _cmd_recovery, "wake-retry": _cmd_wake_retry, "session": _cmd_session,
     "inject": _cmd_inject,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
-    "stt-retry": _cmd_stt_retry, "stt-miss": _cmd_stt_miss,
+    "stt-retry": _cmd_stt_retry, "stt-miss": _cmd_stt_miss, "stt-replay-inject": _cmd_stt_replay_inject,
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
@@ -1438,6 +1478,7 @@ USAGE = ("usage: e2e_events.py state|quiet|anchor [--silent-ok] [--barge] [--wai
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
          " | stt-retry --text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]"
          " | stt-miss --text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1] [--fallback 0|1] [--injected 0|1]"
+         " | stt-replay-inject --stt-ok 0|1 --replayed 0|1 [--fallback 0|1] [--injected 0|1] [--barge-in 0|1] [--executed 0|1]"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
@@ -1457,7 +1498,7 @@ def main(argv: List[str]) -> int:
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
             "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0",
             "--missing": "", "--allowed": "1", "--timeout": "0", "--crash": "0",
-            "--fallback": "0", "--injected": "0"}
+            "--fallback": "0", "--injected": "0", "--stt-ok": "0", "--replayed": "0"}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

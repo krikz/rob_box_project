@@ -608,10 +608,14 @@ class TestRunStepSttReplay:
         assert _names(played) == ["cmd_a_eq.wav"]
 
     def test_replay_that_is_distorted_again_is_not_repeated_a_third_time(self, tmp_path):
+        # Второго звука нет. step_stt_inject здесь не вынут: инъекция не легла, честный FAIL.
+        # Было: PLAY_COUNT=2 и один E2E_RECOVER stt_replay; RC не проверялся (run_step возвращал 0).
         bad = heard("робот гарри басом", "{NOW-30}") + REPLY
         out, err, _, _ = _run_step(tmp_path, bad, [bad], STEP, _scenario(tmp_path) + KINDS, replace=True)
         assert "PLAY_COUNT=2" in out, (out, err)
         assert out.count("E2E_RECOVER stt_replay a ") == 1
+        assert "RC=1" in out and "inject_failed" in out
+        assert "E2E_RECOVER stt_inject" not in out
 
     def test_command_already_executed_is_not_replayed_n506_29_10(self, tmp_path):
         """Марафон-6: «темп» -> «там», но `edit_music` уже исполнен (134 -> 145 BPM): повтор упёрся бы в потолок. Повтора
