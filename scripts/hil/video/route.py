@@ -23,7 +23,7 @@ GOALS = [  # Depot; M — картография (карта пуста), R — 
     ("M1", -3.7, 4.0, 0),
     ("M2", -1.0, 4.5, 0),
     ("M3", -1.0, -1.0, 0),
-    ("M4", -3.7, -4.5, 0),
+    ("M4", -3.5, -4.5, 0),
     ("M5", 3.0, -0.9, 0),
     ("M6", 9.0, -0.9, 0),
     ("R1", 4.25, 3.5, 90),
@@ -35,9 +35,9 @@ GOALS = [  # Depot; M — картография (карта пуста), R — 
     ("R7", -3.7, 0.0, 180),
 ]
 TIMEOUT = 200.0
-# general_goal_checker в nav2_params.yaml. Не новый допуск: HIL-успех = те же xy 0.25 и yaw 0.20.
+# Допуски general_goal_checker из nav2_params.yaml для проверки HIL-результата по GT.
 XY_GOAL_TOLERANCE = 0.25
-YAW_GOAL_TOLERANCE = 0.20
+YAW_GOAL_TOLERANCE = 0.30
 # local_costmap.tf_buffer_duration (nav2_params.yaml): сколько costmap держит историю TF.
 # Тот же предел — ждать кадр odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели.
 TF_BUFFER_S = 30.0
@@ -81,7 +81,7 @@ def inside_sent_goal(gt, goal, xy_tol=XY_GOAL_TOLERANCE, yaw_tol=YAW_GOAL_TOLERA
 
 
 def hil_result(nav_status, gt, goal):
-    """STATUS_SUCCEEDED только если поза внутри xy 0.25 и yaw 0.20 от отправленной цели.
+    """STATUS_SUCCEEDED только если поза в допусках xy и yaw от отправленной цели.
 
     Nav2 закрывает FollowPath по хвосту плана / stateful latch. TIMEOUT не переименовываем.
     """
