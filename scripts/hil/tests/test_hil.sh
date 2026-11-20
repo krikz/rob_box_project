@@ -512,6 +512,12 @@ mkdir -p "$WORK/vbin" "$WORK/vdir/out"
 cat > "$WORK/vbin/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "docker $*" >> "$VLOG"
+# runvideo.sh считает прогон успешным только при GOAL_START в логе route.py.
+# Фейк печатает маркер на сам вызов маршрута, не на pkill/cp — иначе проверка
+# «ошибка до GOAL_START» в обёртке здесь не видна.
+case "$*" in
+    *"/route.py"*) printf '12:00:00.000 GOAL_START M1 target=(1,2,0) sim=1.00 frame=-1\n' ;;
+esac
 exit 0
 EOF
 chmod +x "$WORK/vbin/docker"

@@ -1,5 +1,9 @@
 #!/bin/bash
 # На песочнице: подписчики камер + рекордер карты + маршрут внутри rob-box-hil-gazebo.
+# Код выхода — код route.py, не grep: без pipefail пайп отдавал 0, хотя маршрут
+# падал до первой цели (пустые цели, assert, traceback). Нет GOAL_START в логе —
+# «ERROR before GOAL_START» и ненулевой код, даже если route.py вышел 0.
+set -o pipefail
 G=rob-box-hil-gazebo
 D=${VIDEO_DIR:-/home/ros2/rob_box_hilvideo}
 # CAMERAS=1: подписчики камер video_top/video_chase (сенсор рендерит, на программном рендере песочницы
@@ -20,11 +24,32 @@ fi
 docker exec -d $G /entrypoint.sh python3 -m rob_box_sim.map_recorder --out /sim_video/maprec --rate 10
 sleep "$SETTLE_S"
 date -u +%FT%TZ > $D/out/run_start.txt
-# ROUTE_GOALS_FILE (путь в контейнере, напр. /sim_worlds/building.goals.yaml) — цели из файла точек мира
-# ROUTE_LOG — файл этого run_id. Пусто — прежний общий out/route.log.
-docker exec ${ROUTE_GOALS_FILE:+-e ROUTE_GOALS_FILE="$ROUTE_GOALS_FILE"} $G /entrypoint.sh python3 -u /route.py "$@" 2>&1 | grep -v -i -E "zenoh|^\s*$" > "${ROUTE_LOG:-$D/out/route.log}"
+# ROUTE_GOALS_FILE (путь в контейнере, напр. /sim_worlds/building.goals.yaml) — цели из файла точек мира.
+# ROUTE_LOG — файл этого run_id. Пусто — прежний общий out/route.log (и он же, если задан ROUTE_LOG:
+# вызывающий читает оба; m1repeat копирует общий лог только если он не старше старта).
+ROUTE_LOG_PATH="${ROUTE_LOG:-$D/out/route.log}"
+mkdir -p "$(dirname "$ROUTE_LOG_PATH")" "$D/out"
+# pipefail: код пайпа — первый ненулевой. docker exec (route.py) стоит первым, grep — вторым,
+# поэтому сбой route.py не маскируется успешным grep. zenoh и пустые строки в лог не пишем.
+docker exec ${ROUTE_GOALS_FILE:+-e ROUTE_GOALS_FILE="$ROUTE_GOALS_FILE"} $G /entrypoint.sh python3 -u /route.py "$@" 2>&1 \
+    | grep -v -i -E "zenoh|^\s*$" > "$ROUTE_LOG_PATH"
+# PIPESTATUS живёт только до следующей команды: сохранить сразу, до cp.
+route_rc=${PIPESTATUS[0]}
+if [ -n "${ROUTE_LOG:-}" ] && [ "$ROUTE_LOG_PATH" != "$D/out/route.log" ]; then
+    cp -f "$ROUTE_LOG_PATH" "$D/out/route.log" || true
+fi
 date -u +%FT%TZ > $D/out/run_end.txt
-docker exec $G pkill -INT -f rob_box_sim.map_recorder
+docker exec $G pkill -INT -f rob_box_sim.map_recorder || true
 sleep "$STOP_S"
-if [ "$CAMERAS" = 1 ]; then docker exec $G pkill -f ign-transport-topic; fi
+if [ "$CAMERAS" = 1 ]; then docker exec $G pkill -f ign-transport-topic || true; fi
+# Координатор смотрит код обёртки. Нет GOAL_START — маршрут умер до первой цели
+# (ошибка, пустой список, падение route.py): это не успешный прогон.
+if ! grep -q "GOAL_START" "$ROUTE_LOG_PATH" 2>/dev/null; then
+    reason=$(grep -E "Error|error|Exception|Traceback|AssertionError|assert|нет целей" "$ROUTE_LOG_PATH" 2>/dev/null | tail -n 1)
+    [ -n "$reason" ] || reason="route.py rc=${route_rc}, лог без GOAL_START"
+    echo "ERROR before GOAL_START: ${reason}" >&2
+    [ "$route_rc" -ne 0 ] && exit "$route_rc"
+    exit 1
+fi
+[ "$route_rc" -eq 0 ] || exit "$route_rc"
 echo done

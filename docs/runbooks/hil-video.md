@@ -93,7 +93,7 @@ ssh ros2@10.1.1.250 'grep -E "GOAL_END|RECOV|EM_ON|TIMEOUT" /home/ros2/rob_box_h
 
 Подводные камни:
 
-- Печать через `| grep > файл` буферизуется: нужен `grep --line-buffered` (в скрипте есть).
+- Код выхода `runvideo.sh` — код `route.py`. Нет `GOAL_START` в логе (ошибка, пустые цели, падение до первой цели) — строка `ERROR before GOAL_START` и ненулевой код: раньше пайп в `grep` отдавал 0. `ROUTE_LOG` (пусто — общий `out/route.log`) и `out/route.log` пишутся одним логом.
 - `sandbox_prep.sh` не падает на файлах root в `out/` (контейнеры пишут туда от root): CRLF-шаг (`fix_crlf.sh`)
   обходит `out*` и `fuel`, и шаги 4–5 (Depot, `patch_compose.py`) выполняются.
 - Остановить прогон: `docker exec rob-box-hil-gazebo pkill -f /route.py`. **Не** `pkill -f runvideo.sh` через
