@@ -671,10 +671,10 @@ if [ -n "$GOAL_PROBE_DIR" ]; then
     log "GOAL_PROBE_LOADED sha=$GOAL_PROBE_SHA"
 fi
 log "GOAL_SEND run_id=$RUN_ID goal=$GOAL after BEFORE_GOAL_OK and PARAMS_NUMERIC"
-# route.py читает ROUTE_LOG. Путь — файл этого run_id, не общий out/route.log.
-# Общий out/route.log трогаем только после runvideo и только если он не старше старта:
-# runvideo.sh игнорирует ROUTE_LOG и пишет $D/out/route.log (raw m1repeat_20261119T185434Z:
-# cp: cannot stat '.../out/m1repeat_20261119T185434Z/route.log' → ARTIFACTS_INCOMPLETE rc=1).
+# ROUTE_LOG — файл этого run_id. runvideo.sh пишет и его, и общий out/route.log.
+# Общий лог забираем только если он не старше старта: прошлый заезд (yaw_std утащил
+# GOAL 07:28 от clean_003) в этот run_id не копируем. raw m1repeat_20261119T185434Z:
+# cp: cannot stat '.../out/m1repeat_20261119T185434Z/route.log' → ARTIFACTS_INCOMPLETE rc=1.
 sandbox "mkdir -p '$REMOTE_OUT'; rm -f '$REMOTE_OUT/route.log'"
 SANDBOX_T0=$(sandbox "date +%s" 2>/dev/null) || SANDBOX_T0=0
 sandbox "cd '$SANDBOX_REPO' && CAMERAS=0 ROUTE_LOG='$REMOTE_OUT/route.log' ./runvideo.sh '$GOAL'" >"$ART/runvideo.log" 2>&1 || true
