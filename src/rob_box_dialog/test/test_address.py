@@ -680,3 +680,39 @@ def test_repeated_wake_is_bare_wake_and_picks_up_backlog(text):
 def test_repeated_wake_with_phrase_stays_a_phrase():
     out = decide(_heard("робот включи робот", t=100.0), Backlog(), WAKES)
     assert out.source == VOICE and "включи" in out.text
+
+
+def test_heard_from_utterance_reads_direction_and_names_unreliable():
+    """#3784: поля Utterance несут угол и R; ниже порога угол не применяется, признак остаётся на фразе."""
+    import math
+
+    from rob_box_dialog.doa import phrase_direction
+    from rob_box_dialog.knowledge import DOA_CONFIDENCE_MIN
+
+    low = phrase_direction(90.0, DOA_CONFIDENCE_MIN - 0.1)
+    msg = types.SimpleNamespace(
+        text="робот", source="respeaker", started_at=_stamp(0), ended_at=_stamp(0),
+        doa_deg=low.doa_deg, doa_conf=low.doa_conf,
+    )
+    heard = heard_from(msg, now=50.0)
+    assert heard.doa_deg is None and heard.doa_conf == pytest.approx(low.doa_conf)
+
+    high = phrase_direction(45.0, 0.9)
+    msg = types.SimpleNamespace(
+        text="робот", source="respeaker", started_at=_stamp(0), ended_at=_stamp(1),
+        doa_deg=high.doa_deg, doa_conf=high.doa_conf,
+    )
+    heard = heard_from(msg, now=50.0)
+    assert heard.doa_deg == pytest.approx(45.0) and heard.doa_conf == pytest.approx(0.9)
+
+    bare = types.SimpleNamespace(text="привет", source="telegram", started_at=_stamp(0), ended_at=_stamp(0))
+    heard = heard_from(bare, now=50.0)
+    assert heard.doa_deg is None and heard.doa_conf == 0.0
+
+    missing = types.SimpleNamespace(
+        text="робот", source="respeaker", started_at=_stamp(0), ended_at=_stamp(0),
+        doa_deg=float("nan"), doa_conf=float("nan"),
+    )
+    heard = heard_from(missing, now=50.0)
+    assert heard.doa_deg is None and heard.doa_conf == 0.0
+    assert math.isnan(missing.doa_deg)
