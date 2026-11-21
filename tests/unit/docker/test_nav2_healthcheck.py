@@ -1,4 +1,5 @@
 """#5043: healthcheck nav2 спрашивает lifecycle, а не pgrep bt_navigator.
+#5060: префикс zenoh ("Using ZID: ...") в stdout не должен красить active в unhealthy.
 
 pgrep зеленел, когда controller_server умер (SIGILL) или завис на configure:
 bt_navigator запускается отдельной командой и переживает контроллер. Гард
@@ -70,15 +71,29 @@ def test_script_is_executable_in_git():
     assert SCRIPT.stat().st_mode & stat.S_IXUSR
 
 
-def _fake_ros2(bin_dir: Path, answers: dict[str, str], hang: set[str] | None = None) -> None:
-    """Подставной ros2: lifecycle get печатает ответ или молчит."""
+def _fake_ros2(
+    bin_dir: Path,
+    answers: dict[str, str],
+    hang: set[str] | None = None,
+    prefix: str = "",
+) -> None:
+    """Подставной ros2: lifecycle get печатает ответ или молчит.
+
+    prefix — строки до ответа (zenoh пишет "Using ZID: ..." в stdout, #5060).
+    """
     hang = hang or set()
     cases = []
     for node in NODES:
         if node in hang:
             body = "sleep 30"
         else:
-            body = f"printf '%s\\n' {answers[node]!r}"
+            chunks = [answers[node]]
+            if prefix:
+                chunks = [prefix, answers[node]]
+            # Каждая строка — отдельный аргумент printf: одна строка с \n
+            # внутри кавычек печатается как литерал, и парсер не видит state.
+            args = " ".join(repr(chunk) for chunk in chunks)
+            body = f"printf '%s\\n' {args}"
         cases.append(f'"{node}") {body} ;;')
     script = textwrap.dedent(
         f"""\
@@ -126,6 +141,31 @@ def test_all_active_exits_zero(tmp_path):
     proc = _run(tmp_path, bin_dir)
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr == ""
+
+
+# Префикс, который rmw_zenoh пишет в stdout перед строкой lifecycle (#5060).
+_ZENOH_PREFIX = "Using ZID: ba9cd618641b7c658522fe1d255f5c15"
+
+
+def test_zenoh_prefix_before_active_exits_zero(tmp_path):
+    # head -n 1 брал "Using" и красил живые узлы в unhealthy.
+    bin_dir = _setup(tmp_path)
+    _fake_ros2(bin_dir, {node: "active [3]" for node in NODES}, prefix=_ZENOH_PREFIX)
+    proc = _run(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+
+
+def test_zenoh_prefix_before_inactive_exits_one(tmp_path):
+    bin_dir = _setup(tmp_path)
+    answers = {node: "active [3]" for node in NODES}
+    answers["/controller_server"] = "inactive [1]"
+    _fake_ros2(bin_dir, answers, prefix=_ZENOH_PREFIX)
+    proc = _run(tmp_path, bin_dir)
+    assert proc.returncode == 1, proc.stderr
+    assert "/controller_server" in proc.stderr
+    assert "inactive" in proc.stderr
+    assert "Using" not in proc.stderr
 
 
 def test_one_inactive_exits_one(tmp_path):

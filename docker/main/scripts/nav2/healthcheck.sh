@@ -65,8 +65,14 @@ for node in "${NODES[@]}"; do
         fail=1
         continue
     fi
-    # ros2 lifecycle get печатает строку вида "active [3]". Берём первое слово.
-    state=$(printf '%s\n' "$out" | head -n 1 | awk '{print $1}')
+    # ros2 lifecycle get печатает строку вида "active [3]". Под rmw_zenoh
+    # перед ней в stdout приходит префикс рантайма ("Using ZID: ...", #5060):
+    # head -n 1 брал "Using" и красил живые active-узлы в unhealthy.
+    # Берём последнюю строку вида "<state> [<id>]", префикс игнорируем.
+    state=$(printf '%s\n' "$out" | awk '
+        $1 ~ /^[a-z_]+$/ && $2 ~ /^\[[0-9]+\]$/ { found = $1 }
+        END { print found }
+    ')
     if [ "$state" != "active" ]; then
         echo "nav2 healthcheck: ${node} is '${state:-<empty>}', want active" >&2
         fail=1
