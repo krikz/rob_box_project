@@ -711,16 +711,77 @@ def drop_unspoken_cancels(logs: str) -> str:
 
 _TTS_LINE_RE = re.compile(r"🔊 TTS: speech_id=(\w+),.*?\btext=(?:'(.*?)'|\"(.*?)\")\s*$")
 _SPEECH_ID_RE = re.compile(r"speech_id=([a-z0-9]+)")
+_ACCEPTED_RE = re.compile(r"✅ ПРИНЯТО")
 # Промежуточная фраза хода (``understand.progress``) -- не ответ. Тот же маркер, что в
 # :func:`first_voice_cycle_position`: строка помечает speech_id ближайшего ``🔊 TTS``.
 _PROGRESS_MARKER = "🧭 [turn-v2] промежуточная фраза:"
 
-_NUMERALS = (
-    "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять", "одиннадцать",
-    "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать",
-    "девятнадцать", "двадцать",
+# Числительные счёта. Составное («двадцать один») -- одно число, а не два слова: регэксп 1..20 резал его на
+# «двадцать» и «один», и правка поверх идущего счёта краснела ложным повтором (#4986, акт 8, run 44808584641).
+_ONES = (
+    "один",
+    "два",
+    "три",
+    "четыре",
+    "пять",
+    "шесть",
+    "семь",
+    "восемь",
+    "девять",
+    "десять",
+    "одиннадцать",
+    "двенадцать",
+    "тринадцать",
+    "четырнадцать",
+    "пятнадцать",
+    "шестнадцать",
+    "семнадцать",
+    "восемнадцать",
+    "девятнадцать",
 )
-_NUMERAL_RE = re.compile(r"(?<![а-яё])(%s)(?![а-яё])" % "|".join(sorted(_NUMERALS, key=len, reverse=True)))
+_TENS = (
+    ("девяносто", 90),
+    ("восемьдесят", 80),
+    ("семьдесят", 70),
+    ("шестьдесят", 60),
+    ("пятьдесят", 50),
+    ("сорок", 40),
+    ("тридцать", 30),
+    ("двадцать", 20),
+)
+_NUMERALS = _ONES + tuple(word for word, _value in _TENS)
+# Составное -- только десятки 20..90 + единицы 1..19. Любое первое слово здесь съедало бы следующее:
+# «девять, десять» читалось бы как одно число, и повтор девятки проверка бы не поймала.
+_TENS_WORD_RE = "|".join(word for word, _value in _TENS)
+_ONES_WORD_RE = "|".join(sorted(_ONES, key=len, reverse=True))
+_COMPOUND_RE = re.compile(
+    r"(?<![а-яё])(?:(%s)(?:\s+(%s))?|(%s))(?![а-яё])" % (_TENS_WORD_RE, _ONES_WORD_RE, _ONES_WORD_RE)
+)
+_TENS_VALUE = {word: value for word, value in _TENS}
+_ONES_VALUE = {word: index + 1 for index, word in enumerate(_ONES)}
+
+
+def _numeral_value(tens: str, ones: "str | None") -> int:
+    """«двадцать один» -> 21, «двадцать» -> 20, «один» -> 1. Составное только из десятков 20..90 и единиц 1..19."""
+    base = _TENS_VALUE.get(tens)
+    if base is None:
+        return _ONES_VALUE[tens]
+    if ones is None:
+        return base
+    return base + _ONES_VALUE[ones]
+
+
+def _spoken_numbers(speech: str) -> list:
+    """Числа звучавшей речи по порядку, составные целиком. «двадцать один» -- 21, не 20 и 1.
+
+    Десятки и единицы -- разные группы регэкспа: составное строится только из десятков 20..90, поэтому «девять,
+    десять» остаётся двумя числами, а не одним.
+    """
+    out = []
+    for match in _COMPOUND_RE.finditer(speech.lower().replace("ё", "е")):
+        head = match.group(1) or match.group(3)
+        out.append(_numeral_value(head, match.group(2)))
+    return out
 
 
 def filler_speech_ids(logs: str) -> "set[str]":
@@ -741,16 +802,33 @@ def filler_speech_ids(logs: str) -> "set[str]":
     return found
 
 
+def _own_step_logs(logs: str) -> str:
+    """Окно от собственного ``✅ ПРИНЯТО`` шага: речь до него принадлежит предыдущему шагу.
+
+    PLAY шага с barge-in ставится на 3 с раньше, чем кончится речь предыдущего, и ``docker logs --since`` захватывает
+    её целиком (#4986: окно n807 началось за 3 с до счёта n806 и забрало числа 1..30). Первое ``✅ ПРИНЯТО`` окна --
+    команда того, предыдущего шага (её речь ещё звучала); второе -- фраза самого шага. Окно с одним ``✅ ПРИНЯТО``
+    не режется: barge-in чужой речи в него не занёс.
+    """
+    lines = logs.split("\n")
+    hits = [i for i, line in enumerate(lines) if _ACCEPTED_RE.search(line)]
+    if len(hits) < 2:
+        return logs
+    return "\n".join(lines[hits[1] :])
+
+
 def _sounded_speech(logs: str) -> str:
     """Речь, которая ЗВУЧАЛА: тексты ``🔊 TTS`` реплик со ``SpeechEvent started`` (строка TTS ложится при приёме
     реплики, и отменённый до старта пред-синтез попал бы в неё). Нет ни одного ``started`` (v1, сухой лог) --
-    :func:`robot_speech`. Речь филлера (:func:`filler_speech_ids`) не входит: это не ответ и не счёт."""
-    started = set(_STARTED_RE.findall(logs))
-    fillers = filler_speech_ids(logs)
+    :func:`robot_speech`. Речь филлера (:func:`filler_speech_ids`) и речь до собственного ``✅ ПРИНЯТО`` шага
+    (:func:`_own_step_logs`) не входят: первая -- не ответ, вторая -- предыдущий шаг."""
+    own = _own_step_logs(logs)
+    started = set(_STARTED_RE.findall(own))
+    fillers = filler_speech_ids(own)
     if not started:
-        return robot_speech(logs)
+        return robot_speech(own)
     out: list = []
-    for line in logs.split("\n"):
+    for line in own.split("\n"):
         found = _TTS_LINE_RE.search(line)
         if found and found.group(1) in started and found.group(1) not in fillers:
             out.append(found.group(2) if found.group(2) is not None else found.group(3))
@@ -760,11 +838,14 @@ def _sounded_speech(logs: str) -> str:
 def repeated_numerals(logs: str) -> list:
     """Числительные 1..20, прозвучавшие в окне больше одного раза (счёт не должен идти по кругу после правки).
 
-    Считается звучавшая речь (:func:`_sounded_speech`), регистр не важен. Возвращает ``["девять x2", ...]``."""
+    Считается звучавшая речь (:func:`_sounded_speech`), регистр не важен, составные -- целиком (:func:`_spoken_numbers`):
+    «двадцать один» -- это 21, и слово «один» внутри него повтором единицы не является. Возвращает ``["9 x2", ...]``
+    по значениям чисел: слово «двадцать» из «двадцать один» и из «двадцать два» -- разные числа, не повтор.
+    """
     counts: dict = {}
-    for word in _NUMERAL_RE.findall(_sounded_speech(logs).lower()):
-        counts[word] = counts.get(word, 0) + 1
-    return ["%s x%d" % (w, n) for w, n in counts.items() if n > 1]
+    for number in _spoken_numbers(_sounded_speech(logs)):
+        counts[number] = counts.get(number, 0) + 1
+    return ["%d x%d" % (number, n) for number, n in sorted(counts.items()) if n > 1]
 
 
 _STEP_RE = re.compile(r"(?<![а-яё])шаг")
@@ -773,21 +854,20 @@ _STEP_RE = re.compile(r"(?<![а-яё])шаг")
 def count_continuation_failures(logs: str) -> list:
     """Правка звучащего счёта («добавляй слово шаг», #4207) продолжила его, а не начала заново: механизм речи.
 
-    Смотрит звучавшую речь окна (:func:`_sounded_speech`), числа 1..20: счёт был слышен; идёт не с единицы; числа
-    следуют подряд (+1, без возврата и пропусков); после первого числа окна прозвучало слово «шаг». Возвращает список
-    причин (пусто -- продолжение верное)."""
+    Смотрит звучавшую речь окна (:func:`_sounded_speech`), числа целиком, включая составные выше 20 (:func:`_spoken_numbers`):
+    счёт был слышен; идёт не с единицы; числа следуют подряд (+1, без возврата и пропусков); после первого числа окна
+    прозвучало слово «шаг». Возвращает список причин (пусто -- продолжение верное)."""
     speech = _sounded_speech(logs).lower()
-    found = list(_NUMERAL_RE.finditer(speech))
-    if not found:
+    numbers = _spoken_numbers(speech)
+    if not numbers:
         return ["no count heard in the window"]
-    numbers = [_NUMERALS.index(m.group(1)) + 1 for m in found]
     failures: list = []
     if 1 in numbers:
         failures.append("count restarted from one after the edit")
     broken = [f"{a}->{b}" for a, b in zip(numbers, numbers[1:]) if b != a + 1]
     if broken:
         failures.append(f"numbers not consecutive: {broken}")
-    if not _STEP_RE.search(speech, found[0].end()):
+    if not _STEP_RE.search(speech):
         failures.append("word 'шаг' not spoken after the edit")
     return failures
 
@@ -801,7 +881,6 @@ def count_continuation_failures(logs: str) -> list:
 #: Десяток чисел на сегмент выступления-счёта (``knowledge.COUNT_PER_SEGMENT``): ``segments=N`` → до N×10.
 _COUNT_PER_SEGMENT = 10
 _PERFORM_SEGS_RE = re.compile(r"выступление старт kind=\w+\b[^\n]*\bsegments=(\d+)")
-_HIGH_NUMERALS = (("пятьдесят", 50), ("сорок", 40), ("тридцать", 30), ("двадцать", 20))
 
 
 def count_plan_started(logs: str) -> bool:
@@ -821,10 +900,10 @@ def count_plan_started(logs: str) -> bool:
 def count_reach(logs: str) -> int:
     """До какого числа доходит план счёта в окне шага.
 
-    Берёт максимум из числительных в ``🔊 TTS`` (:func:`robot_speech` -- весь план, не только звучавшее) и из
-    ``выступление старт … segments=N`` × :data:`_COUNT_PER_SEGMENT` (счёт кодом на «до сорока» -- poem из 4 сегментов,
-    а barge-in режет окно на первом; без segments урезание до десяти и полный poem неразличимы). Речь промежуточной
-    фразы хода (:func:`filler_speech_ids`) в план не входит.
+    Берёт максимум из числительных в ``🔊 TTS`` (:func:`robot_speech` -- весь план, не только звучавшее; составные
+    целиком, :func:`_spoken_numbers`) и из ``выступление старт … segments=N`` × :data:`_COUNT_PER_SEGMENT` (счёт кодом на
+    «до сорока» -- poem из 4 сегментов, а barge-in режет окно на первом; без segments урезание до десяти и полный poem
+    неразличимы). Речь промежуточной фразы хода (:func:`filler_speech_ids`) в план не входит.
     """
     fillers = filler_speech_ids(logs)
     speech = (
@@ -838,12 +917,7 @@ def count_reach(logs: str) -> int:
         .lower()
         .replace("ё", "е")
     )
-    reach = 0
-    for word in _NUMERAL_RE.findall(speech):
-        reach = max(reach, _NUMERALS.index(word) + 1)
-    for word, value in _HIGH_NUMERALS:
-        if re.search(r"(?<![а-яё])%s(?![а-яё])" % word, speech):
-            reach = max(reach, value)
+    reach = max(_spoken_numbers(speech), default=0)
     for found in _PERFORM_SEGS_RE.findall(logs):
         reach = max(reach, int(found) * _COUNT_PER_SEGMENT)
     return reach
