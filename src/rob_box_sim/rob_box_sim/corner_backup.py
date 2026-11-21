@@ -10,8 +10,10 @@
 
 В дерево NavigateToPose эта формула не вшивается. Humble Nav2 1.1.20 /
 BehaviorTree.CPP v3 не знает узел Script (прогон 18:47Z: «Node not recognized:
-Script», bt_navigator не активировался). Пока зазоры не приходят в дерево
-узлом, который Humble грузит, recovery остаётся прежним Spin.
+Script», bt_navigator не активировался). Зазоры в дерево не приходят, поэтому
+выбор по ним невозможен. Recovery отъезжает штатным узлом BackUp v3
+безусловно (Gate 2 21.11: без отъезда робот 130 с стоял в стопе guard);
+сзади lethal проверка столкновения BackUp отказывает, и ход переходит к Spin.
 """
 
 from __future__ import annotations

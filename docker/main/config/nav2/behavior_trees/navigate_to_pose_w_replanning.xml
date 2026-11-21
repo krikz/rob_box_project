@@ -53,13 +53,20 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <!-- #4607 / прогон 18:47Z: выбор угла остаётся в Python
-               (rob_box_sim.corner_backup). Узел Script (BehaviorTree.CPP v4)
-               Humble Nav2 1.1.20 / BT.CPP v3 не знает: «Node not recognized:
-               Script», bt_navigator не активируется, цели не едут.
-               Зазоры впереди/сзади в дерево не приходят, поэтому без Script
-               ветка BackUp невыбираема. Здесь прежний Spin, как до #4785.
-               Не заглушка, которая всегда делает backup. -->
+          <!-- #4607 / прогон 18:47Z: узел Script (BehaviorTree.CPP v4) Humble
+               Nav2 1.1.20 / BT.CPP v3 не знает — «Node not recognized: Script»,
+               bt_navigator не активируется. Выбор угла по зазорам остаётся в
+               Python (rob_box_sim.corner_backup) и в это дерево не вшит.
+               Gate 2 21.11, R1 проход B: у полки Depot guard остановил по точке
+               0.07 м, а recovery 130 с крутил только Spin (первые три — на 0 рад,
+               сразу success) и Wait. Физического выхода из стопа не было.
+               BackUp — штатный узел v3 (плагин backup уже в behavior_server),
+               без Script и без if. Своя проверка столкновения
+               (simulate_ahead_time behavior_server): сзади lethal — отказ за
+               тик, RoundRobin идёт к Spin. Дистанция 0.15 м — порт по умолчанию,
+               меньше stop_m guard (0.20): отъезд сам стоп не провоцирует.
+               Скорость не задана: дефолт узла 0.025 м/с, не 0.15 м/с DWB. -->
+          <BackUp backup_dist="0.15" backup_speed="0.025"/>
           <Spin spin_dist="1.57"/>
           <Wait wait_duration="5"/>
         </RoundRobin>
