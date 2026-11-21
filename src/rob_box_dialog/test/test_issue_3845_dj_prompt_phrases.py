@@ -16,9 +16,10 @@ NOTE = "Из промта не использую: темп 124.5 BPM, тона�
 
 
 def test_set_still_preparing_at_the_class_deadline_is_not_said_to_have_failed():
+    """Срок класса - «ещё собираю», не отказ (#5006): «не заиграла» и «не получилось» исход не утверждают."""
     said = _said(START, ("timeout", None, {}), "Ты диджей Пауль Оакенфольд и у нас вечеринка на тему Очень странные дела")
-    assert said == [phrases.text("media.timeout")]
-    for failure in ("media.rejected", "music.dj_fail"):
+    assert said == [phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)]
+    for failure in ("media.rejected", "music.dj_fail", "media.timeout"):
         assert said[0] not in phrases.catalog()[failure]
 
 

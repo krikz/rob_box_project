@@ -1,6 +1,7 @@
 """Окно истории LLM — только озвученное и структурные результаты (ADR-0150 §7.3, §7.4; PR-8 #3702)."""
 
 from rob_box_dialog import knowledge as kn
+from rob_box_dialog import phrases
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.turn_log import ASSISTANT, TOOL, USER, TurnAggregate, TurnLog, WindowEntry, perform_status
 
@@ -217,9 +218,10 @@ def _n809_log():
 
 
 def test_late_outcome_replaces_the_timeout_record_and_its_phrase():
-    """Трек заиграл через 1,4 с после срока: в окне следующего хода - «done» и «Включаю музыку.», а не таймаут."""
+    """Трек заиграл после срока: в окне следующего хода - «done» и «Включаю музыку.», а не «ещё собираю» (#5006)."""
     log = _n809_log()
-    assert log.spoken("s1", 24) == "Музыка пока не заиграла."
+    waiting = phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)
+    assert log.spoken("s1", len(waiting)) == waiting
     assert log.late(_music("done", data={"track_id": "req95964:01:A"}), _phrase)
     log.said("t9", "s2", _phrase(_music("done")))
     log.spoken("s2", 15)
@@ -230,11 +232,12 @@ def test_late_outcome_replaces_the_timeout_record_and_its_phrase():
 
 
 def test_late_outcome_drops_the_timeout_phrase_that_is_still_being_spoken():
-    """n809: поздний итог пришёл, пока «Музыка пока не заиграла.» ещё звучала: событие речи - как прозвучало (e2e),
-    а в окно модели опровергнутая фраза не идёт."""
+    """n809: поздний итог пришёл, пока «ещё собираю» ещё звучало: событие речи - как прозвучало (e2e),
+    а в окно модели опровергнутая фраза не идёт (#5006: журнал снимает ту фразу, которую сказал код)."""
     log = _n809_log()
     assert log.late(_music("done"), _phrase)
-    assert log.spoken("s1", 24) == "Музыка пока не заиграла."
+    waiting = phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)
+    assert log.spoken("s1", len(waiting)) == waiting
     window = log.window()
     assert [e.role for e in window] == [USER, TOOL, ASSISTANT]
     assert window[-1].content == "[ответ действием: request_music — сделано]", (
@@ -243,7 +246,7 @@ def test_late_outcome_drops_the_timeout_phrase_that_is_still_being_spoken():
 
 def test_late_outcome_keeps_other_words_of_the_robot():
     log = _n809_log()
-    log.spoken("s1", 24)
+    log.spoken("s1", len(phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)))
     log.said("t9", "s3", "Ренардо уже прогревается.")
     log.spoken("s3", 25)
     assert log.late(_music("done"), _phrase)
@@ -252,7 +255,7 @@ def test_late_outcome_keeps_other_words_of_the_robot():
 
 def test_late_outcome_of_unknown_or_forgotten_action_changes_nothing():
     log = _n809_log()
-    log.spoken("s1", 24)
+    log.spoken("s1", len(phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)))
     before = log.window()
     assert not log.late(_music("done", ref="t8/0"), _phrase), "чужое действие"
     assert log.window() == before
