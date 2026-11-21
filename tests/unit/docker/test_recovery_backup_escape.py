@@ -1,11 +1,15 @@
-"""Recovery NavigateToPose умеет отъехать, а не только крутиться (Gate 2 21.11).
+"""BackUp достижим в каждом внешнем recovery-цикле NavigateToPose.
 
-R1 проход B: proximity-guard остановил у полки Depot по точке 0.07 м от корпуса,
-а RoundRobin 130 с делал ClearLocal+ClearGlobal → Spin → Wait. Ветки, которая
-физически уводит робота из точки, где разворот ничего не даёт, не было.
-BackUp — штатный узел BehaviorTree.CPP v3 (плагин ``backup`` уже в
-``behavior_server``), без Script и без ``if``: Humble BT.CPP v3 узел Script
-не знает (прогон 18:47Z, #4797).
+RoundRobin (Humble nav2_behavior_tree) на первом SUCCESS делает haltChildren
+и возвращает SUCCESS; RecoveryNode зовёт haltChild(1), а RoundRobin::halt
+сбрасывает индекс в 0. Дети после первого недостижимы: первый ребёнок —
+единственный, кто при успехе реально выполняется. Раунд 3 Gate 2 (21.11,
+дерево a898292, стенд Depot, 2×10 целей): «Running backup» = 0,
+«Running spin 1.57» = 0; единственный global-clear в R1-B 04:33:24.811Z =
+единственный внешний цикл за 200 с. Поэтому отъезд стоит в первом ребёнке,
+вместе с очисткой карт. BackUp — штатный узел BehaviorTree.CPP v3 (плагин
+``backup`` уже в ``behavior_server``), без Script и без ``if``: Humble
+BT.CPP v3 узел Script не знает (прогон 18:47Z, #4797).
 """
 
 from __future__ import annotations
@@ -41,27 +45,36 @@ def _recovery_actions() -> ET.Element:
 
 
 def test_recovery_round_robin_backs_up_before_spin():
-    """Отъезд — второй ход RoundRobin, между Clear и Spin, без Script и if."""
+    """Отъезд — в первом ребёнке RoundRobin, до Spin, без Script и if.
+
+    Первый ребёнок при успехе — единственный, кто реально выполняется:
+    SUCCESS → haltChild(1) → RoundRobin::halt сбрасывает индекс в 0.
+    """
     actions = _recovery_actions()
     assert [child.tag for child in actions] == [
         "Sequence",
-        "BackUp",
         "Spin",
         "Wait",
     ]
-    clearing = actions.find("Sequence")
-    assert clearing.get("name") == "ClearingActions"
-    assert [child.tag for child in clearing] == [
+    first = actions.find("Sequence")
+    assert first.get("name") == "ClearThenBackUp"
+    assert [child.tag for child in first] == [
         "ClearEntireCostmap",
         "ClearEntireCostmap",
+        "BackUp",
     ]
+    local, global_map = first.findall("ClearEntireCostmap")
+    assert local.get("service_name") == "local_costmap/clear_entirely_local_costmap"
+    assert (
+        global_map.get("service_name") == "global_costmap/clear_entirely_global_costmap"
+    )
 
-    backup = actions.find("BackUp")
+    backup = first.find("BackUp")
     assert backup.get("backup_dist") == f"{BACKUP_DIST_M:.2f}"
     assert backup.get("backup_speed") == f"{BACKUP_SPEED_M_S:.3f}"
-    # Условие выбора — атрибут if или узел Script; Humble v3 Script не грузит,
-    # а if без вычисленного зазора невыбираем. Отъезд безусловный: сзади
-    # lethal — своя проверка столкновения отказывает, RoundRobin идёт дальше.
+    # Условие выбора — атрибут if или узел Script; Humble v3 Script не грузит.
+    # Отъезд безусловный и стоит в первом ребёнке: сзади lethal своя проверка
+    # столкновения роняет Sequence, RoundRobin идёт к Spin.
     assert backup.get("if") is None
     assert actions.find(".//Script") is None
 

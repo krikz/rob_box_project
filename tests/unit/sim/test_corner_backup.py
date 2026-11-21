@@ -3,7 +3,9 @@
 Порог не новый: ``corner_backup.STOP_M`` равен ``proximity.Thresholds.stop_m``
 и ``coverage_plan.GUARD_STOP_M``. В дерево NavigateToPose формула не вшита:
 Humble Nav2 1.1.20 / BehaviorTree.CPP v3 не знает узел Script (прогон 18:47Z),
-а без него ветка BackUp невыбираема. Recovery — прежний Spin, как до #4785.
+зазоры в дерево не приходят. Отъезд — штатный BackUp в первом ребёнке
+RoundRobin: дети после первого недостижимы (SUCCESS → haltChild(1) →
+RoundRobin::halt сбрасывает индекс).
 """
 
 from __future__ import annotations
@@ -78,22 +80,25 @@ def test_loaded_behavior_trees_have_no_script_node():
 
 
 def test_navigate_recovery_backs_up_unconditionally_not_by_script():
-    """Отъезд — штатный BackUp v3, не Script и не заглушка «всегда backup».
+    """Отъезд — штатный BackUp v3 в первом ребёнке, не Script и не ``if``.
 
-    Прогон 18:47Z убрал Script: Humble BT.CPP v3 его не грузит, и ветка с
-    ``if`` стала невыбираемой. Gate 2 21.11 (R1 проход B) показал цену:
-    у полки recovery 130 с крутил только Spin. BackUp снова в RoundRobin,
-    но безусловно и без Script: сзади lethal своя проверка столкновения
-    отказывает, и ход переходит к Spin. Формула ``corner_escape`` по-прежнему
-    в дерево не вшита — зазоры в него не приходят.
+    Прогон 18:47Z убрал Script: Humble BT.CPP v3 его не грузит. Раунд 3
+    Gate 2 (21.11, дерево a898292): «Running backup» = 0 и
+    «Running spin 1.57» = 0 — BackUp стоял после всегда успешного первого
+    ребёнка и был недостижим. Теперь он внутри первого Sequence: сзади
+    lethal своя проверка столкновения роняет Sequence, и ход переходит к
+    Spin. Формула ``corner_escape`` по-прежнему в дерево не вшита —
+    зазоры в него не приходят.
     """
     recovery = ET.parse(TREE).getroot().find("BehaviorTree/RecoveryNode")
     assert recovery is not None
     actions = recovery.find("./ReactiveFallback/RoundRobin")
     assert actions is not None and actions.get("name") == "RecoveryActions"
     names = [child.tag for child in list(actions)]
-    assert names == ["Sequence", "BackUp", "Spin", "Wait"]
-    backup = actions.find("BackUp")
+    assert names == ["Sequence", "Spin", "Wait"]
+    first = list(actions)[0]
+    assert first.get("name") == "ClearThenBackUp"
+    backup = first.find("BackUp")
     assert backup is not None and backup.get("if") is None
     assert list(backup) == []
     spin = actions.find("Spin")
