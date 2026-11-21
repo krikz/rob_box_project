@@ -404,11 +404,14 @@ services:
       - twist-mux
       - lslidar
     restart: unless-stopped
+    # #5043: pgrep bt_navigator зеленел при мёртвом controller_server (SIGILL, #5039)
+    # и при зависшем configure. Скрипт спрашивает lifecycle трёх узлов; HEALTHCHECK
+    # в nav2/Dockerfile перекрыт этим блоком и не исполняется.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'bt_navigator' || exit 1"]
+      test: ["CMD-SHELL", "bash /scripts/healthcheck.sh"]
       interval: 15s
       timeout: 10s
-      start_period: 60s
+      start_period: 90s
       retries: 3
     labels:
       logging: "promtail"
