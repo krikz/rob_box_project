@@ -86,6 +86,7 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
            "drop_unspoken_cancels", "repeated_numerals", "count_continuation_failures",
            "count_reach", "count_end_failures",
+           "filler_speech_ids", "count_plan_started",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
@@ -709,6 +710,11 @@ def drop_unspoken_cancels(logs: str) -> str:
 
 
 _TTS_LINE_RE = re.compile(r"🔊 TTS: speech_id=(\w+),.*?\btext=(?:'(.*?)'|\"(.*?)\")\s*$")
+_SPEECH_ID_RE = re.compile(r"speech_id=([a-z0-9]+)")
+# Промежуточная фраза хода (``understand.progress``) -- не ответ. Тот же маркер, что в
+# :func:`first_voice_cycle_position`: строка помечает speech_id ближайшего ``🔊 TTS``.
+_PROGRESS_MARKER = "🧭 [turn-v2] промежуточная фраза:"
+
 _NUMERALS = (
     "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять", "одиннадцать",
     "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать",
@@ -717,17 +723,36 @@ _NUMERALS = (
 _NUMERAL_RE = re.compile(r"(?<![а-яё])(%s)(?![а-яё])" % "|".join(sorted(_NUMERALS, key=len, reverse=True)))
 
 
+def filler_speech_ids(logs: str) -> "set[str]":
+    """speech_id промежуточных фраз хода: реплика, помеченная ``промежуточная фраза`` перед своим ``🔊 TTS``.
+
+    Тот же принцип, что в :func:`first_voice_cycle_position` (#2406): филлер -- не содержательный ответ и не счёт.
+    """
+    pending = False
+    found: set = set()
+    for line in logs.lower().split("\n"):
+        if _PROGRESS_MARKER in line:
+            pending = True
+        if pending and "🔊 tts:" in line:
+            pending = False
+            match = _SPEECH_ID_RE.search(line)
+            if match:
+                found.add(match.group(1))
+    return found
+
+
 def _sounded_speech(logs: str) -> str:
     """Речь, которая ЗВУЧАЛА: тексты ``🔊 TTS`` реплик со ``SpeechEvent started`` (строка TTS ложится при приёме
     реплики, и отменённый до старта пред-синтез попал бы в неё). Нет ни одного ``started`` (v1, сухой лог) --
-    :func:`robot_speech`."""
+    :func:`robot_speech`. Речь филлера (:func:`filler_speech_ids`) не входит: это не ответ и не счёт."""
     started = set(_STARTED_RE.findall(logs))
+    fillers = filler_speech_ids(logs)
     if not started:
         return robot_speech(logs)
     out: list = []
     for line in logs.split("\n"):
         found = _TTS_LINE_RE.search(line)
-        if found and found.group(1) in started:
+        if found and found.group(1) in started and found.group(1) not in fillers:
             out.append(found.group(2) if found.group(2) is not None else found.group(3))
     return "\n".join(out)
 
@@ -779,13 +804,40 @@ _PERFORM_SEGS_RE = re.compile(r"выступление старт kind=\w+\b[^\n
 _HIGH_NUMERALS = (("пятьдесят", 50), ("сорок", 40), ("тридцать", 30), ("двадцать", 20))
 
 
+def count_plan_started(logs: str) -> bool:
+    """В окне есть собственный план счёта шага, а не только филлер.
+
+    План -- ``выступление старт … segments=N`` либо ``🔊 TTS``, не помеченный строкой ``промежуточная фраза``
+    (:func:`filler_speech_ids`). Пока его нет, судить длину счёта нечем: окно пусто, потому что счёт ещё не начался,
+    а не потому что оборвался (#4985, акт 8, run 44808584641: вердикт снят по «Секунду, думаю.» за 2,3 с до плана).
+    """
+    if _PERFORM_SEGS_RE.search(logs):
+        return True
+    fillers = filler_speech_ids(logs)
+    kept = [line for line in logs.split("\n") if not any(f"speech_id={sid}" in line.lower() for sid in fillers)]
+    return bool(robot_speech("\n".join(kept)).strip())
+
+
 def count_reach(logs: str) -> int:
     """До какого числа доходит план счёта в окне шага.
 
     Берёт максимум из числительных в ``🔊 TTS`` (:func:`robot_speech` -- весь план, не только звучавшее) и из
     ``выступление старт … segments=N`` × :data:`_COUNT_PER_SEGMENT` (счёт кодом на «до сорока» -- poem из 4 сегментов,
-    а barge-in режет окно на первом; без segments урезание до десяти и полный poem неразличимы)."""
-    speech = robot_speech(logs).lower().replace("ё", "е")
+    а barge-in режет окно на первом; без segments урезание до десяти и полный poem неразличимы). Речь промежуточной
+    фразы хода (:func:`filler_speech_ids`) в план не входит.
+    """
+    fillers = filler_speech_ids(logs)
+    speech = (
+        robot_speech(
+            "\n".join(
+                line
+                for line in logs.split("\n")
+                if not any(f"speech_id={speech_id}" in line.lower() for speech_id in fillers)
+            )
+        )
+        .lower()
+        .replace("ё", "е")
+    )
     reach = 0
     for word in _NUMERAL_RE.findall(speech):
         reach = max(reach, _NUMERALS.index(word) + 1)
@@ -798,8 +850,14 @@ def count_reach(logs: str) -> int:
 
 
 def count_end_failures(logs: str, min_end: int) -> list:
-    """Счёт короче ``min_end`` (М9 n802: урезание до десяти при ``SpeechEvent started``). Пусто -- длина достаточна."""
+    """Счёт короче ``min_end`` (М9 n802: урезание до десяти при ``SpeechEvent started``). Пусто -- длина достаточна.
+
+    Окно без собственного плана счёта (только филлер «Секунду, думаю.», #4985) не судится: счёт ещё не начался, и
+    «reaches 0» описывал бы пустое окно, а не обрыв. Настоящий обрыв -- план есть, а до ``min_end`` он не доходит.
+    """
     if not min_end:
+        return []
+    if not count_plan_started(logs):
         return []
     reach = count_reach(logs)
     if reach >= int(min_end):
