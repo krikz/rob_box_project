@@ -7,5 +7,5 @@ RTABMAP_TAG=dev-b3de9ff
 ROS2_CONTROL_TAG=dev-b3de9ff
 LSLIDAR_TAG=dev-b3de9ff
 PERCEPTION_TAG=dev-b3de9ff
-NAV2_TAG=dev-b3de9ff
+NAV2_TAG=dev-e62552a
 TELEOP_TAG=dev-b3de9ff
