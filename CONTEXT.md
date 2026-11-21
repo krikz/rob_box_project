@@ -810,3 +810,6 @@ adoption `previous=null`. Mutable `external_images`, compose override, ошиб�
 - **TurnGuards** — гварды хода v1 (ADR-0080 §2.4). Их роль — нарушения команды и мост команд.
 - **Флаг `dialog_engine` v1/v2** — переключатель движка; v2 стал дефолтом 23.10.2026, флаг удалён (#4354).
 - **Kanban, `e2e-done`, merge-gate, hermes / agent-flow** — автоматика процесса до 05.10.2026 (ADR-0162).
+- **`mapping_state.json`** (`/maps/mapping_state.json` на Main Pi) — файл состояния картографии. Не читается
+  с коммита `4f5baba18` (06.03.2026): режим rtabmap переключается сервисом, имя активной карты — строка
+  `maps.is_active` в БД инструментов (#4392). Убран с робота шагом деплоя (#5045).

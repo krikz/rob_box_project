@@ -817,6 +817,12 @@ jobs:
         run: |
           bash scripts/deploy/tests/test_preflight_pull_images.sh
 
+      # Issue #5045: деплой Main Pi убирает мёртвый mapping_state.json из тома
+      # карт (не читается с 4f5baba18) и не трогает rtabmap.db.
+      - name: Deploy removes dead mapping_state.json (issue #5045)
+        run: |
+          bash scripts/deploy/tests/test_remove_dead_mapping_state.sh
+
       # Эпик #4371: HIL. hil.sh не трогает боевые пути (./maps, /data), порядок
       # «замок → стоп моторов → sim time → сим», off гасит сим до возврата
       # ros2-control; деплой падает при замке /tmp/hil.lock. Фейковые ssh/docker.
@@ -827,7 +833,7 @@ jobs:
           bash scripts/hil/tests/test_depot_pathcalc.sh
           bash scripts/hil/tests/test_pathcalc_snapshot.sh
           bash scripts/hil/tests/test_pathcalc_producer.sh
-          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh scripts/deploy/remove_dead_mapping_state.sh scripts/deploy/tests/test_remove_dead_mapping_state.sh docker/sim/hil_run.sh
 
       # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
       # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы
