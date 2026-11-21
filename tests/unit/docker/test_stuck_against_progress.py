@@ -122,6 +122,11 @@ def test_dockerfile_applies_stuck_patch_after_progress_abort_on_pinned_controlle
     assert "stuckAgainstReset" in patch_text
     assert "kProgressRadiusM = 0.08" in patch_text
     assert "kWindowS = 2.0" in patch_text
+    # #5003: стена читается в кадре корпуса. Мировые метры корпуса как индексы
+    # клетки ищут полосу у начала карты и стену перед носом не видят.
+    assert "tf2::getYaw" in patch_text
+    assert "stuckAgainstCourseBlocked" in patch_text
+    assert "worldToMapEnforceBounds" not in patch_text
 
 
 def _patched_tree(tmp_path: Path) -> Path:
