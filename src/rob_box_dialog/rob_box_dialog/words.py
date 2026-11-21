@@ -302,6 +302,10 @@ def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
         if token in promise.alone:
             return True
         if token in promise.with_near and not set(tokens[max(0, i - 2):i]) & set(promise.unless_before):
+            # слово из unless_after в том же окне ПОСЛЕ глагола снимает обещание: объект - не то, что правило стережёт
+            # («запомнил двоих», «запомнил по голосу двоих» - счёт уже записанного, не новая запись)
+            if set(tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW]) & set(promise.unless_after):
+                continue
             around = (*tokens[max(0, i - MUSIC_PROMISE_WINDOW):i], *tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW])
             if any(word.startswith(promise.near) for word in around):
                 return True
@@ -338,8 +342,9 @@ def done_claims(text: str) -> Tuple[str, ...]:
     """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
     ``motion``, ``photo_send``) - по словам, как :func:`music_promises`: о сделанном («Готово, хил-окно удалена.»,
     «сохранил точку», «поехал») и обещании отправки снимков (#4505). Слово с ``unless_before`` за одно-два слова до
-    него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Тул, что утверждение
-    делает правдой, судит валидатор команды (``command._check_done_claim``)."""
+    него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Слово из
+    ``unless_after`` в окне после глагола («запомнил двоих», «запомнил по голосу двоих») - тоже не утверждение. Тул,
+    что утверждение делает правдой, судит валидатор команды (``command._check_done_claim``)."""
     tokens = name_tokens(text)
     found = []
     for kind, claim in DONE_CLAIMS.items():
