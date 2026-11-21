@@ -1890,10 +1890,14 @@ check_cycle() {  # $1=before_rfc3339
 
 # Проверка ожидаемых паттернов (для фич, напр. speaker_analysis)
 # $1=before, $2..=паттерны (grep -E). Печатает найденные, rc=0 если все найдены.
-check_patterns() {
+# Верхняя граница окна (#5002) — не позиционный аргумент: контракт
+# test_e2e_voice_patterns_with_spaces.sh считает каждый аргумент после shift
+# паттерном. Границу несёт E2E_PATTERN_UNTIL на месте вызова (env-префикс),
+# чтобы она не протекла в _stt_step_executed и single-path (те без until).
+check_patterns() {  # $1=before $2..=паттерны; until = $E2E_PATTERN_UNTIL
     local before="$1"; shift
-    local logs pat rc=0
-    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    local until="${E2E_PATTERN_UNTIL:-}" logs pat rc=0
+    logs="$(fetch_step_window_logs "$before" "$until")"
     # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
     logs="$(printf '%s
 ' "$logs" | strip_llm_request_dump)"
@@ -1923,7 +1927,11 @@ check_music_compare() {  # $1 = label, $2 = файл сценария, $3 = на
     fi
     kind="$(printf '%s\n' "$raw" | _ev_kv compare)"
     case "$kind" in ''|-) return 0 ;; esac
-    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music\] ' \
+    # #5002: строки деки после конца шага не судятся. Судья compare и так режет
+    # --since, верхней границы у него нет -- её ставит окно fetch.
+    local until
+    until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music\] ' "$until" \
         | python3 "$(_events_py)" compare --scenario "$2" --label "$1" --since "$3" 2>&1)"
     if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
         echo "  PATTERN_OK: music_compare=${kind}: $(printf '%s\n' "$out" | _ev_kv detail)"
@@ -3406,6 +3414,11 @@ PY
 #                                     вызван ДО первого голосового ответа
 #                                     (verbal-only LLM answer regression guard)
 # Пишет acceptance.json в OUT_DIR.
+# #5002: окно шага -- [before, конец шага] в шкале docker-лога. Конец берётся
+# часами робота в момент проверки (наносекунды: docker --until без дроби отсекает
+# всю секунду). Сырые строки окна пишутся видимым файлом acceptance_window_<label>.txt
+# рядом со steps.jsonl: .acceptance_*.txt начинается с точки, и upload-artifact
+# (include-hidden-files выключен) его не увозит.
 check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339 [$4=attempt_tag]
     # $4 (issue #2846) — «попытка N/M», если у шага есть retry_acceptance.
     # Без него в логе шага подряд стояли
@@ -3416,11 +3429,20 @@ check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339 [$4
     # «STEP <label>: итог — …» в scenario-цикле.
     local label="$1" acc_json="$2" before="$3" attempt_tag="${4:-}"
     local rc=0
-    local logs logs_file tag_str=""
+    local logs logs_file tag_str="" step_until
     [ -n "$attempt_tag" ] && tag_str=" ${attempt_tag}"
-    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Тело окна инлайном (#5002): unit-тесты вырезают check_acceptance() {
+    # ... } целиком и гоняют без source lib. set -u не ловит вызов
+    # несуществующей функции -- окно молча пустело бы. Та же нарезка для
+    # паттернов/ретрая/речи -- e2e_voice_lib.sh:fetch_step_window_logs.
+    # #5002: верхняя граница окна -- момент взятия конца шага, та же шкала, что у
+    # docker --since (часы робота). Наносекунды обязательны: --until без дроби
+    # отсекает всю свою секунду, и ход, закрывшийся в ней, выпал бы из окна.
+    step_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' --until '${step_until}' --timestamps 2>&1" 2>/dev/null || echo '')"
     # Логи шага тоже пишем в файл (ARG_MAX защита, как в check_gate1_aggregate).
-    logs_file="$OUT_DIR/.acceptance_${label}.txt"
+    # Видимое имя (#5002): .acceptance_*.txt upload-artifact не берёт (скрытый файл).
+    logs_file="$OUT_DIR/acceptance_window_${label}.txt"
     printf '%s' "$logs" > "$logs_file"
 
     # Issue #2846: исход register_speaker ищется в логе speaker_id_node. Если
@@ -3439,7 +3461,12 @@ logs = open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace").read()
 sys.exit(0 if registration_pending(json.loads(os.environ["ACC_JSON"]), logs) else 1)' 2>/dev/null; do
         sleep 1
         _reg_waited=$((_reg_waited + 1))
-        logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+        # #5002: until переснимается на каждой итерации. Один until, снятый до
+        # ожидания, отрезал бы ack speaker_id_node, который как раз и ждём
+        # (он может лечь позже начала проверки). Чужой ход за эти <=6 с --
+        # остаточный риск, не 244 с открытого окна.
+        step_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+        logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' --until '${step_until}' --timestamps 2>&1" 2>/dev/null || echo '')"
         printf '%s' "$logs" > "$logs_file"
     done
     if [ "$_reg_waited" -gt 0 ]; then
@@ -3826,7 +3853,12 @@ for p in json.load(sys.stdin):
     print(p.replace("\n", " "))' | tr -d '\015')
                 log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
                 pat_checked=1
-                check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}"
+                # #5002: верхняя граница окна паттернов -- момент проверки (наносекунды).
+                # Env-префикс, не позиционный аргумент: гард patterns_with_spaces
+                # считает каждый аргумент после shift паттерном (лишний until
+                # давал COUNT=N+1 и пустой PAT[]).
+                _pat_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+                E2E_PATTERN_UNTIL="$_pat_until" check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="patterns"
@@ -3894,7 +3926,9 @@ for p in json.load(sys.stdin):
             # запрещается по уликам в логе ЭТОЙ попытки: см.
             # retry_block_reason() в e2e_tool_match.py. Сбой самого разбора —
             # тоже запрет: «не доказано, что безопасно» не равно «безопасно».
-            _attempt_logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            # #5002: улики ретрая -- только окно попытки, не ход следующего шага.
+            _attempt_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+            _attempt_logs="$(fetch_step_window_logs "$STEP_BEFORE" "$_attempt_until")"
             if ! retry_blocked="$(NEXT_WRA="${next_when_robot_asked:-}" \
                 PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import os, sys
@@ -3917,7 +3951,9 @@ sys.stdout.write(retry_block_reason(sys.stdin.read(), os.environ.get("NEXT_WRA",
         # это валидный сигнал "робот ничего не сказал"), поэтому стоит ДО
         # ветвления по cycle_failed/step_skipped/step_ok ниже.
         if [ -n "${LAST_STEP_SPEECH_FILE:-}" ]; then
-            _step_logs_for_speech="$(${ROBOT_SSH} "docker logs voice-assistant --since '${step_window_start:-$STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            # #5002: речь шага для when_robot_asked -- до конца шага, не речь следующего.
+            _speech_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+            _step_logs_for_speech="$(fetch_step_window_logs "${step_window_start:-$STEP_BEFORE}" "$_speech_until")"
             if PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import sys
 from e2e_tool_match import robot_speech
