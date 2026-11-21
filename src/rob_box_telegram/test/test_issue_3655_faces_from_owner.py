@@ -9,11 +9,19 @@
 
 from __future__ import annotations
 
+# CI гоняет каждый файл отдельно (pytest test/<файл>.py), а setup.py исключает
+# каталог test из пакетов — сосед ``test_commands`` в sys.path не попадает.
+# Грузим хелперы по пути файла, как и сам модуль команд.
+import importlib.util
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from test_commands import _install_fake_dependencies, _load_commands_module
+_HELPERS = importlib.util.spec_from_file_location("_faces_test_commands", Path(__file__).with_name("test_commands.py"))
+_helpers = importlib.util.module_from_spec(_HELPERS)
+_HELPERS.loader.exec_module(_helpers)
+_install_fake_dependencies = _helpers._install_fake_dependencies
+_load_commands_module = _helpers._load_commands_module
 
 _install_fake_dependencies()  # до импорта пакета: telegram в тестовом интерпретаторе нет
 
