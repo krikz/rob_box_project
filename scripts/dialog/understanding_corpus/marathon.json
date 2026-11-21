@@ -13,7 +13,7 @@
    "night_marathon_act2b_identity_question_v1.json": "50cc1a5b9f05ceff70420631dc794c09149482f02e8c1628801d68434045a641",
    "night_marathon_act2c_voice_conflict_question_v1.json": "82124c5408c7996956599e2ff70bf8593ef9dcb032a038bf05a8931849e8e585",
    "night_marathon_act3_backlog_diarization_v1.json": "6847a70476cd25b6860f03025070c3da279fe2bee14515fa41528985ad7ea889",
-   "night_marathon_act4_voice_prosody_v1.json": "1d03c47a44d3c3fa677e5a908fb7416e239f0cb08bd55024f42879c2acaf20d1",
+   "night_marathon_act4_voice_prosody_v1.json": "c576162068fb23cc0139a0573108f821a60d89e24c98b60faf8b6781081ed796",
    "night_marathon_act5_renardo_live_v1.json": "218a87c4feafd5e0b36366c47470167e80c15af67fe780335177542eb9ed1e8e",
    "night_marathon_act6_dj_booth_v1.json": "1b1724d7c6f2a9cec80ac1003283137ff7acbcdc5f79adb80a425fe76586b56a",
    "night_marathon_act7_neuro_composer_v1.json": "a9710062254fd558af5d200a889b0374622373ff3f9cb42f4a2bd36590ff082c",
@@ -27,7 +27,7 @@
   "acoustic_context": 42,
   "unique_phrases": 131
  },
- "corpus_sha256": "f8671b5bd9ad2e36371e640ea445c82e0ea1e7d611253a4c1f03448f8fb19f9c",
+ "corpus_sha256": "65591b0509e9e9320fcbacbeb6df989d2ed7b5d64c241a85a060189582c57ade",
  "acts": [
   {
    "act": "1",
@@ -1853,7 +1853,9 @@
        "must_not_say": [
         "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
        ],
-       "expected_tool_calls": []
+       "expected_tool_calls": [
+        "set_speed"
+       ]
       }
      }
     },
