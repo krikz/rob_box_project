@@ -105,7 +105,7 @@ from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_llm.provider import LLMSettings
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
-from rob_box_voice.core.sound_answer import SpeechAsClip, phrase_from_event
+from rob_box_voice.core.sound_answer import SpeechAsClip, _session_generation, phrase_from_event
 from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 
 from . import robot_profile
@@ -678,7 +678,7 @@ class DialogNode(Node):
             try:
                 await self._note_speaker(decision)
                 self._sound_answer.gate.observe(
-                    decision.text, self._session.snapshot.session_id, int(self._session.snapshot.session_generation)
+                    decision.text, self._session.snapshot.session_id, _session_generation(self._session.snapshot)
                 )
                 greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
                 await self._engine.run(decision)
