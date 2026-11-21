@@ -28,14 +28,26 @@ from typing import Dict, List, Optional
 from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
+from .core.sound_answer import (
+    CLIP_DIR_PARAM, MANIFEST_PARAM, StopFlag, aborted, arm, clip_file_ready, load_manifest,
+)
 from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
-    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger,
+    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SKIP_NOT_FOUND, SoundRequestsMixin, parse_trigger,
 )
 
 
 # Рация (voice passthrough): тишина дольше этого порога (сек) закрывает
 # голосовой stream (план P1, Task 1.2, решение D7).
 VOICE_SILENCE_TIMEOUT = 0.3
+
+
+def _default_manifest() -> str:
+    """Манифест-заглушка из пакета. На роботе его подменяет конфиг, смонтированный томом."""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        return os.path.join(get_package_share_directory("rob_box_voice"), "config", "sound_answer_manifest.json")
+    except Exception:  # noqa: BLE001 — вне ROS-рантайма (тесты) берём файл пакета рядом с модулем
+        return os.path.join(os.path.dirname(__file__), "..", "config", "sound_answer_manifest.json")
 
 
 class SoundNode(SoundRequestsMixin, Node):
@@ -49,6 +61,9 @@ class SoundNode(SoundRequestsMixin, Node):
         self.declare_parameter("volume_db", -12.0)  # Регулировка громкости (dB), -12dB ≈ 24% громкости
         self.declare_parameter("trigger_animations", True)
         self.declare_parameter("animation_topic", "/animations/trigger")
+        # Каталог режима «отвечай звуками» (ADR-0175 §1.2). Пустой каталог файлов — пакета §0.1 ещё нет.
+        self.declare_parameter(MANIFEST_PARAM, _default_manifest())
+        self.declare_parameter(CLIP_DIR_PARAM, "")
 
         sound_pack_dir = self.get_parameter("sound_pack_dir").value
         # Expand ~ только если это локальный путь (не /ws/...)
@@ -59,6 +74,12 @@ class SoundNode(SoundRequestsMixin, Node):
         self.volume_db = self.get_parameter("volume_db").value
         self.trigger_animations = self.get_parameter("trigger_animations").value
         self.animation_topic = self.get_parameter("animation_topic").value
+        self.sound_answer_manifest = str(self.get_parameter(MANIFEST_PARAM).value or "")
+        self.sound_answer_clip_dir = str(self.get_parameter(CLIP_DIR_PARAM).value or "")
+        self._answer_stop = StopFlag()
+        self._answer_ids = {
+            clip.clip_id for clip in load_manifest(self.sound_answer_manifest).clips
+        } if self.sound_answer_manifest else set()
 
         # Callback для изменения параметров во время работы
         self.add_on_set_parameters_callback(self.parameters_callback)
@@ -237,9 +258,16 @@ class SoundNode(SoundRequestsMixin, Node):
         self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
-        """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации (barge-in)."""
-        if msg.data.strip().upper() == "STOP":
-            self._close_voice_stream()
+        """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации и рвёт текущий клип режима.
+
+        Рация — как раньше. Клип режима не доигрывает: ``sd.stop()`` гасит и естественный конец, поэтому
+        поток сверяет поколение обрыва и публикует ``skipped``, а не ``finished``.
+        """
+        if msg.data.strip().upper() != "STOP":
+            return
+        self._close_voice_stream()
+        self._answer_stop.set()
+        self.playback_manager.stop_playback(node_name="sound_node")
 
     def voice_in_callback(self, msg):
         """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
@@ -327,7 +355,10 @@ class SoundNode(SoundRequestsMixin, Node):
         self._close_voice_stream_if_idle()
 
     def select_sound(self, trigger: str) -> Optional[str]:
-        """Выбрать звук по триггеру."""
+        """Выбрать звук по триггеру. Клип режима без файла в каталоге конфига — не найден, не выдуман."""
+        if trigger in self._answer_ids and not clip_file_ready(
+                self.sound_answer_manifest, self.sound_answer_clip_dir, trigger):
+            return None
         # 1. Проверить trigger_map (из catalog.json)
         if trigger in self.trigger_map:
             sound_name = self.trigger_map[trigger]
@@ -358,6 +389,7 @@ class SoundNode(SoundRequestsMixin, Node):
         self.publish_state(f"playing_{sound_name}")
         self.publish_sound_event(request_id, SoundEvent.KIND_STARTED, sound_name)
         outcome, reason = SoundEvent.KIND_FINISHED, ""
+        generation = arm(self._answer_stop) if sound_name in self._answer_ids else None
 
         try:
             self.get_logger().info(f"▶️ Играю: {sound_name}")
@@ -400,6 +432,9 @@ class SoundNode(SoundRequestsMixin, Node):
             if not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
                 outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_BUSY
+            elif generation is not None and aborted(self._answer_stop, generation):
+                self.get_logger().info(f"🔇 Оборван: {sound_name}")
+                outcome, reason = SoundEvent.KIND_SKIPPED, "stopped"
             else:
                 self.get_logger().info(f"✅ Завершено: {sound_name}")
 

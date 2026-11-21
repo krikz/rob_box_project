@@ -1,0 +1,12 @@
+{
+  "version": "stub-0",
+  "sha256": "d5fc6beecb28c9bc1f70112be17e46e2cfbd5f27e55b69627d736351232f3c12",
+  "note": "Заглушка до пакета §0.1 (ADR-0175). Пять идентификаторов, путей к чужим файлам нет: sound_answer_clip_dir пуст, пока пакет не подложен конфигом. sha256 — канона clips.",
+  "clips": [
+    {"id": "bird", "file": "bird.wav", "role": "greeting"},
+    {"id": "seal", "file": "seal.wav", "role": "surprise"},
+    {"id": "elephant", "file": "elephant.wav", "role": "confirm"},
+    {"id": "alligator", "file": "alligator.wav", "role": "question"},
+    {"id": "growl", "file": "growl.wav", "role": "refuse"}
+  ]
+}

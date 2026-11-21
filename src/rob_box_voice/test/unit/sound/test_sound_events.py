@@ -3,6 +3,7 @@
 import json
 import shutil
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,6 +13,8 @@ from rob_box_dialog_msgs.msg import ExpressionEvent, SoundEvent
 import rob_box_voice.sound_node as sn_module
 from rob_box_voice.core.sound_requests import parse_trigger
 from rob_box_voice.sound_node import EARCON_SOUNDS, SoundNode
+
+_MANIFEST = Path(__file__).resolve().parents[3] / "config" / "sound_answer_manifest.json"
 
 
 class _Thread:
@@ -202,6 +205,40 @@ def test_thread_reports_started_then_finished(node):
     assert (started.kind, started.request_id, started.sound) == (SoundEvent.KIND_STARTED, "r1", "button_click")
     assert (finished.kind, finished.reason) == (SoundEvent.KIND_FINISHED, "")
     assert node.is_playing is False
+
+
+def test_answer_clip_stop_is_skipped_not_finished(node, tmp_path, monkeypatch):
+    """«Стоп» рвёт клип режима. ``play_audio`` после ``sd.stop()`` возвращает True — это не ``finished``."""
+    monkeypatch.setattr(node, "sound_answer_clip_dir", str(tmp_path))
+    (tmp_path / "bird.wav").write_bytes(b"")
+    node._answer_ids = {"bird"}
+    node.sounds["bird"] = _segment()
+
+    def stop_during_play(*_args, **_kwargs):
+        node.sound_stop_callback(types.SimpleNamespace(data="STOP"))
+        return True
+
+    node.playback_manager.play_audio.side_effect = stop_during_play
+    node.play_sound_thread("bird", "bird", "clip-1")
+    last = _sound_events(node)[-1]
+    assert (last.kind, last.reason) == (SoundEvent.KIND_SKIPPED, "stopped")
+    node.playback_manager.stop_playback.assert_called()
+
+
+def test_ordinary_sound_stop_still_finishes_when_play_returns_true(node):
+    """Обычный эффект «стоп» не перекрашивает: рация закрывается, исход эффекта — как вернул ``play_audio``."""
+    node.play_sound_thread("button_click", "button_click", "earcon")
+    finished = _sound_events(node)[-1]
+    assert finished.kind == SoundEvent.KIND_FINISHED
+
+
+def test_answer_clip_without_a_file_is_not_found(node, tmp_path):
+    node.sound_answer_manifest = str(_MANIFEST)
+    node.sound_answer_clip_dir = str(tmp_path)
+    node._answer_ids = {"bird"}
+    _trigger(node, "bird", "missing")
+    (skipped,) = _sound_events(node)
+    assert (skipped.kind, skipped.reason) == (SoundEvent.KIND_SKIPPED, "not_found")
 
 
 def test_thread_reports_skipped_when_the_audio_device_refuses(node):

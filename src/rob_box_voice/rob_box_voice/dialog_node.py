@@ -75,6 +75,7 @@ from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
 from rob_box_dialog.shift_log import ShiftLog
 from rob_box_dialog.speaker_adapter import confident_name, named_self, speaker_ref
 from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
+from rob_box_voice.core.sound_answer import SpeechAsClip, phrase_from_event
 from rob_box_dialog.turn_log import TurnLog
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
@@ -139,6 +140,39 @@ def declare_params(node: Any) -> None:
     # Выбиратель пути пения (#4079) — тот же режим, что у пути музыки: значение ``mcp_server.music_chooser`` передаёт
     # launch (``rob_box_core.dialog_engine.shared_params``); пусто — умолчание ``chooser_model`` (цепочка).
     node.declare_parameter("music_chooser", "")
+    # Каталог файлов режима «отвечай звуками». Пустой — пакета §0.1 нет, клип не подменяет речь.
+    node.declare_parameter("sound_answer_clip_dir", "")
+
+
+def wire_sound_answer(node: Any) -> SpeechAsClip:
+    """Режим «отвечай звуками»: речь хода в режиме уходит клипом на штатный ``/voice/sound/trigger``.
+
+    «Обычным голосом» снимает режим до хода; фразу об этом уже скажет ``set_voice``, второй реплики нет.
+    Фразу «сказал» говорит :func:`on_sound_answer` — только из ``finished`` и исходной речью, не клипом.
+    """
+    from rob_box_voice.core.sound_answer import SoundAnswerGate
+    from rob_box_voice.sound_node import _default_manifest
+
+    pub = node.create_publisher(String, "/voice/sound/trigger", 10)
+
+    def publish(payload: str) -> None:
+        msg = String()
+        msg.data = payload
+        pub.publish(msg)
+
+    gate = SoundAnswerGate(_default_manifest(), str(node.get_parameter("sound_answer_clip_dir").value or ""))
+    clip = SpeechAsClip(gate, node._ports.say, publish, node._session)
+    node._ports.say = clip
+    return clip
+
+
+def on_sound_answer(clip: SpeechAsClip, msg: Any) -> None:
+    """``/voice/sound/event`` клипа режима: «сказал» только если код получил ``finished`` без причины."""
+    phrase = phrase_from_event(clip, msg)
+    if not phrase:
+        return
+    snap = clip._session.snapshot
+    clip.say_finished("", int(snap.epoch), phrase)
 
 
 def _prefix(agent: str) -> str:
@@ -422,6 +456,7 @@ class DialogNode(Node):
         self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
                               log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
                               performer=functools.partial(plan_host.performer, self), on_ask=llm_metrics(llm))
+        self._sound_answer = wire_sound_answer(self)
         self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
                                                self._speak_direct)
         self._warm = WarmVoices()  # прогретые голоса без имени: просьба назваться в подхвате (Шифу 05.11)
@@ -446,11 +481,16 @@ class DialogNode(Node):
         self.get_logger().info(f"✅ dialog_node v2: {kn.AGENTS[0]}, "
                                f"wake={self._wake[:3]}…, e2e={self._engine_events_state()}")
 
+    def _on_sound_event(self, msg: SoundEvent) -> None:
+        """План слышит звук как раньше. Фраза режима — отдельно, исходной речью, и только на свой ``finished``."""
+        plan_host.on_sound(self, msg)
+        on_sound_answer(self._sound_answer, msg)
+
     def _subscribe(self) -> None:
         self.create_subscription(UtteranceMsg, "/voice/stt/utterance", self._on_utterance, 10)
         self.create_subscription(SpeakerResult, "/voice/speaker/result", self._on_speaker, 10)
         self.create_subscription(SpeechEvent, "/voice/speech/event", self._on_speech_event, 10)
-        self.create_subscription(SoundEvent, "/voice/sound/event", functools.partial(plan_host.on_sound, self), 10)
+        self.create_subscription(SoundEvent, "/voice/sound/event", self._on_sound_event, 10)
         self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, _LATCHED)
         self.create_subscription(String, MUSIC_EVENT_TOPIC, functools.partial(plan_host.on_music_event, self), 10)
         self.create_subscription(String, plan_host.TTS_PROVIDER_STATE_TOPIC,
@@ -504,6 +544,8 @@ class DialogNode(Node):
         async with self._turn_lock:
             try:
                 await self._note_speaker(decision)
+                self._sound_answer.gate.observe(decision.text, self._session.snapshot.session_id,
+                                                int(self._session.snapshot.epoch))
                 greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
