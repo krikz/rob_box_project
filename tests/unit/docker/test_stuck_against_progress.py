@@ -32,6 +32,10 @@ UPSTREAM_CMAKE = (
     f"https://raw.githubusercontent.com/ros-navigation/navigation2/"
     f"{PINNED_COMMIT}/nav2_controller/CMakeLists.txt"
 )
+UPSTREAM_MAIN = (
+    f"https://raw.githubusercontent.com/ros-navigation/navigation2/"
+    f"{PINNED_COMMIT}/nav2_controller/src/main.cpp"
+)
 
 THROW = 'throw nav2_core::PlannerException("Failed to make progress: stuck against obstacle")'
 
@@ -74,9 +78,14 @@ def test_dockerfile_applies_stuck_patch_after_progress_abort_on_pinned_controlle
         "libcontroller_server_core.so"
     )
     assert "python3-dev" in df
-    assert "target_link_libraries(${library_name} python3.10)" in PATCH.read_text(
-        encoding="utf-8"
-    )
+    patch_text = PATCH.read_text(encoding="utf-8")
+    assert "find_package(Python3 COMPONENTS Development REQUIRED)" in patch_text
+    assert "target_link_libraries(${library_name} Python3::Python)" in patch_text
+    assert "python3.10" not in patch_text
+    assert "target_link_libraries(${library_name} python3.10)" not in patch_text
+    assert "stuckAgainstInit" in patch_text
+    assert "PyGILState_Ensure" in patch_text
+    assert "stuck-against progress check unavailable" in patch_text
 
 
 def test_patch_applies_after_existing_controller_patches(tmp_path: Path):
@@ -91,11 +100,13 @@ def test_patch_applies_after_existing_controller_patches(tmp_path: Path):
         / "controller_server.hpp"
     )
     cmake = src_root / "nav2_controller" / "CMakeLists.txt"
+    main = src_root / "nav2_controller" / "src" / "main.cpp"
     cpp.parent.mkdir(parents=True)
     hpp.parent.mkdir(parents=True)
     cpp.write_bytes(_fetch(UPSTREAM_CPP))
     hpp.write_bytes(_fetch(UPSTREAM_HPP))
     cmake.write_bytes(_fetch(UPSTREAM_CMAKE))
+    main.write_bytes(_fetch(UPSTREAM_MAIN))
 
     order = (
         "controller_goal_tf_fail.patch",
@@ -119,9 +130,18 @@ def test_patch_applies_after_existing_controller_patches(tmp_path: Path):
     assert "have_last_cmd_ = true;" in after
     # Прежний отказ по радиусу патч не убрал.
     assert 'throw nav2_core::PlannerException("Failed to make progress");' in after
+    # Проверка упора — после записи команды этого тика, не до compute:
+    # ноль из catch (DWB NoLegalTrajectoriesException) иначе не виден.
+    assert after.index("have_last_cmd_ = true;") < after.index(
+        "Failed to make progress: stuck against obstacle"
+    )
     header = hpp.read_text(encoding="utf-8")
     assert "bool stuckAgainstObstacle(" in header
     assert "bool have_last_cmd_{false};" in header
-    assert "target_link_libraries(${library_name} python3.10)" in cmake.read_text(
+    cmake_text = cmake.read_text(encoding="utf-8")
+    assert "target_link_libraries(${library_name} Python3::Python)" in cmake_text
+    assert "find_package(Python3 COMPONENTS Development REQUIRED)" in cmake_text
+    main = (src_root / "nav2_controller" / "src" / "main.cpp").read_text(
         encoding="utf-8"
     )
+    assert "node->stuckAgainstInit();" in main

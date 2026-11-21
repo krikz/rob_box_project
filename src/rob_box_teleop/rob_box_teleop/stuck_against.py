@@ -11,10 +11,15 @@ Humble ``SimpleProgressChecker`` считает прогрессом любое 
 Здесь отдельный признак, не замена радиуса. Отказ засчитывается, когда за
 короткое окно одновременно:
 
-* команда на движение была (ненулевой twist набрался дольше порога);
+* в окне была ненулевая команда (twist выше порога дольше
+  ``cmd_hold``). Ноль прямо сейчас не снимает признак: DWB при полном
+  блоке бросает ``NoLegalTrajectoriesException`` и ничего не публикует,
+  а ``controller_server`` в ``catch`` пишет нулевой twist на время
+  ``failure_tolerance`` (0.3 с) и потом сам абортит. Если требовать
+  команду на этом тике, лобовой упор не засчитается;
 * центр сместился меньше радиуса прогресса;
-* по курсу команды в локальной costmap препятствие (lethal/inscribed)
-  ближе порога касания защиты (``side_stop_m``).
+* по курсу последней ненулевой команды в локальной costmap препятствие
+  (lethal/inscribed) ближе порога касания защиты (``side_stop_m``).
 
 Движение вдоль стены (Δy ≈ +0.85 м за то же окно) радиус превышает — отказ
 не засчитывается, даже если сбоку стена.
@@ -73,10 +78,12 @@ class StuckAgainst:
         self.block_gap_m = block_gap_m
         self._samples: list[tuple[float, Pose, bool]] = []
         self._cmd_since: Optional[float] = None
+        self._last_motion_course: float = 0.0
 
     def reset(self) -> None:
         self._samples.clear()
         self._cmd_since = None
+        self._last_motion_course = 0.0
 
     def update(self, now_s: float, pose: Pose, commanded: bool) -> bool:
         """Один тик контроллера. ``True`` — отказ прогресса засчитан."""
@@ -85,10 +92,22 @@ class StuckAgainst:
                 self._cmd_since = now_s
         else:
             self._cmd_since = None
-        self._samples.append((now_s, pose, commanded and self._cmd_held(now_s)))
+        held = commanded and self._cmd_held(now_s)
+        self._samples.append((now_s, pose, held))
         cutoff = now_s - self.window_s
         self._samples = [s for s in self._samples if s[0] >= cutoff]
         return self.refused()
+
+    def course(self, vx: float) -> float:
+        """Курс для карты: знак последней ненулевой ``vx`` в окне.
+
+        Ноль на этом тике курс не стирает. DWB при лобовом упоре публикует
+        не ноль, а исключение; ноль пишет controller_server в catch. Курс
+        берётся из команды, которая была до этого нуля.
+        """
+        if abs(vx) > self.cmd_eps:
+            self._last_motion_course = vx
+        return self._last_motion_course
 
     def refused(self) -> bool:
         if len(self._samples) < 2:
@@ -144,8 +163,17 @@ def controller_stuck(
     held = command_is_motion(vx, wz)
     checker = _CONTROLLER_STATE if state is None else state
     checker.update(now_s, (x, y, 0.0), held)
+    # Курс — последняя ненулевая vx в окне, не vx этого тика: после
+    # NoLegalTrajectoriesException controller_server пишет ноль.
     blocked = course_blocked(
-        body, origin_x, origin_y, resolution, size_x, size_y, costs, vx
+        body,
+        origin_x,
+        origin_y,
+        resolution,
+        size_x,
+        size_y,
+        costs,
+        checker.course(vx),
     )
     return checker.note_blocked(blocked)
 

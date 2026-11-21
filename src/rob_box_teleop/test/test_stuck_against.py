@@ -199,6 +199,53 @@ def test_reset_drops_the_window():
     assert not checker.refused()
 
 
+def test_dwb_stops_commanding_at_a_head_on_wall_and_still_refuses():
+    """Лобовой упор: DWB перестал командовать, смещения нет, стена по курсу.
+
+    По коду Humble (nav2_dwb_controller dwb_local_planner.cpp, coreScoringAlgorithm):
+    если все траектории illegal, DWB бросает NoLegalTrajectoriesException и
+    twist не публикует. controller_server в catch пишет нулевой twist, пока
+    не вышел failure_tolerance (0.3 с), и только потом абортит сам. Если
+    требовать команду на этом тике, отказ не засчитается в целевом случае.
+    Здесь команда > 0.03 была, затем ноль, центр стоит, впереди lethal.
+    """
+    from rob_box_teleop.stuck_against import controller_stuck, reset_controller_state
+
+    reset_controller_state()
+    wall = _cell(BODY.x_max + BLOCK_GAP_M / 2, 0.0)
+    grid = _grid({wall: LETHAL_COST})
+    steps = int(round(STUCK_WINDOW_S / 0.05))
+    # Команда держится дольше cmd_hold, потом DWB замолкает: дальше ноль.
+    commanded_until = int(round(CMD_HOLD_S / 0.05)) + 2
+    refused = []
+    for i in range(steps + 1):
+        vx = 0.1 if i <= commanded_until else 0.0
+        refused.append(
+            controller_stuck(
+                i * 0.05, 0.0, 0.0, vx, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid
+            )
+        )
+    assert refused[-1] is True
+    assert not any(refused[: commanded_until + 1])
+
+
+def test_zero_command_with_no_recent_motion_is_not_a_failure():
+    """Ноль всё окно и стена впереди — стоянка, не упор."""
+    from rob_box_teleop.stuck_against import controller_stuck, reset_controller_state
+
+    reset_controller_state()
+    wall = _cell(BODY.x_max + BLOCK_GAP_M / 2, 0.0)
+    grid = _grid({wall: LETHAL_COST})
+    steps = int(round(STUCK_WINDOW_S / 0.05))
+    refused = [
+        controller_stuck(
+            i * 0.05, 0.0, 0.0, 0.0, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid
+        )
+        for i in range(steps + 1)
+    ]
+    assert not any(refused)
+
+
 def test_controller_tick_refuses_when_stuck_and_not_when_sliding():
     """Связка, которую зовёт controller_server: окно копится между тиками.
 
