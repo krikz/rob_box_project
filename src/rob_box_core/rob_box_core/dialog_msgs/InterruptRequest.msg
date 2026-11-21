@@ -8,5 +8,7 @@ string utterance_id
 string text_partial
 # Направление на говорящего (DOA ReSpeaker) во время фразы, градусы; NaN - неизвестно.
 float32 doa_deg
+# Уверенность направления, R кругового среднего, 0..1; NaN - не измеряли. Ниже порога знания угол недостоверен (#3784).
+float32 doa_conf
 # Время публикации.
 builtin_interfaces/Time stamp

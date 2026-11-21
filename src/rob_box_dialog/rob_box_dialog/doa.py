@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from dataclasses import dataclass
 from typing import Deque, Optional, Tuple
 
 from rob_box_dialog.knowledge import DOA_CONFIDENCE_MIN
@@ -18,6 +19,33 @@ from rob_box_dialog.knowledge import DOA_CONFIDENCE_MIN
 HISTORY_S = 60.0
 #: Ниже этого модуля векторы считаются взаимно погашенными (численный ноль, не порог уверенности).
 _CANCELLED_R = 1e-9
+
+
+@dataclass(frozen=True)
+class DoaReading:
+    """Направление фразы и его уверенность наружу (#3784).
+
+    ``doa_deg`` — круговое среднее отсчётов окна, градусы [0, 360); ``None`` — отсчётов не было или они
+    взаимно погашены (R≈0, угла нет). ``doa_conf`` — длина результирующей R, 0…1. ``reliable`` — верить ли
+    углу: решает единственный порог :data:`rob_box_dialog.knowledge.DOA_CONFIDENCE_MIN`, второго числа нет.
+    ``usable_deg`` — угол, который потребителю можно применять; ниже порога ``None``, и это видно по
+    ``reliable is False``, а не по пропавшему углу.
+    """
+
+    doa_deg: Optional[float]
+    doa_conf: float
+    reliable: bool
+
+    @property
+    def usable_deg(self) -> Optional[float]:
+        return self.doa_deg if self.reliable else None
+
+
+def phrase_direction(angle: Optional[float], confidence: float) -> DoaReading:
+    """Собрать чтение фразы: порог «верить / не верить» применяется здесь и только здесь."""
+    conf = float(confidence)
+    reliable = angle is not None and conf >= DOA_CONFIDENCE_MIN
+    return DoaReading(doa_deg=angle, doa_conf=conf, reliable=reliable)
 
 
 def circular_mean_deg(values) -> Tuple[Optional[float], float]:
@@ -63,13 +91,11 @@ class DoaTrack:
         while self._samples and now - self._samples[0][0] > self.history_s:
             self._samples.popleft()
 
-    def during(self, start: float, end: float) -> Optional[float]:
-        """Направление фразы в ``[start, end]``, если уверенность не ниже порога; иначе ``None``.
+    def during(self, start: float, end: float) -> DoaReading:
+        """Направление фразы в ``[start, end]``: угол, уверенность и признак «достоверно».
 
-        ``None`` — в окне не было речи с направлением, либо отсчёты взаимно гасятся (R <
-        :data:`rob_box_dialog.knowledge.DOA_CONFIDENCE_MIN`): потребитель не крутится на шум.
+        Угол ниже порога не пропадает молча: ``doa_deg`` остаётся посчитанным, ``reliable`` — ``False``,
+        ``usable_deg`` — ``None``. Потребитель применяет только ``usable_deg`` и видит, почему угла нет.
         """
         angle, confidence = circular_mean_deg(deg for t, deg in self._samples if start <= t <= end)
-        if angle is None or confidence < DOA_CONFIDENCE_MIN:
-            return None
-        return angle
+        return phrase_direction(angle, confidence)
