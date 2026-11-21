@@ -19,6 +19,10 @@ Gate 2 21.11 M3: «разворот на месте» по истине шёл �
 0.188 м, внутри допуска checker'а 0.25 м с запасом: доворот к курсу цели снова по окружности
 позу из окна не вынесет. Допуск checker'а и допуск приёмки нода не ослабляет.
 
+Защёлка этапа (``ApproachStage``) не пускает обратно к курсу-на-точку, когда заметание
+разворота перескакивает 0.10 м. Снимается вместе с удержанием: новая цель, побег,
+потолок, done. Иначе знак ``wz`` перекидывался каждый такт (Gate 2 21.11).
+
 Границы удержания. Поза дальше ``ESCAPE_RADIUS_M`` (0.60 м) от удержанной цели — это уже
 не финал, цель забываем. Дольше ``ENGAGE_TIME_CAP_S`` (25 с) одну цель не держим: после
 этого ``REENGAGE_COOLDOWN_S`` (5 с) тишины, иначе замороженный хвост крутил бы вечно.
@@ -128,8 +132,14 @@ class YawAtGoal:
         # и /cmd_vel_yaw молчит (Depot 17.11 20:27Z, #4788 в образе, разворота нет).
         self._lookup = Tf2Lookup(buffer)
         self._tf_listener = tf2_ros.TransformListener(buffer, node)
-        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        from action_msgs.msg import GoalStatusArray  # noqa: PLC0415 — тип подписки, в тесте заглушка
+        qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        from action_msgs.msg import (  # noqa: PLC0415 — тип подписки, в тесте заглушка
+            GoalStatusArray,
+        )
 
         for topic in PARENT_TOPICS:
             node.create_subscription(GoalStatusArray, topic, self._on_nav, qos)
@@ -142,6 +152,7 @@ class YawAtGoal:
         self._block_until = 0.0
         self._floor = False  # пол у mux: был наш Twist, снять можно только одним нулём
         self._reason = ""
+        self._stage = yag.ApproachStage()
         rate = float(node.get_parameter("check_rate_hz").value)
         node.create_timer(1.0 / max(rate, 1.0), self._tick)
         node.get_logger().info(
@@ -172,6 +183,7 @@ class YawAtGoal:
     def _forget(self, now: float, block: bool) -> None:
         """Цель больше не держим. ``block`` — потолок: столько тишины до нового захвата."""
         self._hold = None
+        self._stage.forget()
         if block:
             self._block_until = now + yag.REENGAGE_COOLDOWN_S
         self._release()
@@ -192,18 +204,24 @@ class YawAtGoal:
         """Свежий другой хвост — то, с чем сравнивает checker. Тот же хвост часы не сбрасывает."""
         if self._hold is None or tail is None:
             return
-        if yag.goal_differs(self._hold, tail, yag.GOAL_CHANGE_EPS_M, yag.GOAL_CHANGE_EPS_RAD):
+        if yag.goal_differs(
+            self._hold, tail, yag.GOAL_CHANGE_EPS_M, yag.GOAL_CHANGE_EPS_RAD
+        ):
             self._take(tail, now)
 
     def _within_bounds(self, pose, now: float) -> bool:
         """Потолок времени и радиус побега. False — тик закрыт, цель забыта."""
         if now - self._engaged_at > yag.ENGAGE_TIME_CAP_S:
-            self._node.get_logger().warning(f"#4694 потолок {yag.ENGAGE_TIME_CAP_S:.0f} с — цель забыта, тишина")
+            self._node.get_logger().warning(
+                f"#4694 потолок {yag.ENGAGE_TIME_CAP_S:.0f} с — цель забыта, тишина"
+            )
             self._forget(now, block=True)
             return False
         dist = yag.pose_distance(pose, self._hold)
         if dist > yag.ESCAPE_RADIUS_M:
-            self._node.get_logger().warning(f"#4694 побег {dist:.2f} м > {yag.ESCAPE_RADIUS_M:.2f} — цель забыта")
+            self._node.get_logger().warning(
+                f"#4694 побег {dist:.2f} м > {yag.ESCAPE_RADIUS_M:.2f} — цель забыта"
+            )
             self._forget(now, block=False)
             return False
         return True
@@ -214,6 +232,7 @@ class YawAtGoal:
         self._capture(tail, pose, now)
         self._retarget(tail, now)
         if self._hold is None:
+            self._stage.forget()
             self._release()
             return None
         if not self._within_bounds(pose, now):
@@ -223,6 +242,7 @@ class YawAtGoal:
     def _tick(self) -> None:
         if not self._nav_live:
             self._hold = None
+            self._stage.forget()
             self._release()
             return
         now = self._now()
@@ -236,9 +256,12 @@ class YawAtGoal:
         self._step(pose, goal)
 
     def _step(self, pose, goal) -> None:
-        step = yag.approach_at_goal(pose, goal, self._xy, self._yaw, self._max_v, self._omega)
+        step = self._stage.step(
+            pose, goal, self._xy, self._yaw, self._max_v, self._omega
+        )
         if step is None or step.done:
             self._hold = None
+            self._stage.forget()
             self._release()
             return
         self._publish(step.vx, step.omega)
@@ -259,7 +282,9 @@ class YawAtGoal:
         """Снять пол у mux, если мы его держали. Иначе — ни одного сообщения."""
         if not self._floor:
             return
-        self._node.get_logger().info("#4694 финальный подъезд снят — один ноль, дальше тишина, пол у Nav2")
+        self._node.get_logger().info(
+            "#4694 финальный подъезд снят — один ноль, дальше тишина, пол у Nav2"
+        )
         self._publish(0.0, 0.0)
         self._floor = False
         self._reason = ""
