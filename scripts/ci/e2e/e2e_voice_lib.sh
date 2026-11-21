@@ -240,9 +240,11 @@ PY2
 # issue #2902 — next_when_robot_asked: when_robot_asked СЛЕДУЮЩЕГО шага. Если
 # речь проваленной попытки уже совпала с ним, робот задал вопрос, на который
 # отвечает следующий шаг, и повтор этой реплики проверял бы другое — ретрай
-# запрещается (retry_block_reason в e2e_tool_match.py). Поле ПОСЛЕДНЕЕ:
-# разделитель \x1f сохраняет позиции, прежние поля не сдвигаются.
-E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok'
+# запрещается (retry_block_reason в e2e_tool_match.py).
+# issue #5030 — pattern_grace_sec: секунды ожидания поздней строки паттерна
+# после конца хода шага. Поле ПОСЛЕДНЕЕ: разделитель \x1f сохраняет позиции,
+# прежние поля не сдвигаются. Старый TSV без поля читается как грейс 0.
+E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok pattern_grace_sec'
 
 # parse_scenario_to_tsv() — читает scenario.json, пишет TSV-подобный файл
 # (на самом деле \x1f-separated, не таб — см. ниже) с одной строкой на шаг,
@@ -330,10 +332,21 @@ for i, s in enumerate(steps):
     barge = norm_barge(s.get('barge_in'))
     next_barge = norm_barge(nxt.get('barge_in'))
     silent_ok = 1 if (s.get('silent_ok') or exp == 'silent_ok') else 0
+    # #5030: pattern_grace_sec -- сколько секунд ПОСЛЕ конца хода шага паттерн
+    # ещё может прийти (поздняя строка восприятия, n701: speaker_id печатает
+    # Speaker на 16 с позже, чем STT-цикл закрылся). 0 -- прежнее поведение:
+    # окно паттернов закрывается в момент проверки. Кривое значение -- 0,
+    # не тихий грейс: ждать не то, что написал автор, хуже, чем не ждать.
+    try:
+        grace = float(s.get('pattern_grace_sec', 0) or 0)
+    except (TypeError, ValueError):
+        grace = 0.0
+    if grace < 0:
+        grace = 0.0
     fields = [str(i), s.get('label', f's{i+1}'), s.get('text', ''), s.get('voice', 'anton'),
               json.dumps(pats), json.dumps(acc, ensure_ascii=False), exp, str(retry),
               when_asked, str(required_q), str(sleep_before), next_asked,
-              barge, next_barge, str(silent_ok)]
+              barge, next_barge, str(silent_ok), str(grace)]
     print(FS.join(fields))
 PY
 }

@@ -20,6 +20,7 @@
       "patterns": [
         "👤 Speaker: 'Саша' confidence=(0\\.[89]|1\\.)"
       ],
+      "pattern_grace_sec": 30,
       "acceptance": {
         "expected_tool_calls": [],
         "must_not_call": [],

@@ -128,22 +128,26 @@ assert_eq() {  # $1=actual $2=expected $3=label
 # скрипт получает эти строки через ssh и сам проецирует их через jq
 # (name/status/health/restarts/exitcode). Поэтому фикстура должна
 # содержать ПОЛНЫЙ JSON, а не плоскую проекцию.
-inspect() {  # $1=name $2=status $3=health $4=restarts $5=exitcode
+inspect() {  # $1=name $2=status $3=health $4=restarts $5=exitcode [$6=started_at] [$7=start_period_ns]
     jq -nc \
         --arg name "$1" \
         --arg status "$2" \
         --arg health "$3" \
         --argjson restarts "$4" \
         --argjson exitcode "$5" \
+        --arg started_at "${6:-}" \
+        --argjson start_period_ns "${7:-0}" \
         '{
             Name: ("/"+$name),
             State: {
                 Status: $status,
                 Restarting: ($status == "restarting"),
                 ExitCode: $exitcode,
+                StartedAt: $started_at,
                 Health: (if $health == "none" then null else {Status: $health} end)
             },
-            RestartCount: $restarts
+            RestartCount: $restarts,
+            Config: {Healthcheck: {StartPeriod: $start_period_ns}}
         }'
 }
 
@@ -267,6 +271,26 @@ EXPECTED_CONTAINERS=""
 # Кейс K: без EXPECTED_CONTAINERS пустой список по-прежнему healthy (поведение
 # Vision/Main не меняется).
 run_case true 0 "" "" "K: empty compose ps, nothing expected → healthy=true (legacy behaviour kept)"
+
+# Кейсы L-N (issue #5012): unhealthy внутри start_period — не провал.
+# Окно «3×interval» у perception (docker/main/docker-compose.yaml) длиннее
+# start_period, и гейт красил стартовый unhealthy. Поднимать start_period
+# «на глаз» нельзя — льготу даёт возраст контейнера, не константа сервиса.
+# StartPeriod — наносекунды, как отдаёт `docker inspect`.
+NOW_EPOCH="$(date +%s)"
+YOUNG_STARTED="$(date -u -d "@$((NOW_EPOCH - 5))" +%Y-%m-%dT%H:%M:%SZ)"
+OLD_STARTED="$(date -u -d "@$((NOW_EPOCH - 120))" +%Y-%m-%dT%H:%M:%SZ)"
+START_PERIOD_NS=20000000000  # 20s, как у perception
+
+FIX1="$(inspect perception running unhealthy 0 0 "$YOUNG_STARTED" "$START_PERIOD_NS")"
+run_case true 0 "$FIX1" "$FIX1" "L: unhealthy, container age 5s < start_period 20s → not failed (issue #5012)"
+
+FIX1="$(inspect perception running unhealthy 0 0 "$OLD_STARTED" "$START_PERIOD_NS")"
+run_case false 1 "$FIX1" "$FIX1" "M: unhealthy, container age 120s > start_period 20s → failed (issue #5012)"
+
+FIX1="$(inspect perception running unhealthy 1 0 "$YOUNG_STARTED" "$START_PERIOD_NS")"
+FIX2="$(inspect perception running unhealthy 2 0 "$YOUNG_STARTED" "$START_PERIOD_NS")"
+run_case false 1 "$FIX1" "$FIX2" "N: restarts grew 1→2 inside start_period → still failed (restart rule unchanged)"
 
 # --- summary ----------------------------------------------------------------
 

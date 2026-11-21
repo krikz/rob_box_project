@@ -1806,6 +1806,7 @@ presynth_scenario() {
     local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir eq_wav
     local idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked
     local required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok
+    local pattern_grace_sec
     local row_read="$E2E_SCENARIO_ROW_READ"
     ensure_outdir
     parse_scenario_to_tsv "$scenario" "$rows"
@@ -1967,19 +1968,66 @@ check_cycle() {  # $1=before_rfc3339
 # test_e2e_voice_patterns_with_spaces.sh считает каждый аргумент после shift
 # паттерном. Границу несёт E2E_PATTERN_UNTIL на месте вызова (env-префикс),
 # чтобы она не протекла в _stt_step_executed и single-path (те без until).
+# #5030: поздняя строка восприятия (speaker_id печатает Speaker уже после того,
+# как STT-цикл шага закрылся) не должна красить шаг, если она пришла в пределах
+# шага плюс грейс. E2E_PATTERN_GRACE_SEC -- сколько секунд ПОСЛЕ момента
+# проверки строка ещё может прийти. Верхняя граница окна фиксируется ОДИН раз
+# на старте ожидания: момент проверки + грейс. Дальше она не едет -- строка,
+# пришедшая позже (уже ход следующего шага), не судится (гард #5002 сохранён).
+# Ожидание -- поллинг логов того же окна, не ретрай шага: состояние робота
+# не переигрывается, гард #2902 решает отдельно и по своим уликам.
 check_patterns() {  # $1=before $2..=паттерны; until = $E2E_PATTERN_UNTIL
     local before="$1"; shift
     local until="${E2E_PATTERN_UNTIL:-}" logs pat rc=0
-    logs="$(fetch_step_window_logs "$before" "$until")"
-    # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
-    logs="$(printf '%s
+    local grace="${E2E_PATTERN_GRACE_SEC:-0}" poll="${E2E_PATTERN_GRACE_POLL:-2}"
+    local grace_left=0 t0 now missing deadline=""
+    # Дробь отбрасывается вниз: грейс 30.9 ждёт 30 с, не 31. Кривое значение
+    # (пусто, буквы) -- 0: ждать не то, что написал автор, хуже, чем не ждать.
+    grace="${grace%%.*}"
+    poll="${poll%%.*}"
+    case "$grace" in
+        ''|*[!0-9]*) grace=0 ;;
+    esac
+    case "$poll" in
+        ''|*[!0-9]*|0) poll=2 ;;
+    esac
+    if [ "$grace" -gt 0 ]; then
+        # Граница -- часы робота, как и timestamp'ы docker-лога (#5002).
+        # Считается один раз: поллинг её не двигает.
+        deadline="$(${ROBOT_SSH} "date -u -d '+${grace} seconds' +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null \
+            || date -u -d "+${grace} seconds" +%Y-%m-%dT%H:%M:%S.%NZ 2>/dev/null || echo "")"
+        [ -n "$deadline" ] && until="$deadline"
+    fi
+    t0="$(date +%s)"
+    while :; do
+        logs="$(fetch_step_window_logs "$before" "$until")"
+        # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
+        logs="$(printf '%s
 ' "$logs" | strip_llm_request_dump)"
+        rc=0
+        missing=""
+        for pat in "$@"; do
+            if printf '%s' "$logs" | grep -qE "$pat"; then
+                :
+            else
+                rc=1
+                missing="${missing:+$missing, }$pat"
+            fi
+        done
+        [ "$rc" = "0" ] && break
+        [ -n "$deadline" ] || break
+        now="$(date +%s)"
+        grace_left=$((grace - (now - t0)))
+        [ "$grace_left" -gt 0 ] || break
+        [ "$poll" -gt "$grace_left" ] 2>/dev/null && poll="$grace_left"
+        log "STEP ${STEP_LABEL:-?}: паттерн ещё не пришёл (${missing}), жду позднюю строку ${grace_left}s из ${grace}s, окно до ${until} (#5030)"
+        sleep "$poll"
+    done
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
         else
             echo "  PATTERN_MISS: $pat"
-            rc=1
         fi
     done
     # Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
@@ -3930,8 +3978,21 @@ for p in json.load(sys.stdin):
                 # Env-префикс, не позиционный аргумент: гард patterns_with_spaces
                 # считает каждый аргумент после shift паттерном (лишний until
                 # давал COUNT=N+1 и пустой PAT[]).
+                # #5030: pattern_grace_sec шага -- поздняя строка восприятия
+                # (speaker_id печатает Speaker после конца STT-цикла) судится,
+                # если пришла в пределах грейса. Граница фиксируется внутри
+                # check_patterns один раз (момент проверки + грейс) и дальше
+                # не едет: строка следующего шага за окном, как и без грейса.
+                # Грейс -- не ретрай: гард #2902 ниже решает по своим уликам,
+                # поздняя регистрация по-прежнему запрещает повтор шага.
+                # ${var-} : spaces-тест вырезает этот блок и гоняет под set -u
+                # без объявления поля. Пустое -- грейс 0, как у шага без поля.
+                case "${pattern_grace_sec-}" in
+                    ''|*[!0-9.]*) pattern_grace_sec=0 ;;
+                esac
                 _pat_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
-                E2E_PATTERN_UNTIL="$_pat_until" check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}"
+                STEP_LABEL="$label" E2E_PATTERN_GRACE_SEC="$pattern_grace_sec" \
+                    E2E_PATTERN_UNTIL="$_pat_until" check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="patterns"
