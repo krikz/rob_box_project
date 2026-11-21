@@ -91,11 +91,15 @@ def xy_inside(pose: Optional[Pose], goal: Pose, xy_tolerance_m: float) -> bool:
 
 def bearing_to(pose: Pose, goal: Pose) -> float:
     """Кратчайший угол от курса робота на точку цели, рад, в (−π, π]."""
-    toward = math.atan2(float(goal[1]) - float(pose[1]), float(goal[0]) - float(pose[0]))
+    toward = math.atan2(
+        float(goal[1]) - float(pose[1]), float(goal[0]) - float(pose[0])
+    )
     return shortest_yaw(float(pose[2]), toward)
 
 
-def goal_differs(a: Optional[Pose], b: Optional[Pose], eps_m: float, eps_rad: float) -> bool:
+def goal_differs(
+    a: Optional[Pose], b: Optional[Pose], eps_m: float, eps_rad: float
+) -> bool:
     """Хвосты разные: точка дальше ``eps_m`` или курс дальше ``eps_rad``. Нет одного — разные."""
     if a is None or b is None:
         return a is not b
@@ -126,10 +130,14 @@ def tolerances_from_nav2(doc: Mapping) -> tuple:
         checker_name = str(names[0])
     checker = _plugin(params, checker_name)
     if checker.get("plugin") != CHECKER_PLUGIN:
-        raise ValueError(f"{checker_name}.plugin={checker.get('plugin')!r}, ждали {CHECKER_PLUGIN}")
+        raise ValueError(
+            f"{checker_name}.plugin={checker.get('plugin')!r}, ждали {CHECKER_PLUGIN}"
+        )
     planner = _plugin(params, "FollowPath")
     if planner.get("plugin") != PLANNER_PLUGIN:
-        raise ValueError(f"FollowPath.plugin={planner.get('plugin')!r}, ждали {PLANNER_PLUGIN}")
+        raise ValueError(
+            f"FollowPath.plugin={planner.get('plugin')!r}, ждали {PLANNER_PLUGIN}"
+        )
     try:
         xy = float(checker["xy_goal_tolerance"])
         yaw = float(checker["yaw_goal_tolerance"])
@@ -138,7 +146,9 @@ def tolerances_from_nav2(doc: Mapping) -> tuple:
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"допуски цели не числа: {exc}") from exc
     if xy <= 0.0 or yaw <= 0.0 or omega <= 0.0 or speed <= 0.0:
-        raise ValueError(f"допуски цели неположительны: xy={xy} yaw={yaw} w={omega} v={speed}")
+        raise ValueError(
+            f"допуски цели неположительны: xy={xy} yaw={yaw} w={omega} v={speed}"
+        )
     return xy, yaw, omega, speed
 
 
@@ -181,10 +191,80 @@ def approach_at_goal(
     dist = pose_distance(pose, goal)
     if dist > APPROACH_TARGET_M:
         return _toward_point(pose, goal, max_v, max_w)
+    return _finish_yaw(pose, goal, yaw_tol, max_w)
+
+
+def _finish_yaw(pose: Pose, goal: Pose, yaw_tol: float, max_w: float) -> Approach:
+    """Заключительный этап: только курс цели, без возврата к курсу-на-точку.
+
+    Ход здесь снова открыл бы границу, а заметание разворота само качает dist
+    через любой порог меньше ``ROTATION_SWEEP_M`` (модель: порог 0.088 м, знак
+    wz скачет 35 раз за 8 с). Вход на 0.10 м даёт худший радиус 0.188 м — ниже
+    checker 0.25 и планки приёмки 0.32.
+    """
+    return _align_goal_yaw(pose, goal, yaw_tol, max_w)
+
+
+def _align_goal_yaw(pose: Pose, goal: Pose, yaw_tol: float, max_w: float) -> Approach:
+    """Курс цели, когда точка уже ближе заметания. Иначе стоп."""
     dyaw = shortest_yaw(float(pose[2]), float(goal[2]))
     if abs(dyaw) > yaw_tol - FINISH_YAW_MARGIN_RAD:
         return _align(dyaw, max_w, "доворот к курсу цели")
     return Approach(0.0, 0.0, True, "цель в допуске")
+
+
+class ApproachStage:
+    """Защёлка заключительного этапа. Один объект на одну удержанную цель.
+
+    ``approach_at_goal`` сам по себе stateless и на границе ``APPROACH_TARGET_M``
+    переключает режим. Разворот на месте двигает ``base_footprint`` по окружности
+    ``ROTATION_SWEEP_M``, dist скачет через 0.10 м, знак ``wz`` перекидывается
+    (Gate 2 21.11, passA_yaw.log 283–322). Защёлка входит при dist ≤ 0.10 и не
+    отпускает этап, пока цель та же и поза внутри радиуса побега. Внутри этапа
+    сначала подъезд к точке, затем доворот на курс цели — без возврата наружу.
+
+    Сброс — явные события ноды: новая цель (``goal_differs``), побег
+    (dist > ``ESCAPE_RADIUS_M``), потолок времени и done (``forget``). Гистерезис
+    по dist не нужен: побег и новая цель уже есть в контракте удержания.
+    """
+
+    def __init__(self) -> None:
+        self._goal: Optional[Pose] = None
+
+    @property
+    def finishing(self) -> bool:
+        return self._goal is not None
+
+    def forget(self) -> None:
+        """Потолок, done, Nav погас, нет позы-удержания — этап снят."""
+        self._goal = None
+
+    def step(
+        self,
+        pose: Optional[Pose],
+        goal: Optional[Pose],
+        xy_tol: float,
+        yaw_tol: float,
+        max_v: float,
+        max_w: float,
+    ) -> Optional[Approach]:
+        """Такт с защёлкой. Контракт ``Approach`` тот же, что у ``approach_at_goal``."""
+        if max_v <= 0.0 or max_w <= 0.0 or pose is None or goal is None:
+            return None
+        if self._goal is None or goal_differs(
+            self._goal, goal, GOAL_CHANGE_EPS_M, GOAL_CHANGE_EPS_RAD
+        ):
+            self._goal = None
+        elif pose_distance(pose, self._goal) > ESCAPE_RADIUS_M:
+            self._goal = None
+        if self._goal is None and pose_distance(pose, goal) <= APPROACH_TARGET_M:
+            self._goal = goal
+        if self._goal is not None:
+            step = _finish_yaw(pose, goal, yaw_tol, max_w)
+            if step.done:
+                self.forget()
+            return step
+        return approach_at_goal(pose, goal, xy_tol, yaw_tol, max_v, max_w)
 
 
 def _toward_point(pose: Pose, goal: Pose, max_v: float, max_w: float) -> Approach:
