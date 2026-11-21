@@ -67,6 +67,73 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
+        'execution_type': 'long',
+        'event_source': 'inproc:chimera-host',
+        'name': 'chimera_perform',
+        'description': 'Разовое выступление Химерой. action=call — разрешённый вызов '
+                       'существа (короткий клип); speak — подготовленная фраза '
+                       '(phrase_id) проверенным тембром; sing — мелодия по названию со '
+                       'слогами; play — та же мелодия без текста, нейтральным '
+                       'вокализом. Название ищет библиотека партитур. «Спел» — только '
+                       'после конца проигрывания. Произвольный русский текст не '
+                       'поддержан.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'action': {   'type': 'string',
+                                                          'description': 'Что сделать '
+                                                                         'Химерой',
+                                                          'enum': [   'call',
+                                                                      'speak',
+                                                                      'sing',
+                                                                      'play']},
+                                            'creature': {   'type': 'string',
+                                                            'description': 'Существо '
+                                                                           'для '
+                                                                           'action=call'},
+                                            'call': {   'type': 'string',
+                                                        'description': 'Вызов существа '
+                                                                       'для '
+                                                                       'action=call'},
+                                            'phrase_id': {   'type': 'string',
+                                                             'description': 'Id '
+                                                                            'подготовленной '
+                                                                            'фразы для '
+                                                                            'action=speak'},
+                                            'timbre': {   'type': 'string',
+                                                          'description': 'Человеческий '
+                                                                         'тембр речи '
+                                                                         'или пения',
+                                                          'enum': [   'male',
+                                                                      'female',
+                                                                      'child']},
+                                            'title': {   'type': 'string',
+                                                         'description': 'Название '
+                                                                        'пьесы для '
+                                                                        'sing или '
+                                                                        'play'},
+                                            'syllables': {   'type': 'string',
+                                                             'description': 'Слоги '
+                                                                            'пения; '
+                                                                            'без них '
+                                                                            'sing поёт '
+                                                                            'вокализ'}},
+                          'required': ['action'],
+                          'additionalProperties': False},
+        'signature': {   'params': [   'action',
+                                       'creature',
+                                       'call',
+                                       'phrase_id',
+                                       'timbre',
+                                       'title',
+                                       'syllables'],
+                         'required': ['action'],
+                         'accepts_kwargs': False},
+        'skill': ('expression',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
         'execution_type': 'instant',
         'event_source': 'inproc:waypoint_store',
         'name': 'clear_waypoints',

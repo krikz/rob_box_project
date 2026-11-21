@@ -55,8 +55,13 @@ _CYR_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 
 def _keys(text: str, memo: Dict[str, str]) -> Set[str]:
     """Звуковые ключи слов текста (русские буквы — транслитом): «J. S. Bach» → {j, s, ba4}; ``memo`` — ключ слова
-    считается один раз на постройку индекса (слова названий повторяются)."""
-    text = str(text or "")
+    считается один раз на постройку индекса (слова названий повторяются).
+
+    Нижний регистр — до транслита: карта ``transliterate_ru`` знает только строчные, а ``title_key`` режет слово
+    по ``[a-z0-9а-я]``. «Лунная» без ``.lower()`` становится «Лunnaya», и «я» выпадает из ключа — заглавное
+    русское название не находится само по себе.
+    """
+    text = str(text or "").lower()
     out = set()
     for word in title_key(transliterate_ru(text) if _CYR_RE.search(text) else text).split():
         key = memo.get(word)

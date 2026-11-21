@@ -331,6 +331,38 @@ def _sound_pack():
     return root / "sound_pack"
 
 
+def test_chimera_abort_skips_finished_and_does_not_silence_another_sound(node):
+    """Обрыв Химеры глушит только её клип и публикует ``skipped/cancelled``, не ``finished``.
+
+    Чужой эффект (не ``source=chimera``) тот же ``{"abort": "chimera"}`` не трогает. Голый ``STOP`` клип не глушит:
+    он закрывает голосовой стрим рации.
+    """
+    node.sounds["owl_hoot"] = _segment()
+    node.trigger_callback(
+        types.SimpleNamespace(data=json.dumps({"sound": "owl_hoot", "request_id": "rq-owl", "source": "chimera"}))
+    )
+    assert node.abort_request("chimera") is True
+    node.playback_manager.stop_playback.assert_called_with("chimera")
+    node.play_sound_thread(*_Thread.started[-1].args)
+    last = _sound_events(node)[-1]
+    assert (last.request_id, last.kind, last.reason) == ("rq-owl", SoundEvent.KIND_SKIPPED, "cancelled")
+
+    node.is_playing, node._chimera, node._request_id = True, False, "rq-other"  # noqa: SLF001
+    assert node.abort_request("chimera") is False
+
+
+def test_queued_chimera_keeps_its_mark_until_it_plays(node):
+    """Клип Химеры, вставший в очередь за коротким earcon, не теряет метку: стоп диалога его обрывает."""
+    node.sounds.update(error=_segment(1.0), owl_hoot=_segment(2.0))
+    node.expression_callback(_request("fail"))
+    node.trigger_callback(
+        types.SimpleNamespace(data=json.dumps({"sound": "owl_hoot", "request_id": "rq-owl", "source": "chimera"}))
+    )
+    node.play_sound_thread(*_Thread.started[0].args)  # earcon доиграл, клип занял канал
+    assert node._chimera is True  # noqa: SLF001 — метка дожила до занятия канала
+    assert node.abort_request("chimera") is True
+
+
 def test_muffled_sound_file_lies_next_to_the_other_earcons_and_is_a_distinct_sound():
     pack = _sound_pack()
     assert (pack / "muffled.mp3").is_file() and (pack / "make_muffled.py").is_file()

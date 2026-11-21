@@ -57,7 +57,7 @@ TOOL_OWNERS: Mapping[str, Tuple[str, ...]] = MappingProxyType(
             "search_melody",
             "add_music_material",
         ),
-        "sound": ("play_sound", "get_sound_info"),
+        "sound": ("play_sound", "get_sound_info", "chimera_perform"),
         # лицо робота на экране - face_node
         "face": ("play_animation",),
         # голос собеседника - speaker_id_node

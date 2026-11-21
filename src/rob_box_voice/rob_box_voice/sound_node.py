@@ -45,6 +45,7 @@ from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают т
     SKIP_NOT_FOUND,
     SoundRequestsMixin,
     parse_trigger,
+    trigger_source,
 )
 from .utils.audio_utils import find_respeaker_device_sounddevice
 
@@ -173,6 +174,8 @@ class SoundNode(SoundRequestsMixin, Node):
         self._play_lock = threading.Lock()
         # Очередь play_sound из одного места и конец текущего звука (core/sound_requests.py, #3698).
         self._queued = None
+        self._aborted = ""
+        self._request_id = ""
         self._busy_until: Optional[float] = None
 
         # Инициализация
@@ -278,23 +281,35 @@ class SoundNode(SoundRequestsMixin, Node):
         """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
         trigger, request_id = parse_trigger(msg.data)
         self.get_logger().info(f"🔔 Триггер: {trigger} (request {request_id[:8]})")
+        self._pending_source = trigger_source(msg.data)
         self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
-        """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации и рвёт клип режима.
+        """``STOP`` закрывает голосовой стрим рации и рвёт клип режима. JSON — обрыв Химеры.
 
-        Рация — как раньше (``_close_voice_stream``). ``sd.stop()`` зовётся, только если сейчас играет
-        клип режима: конец PTT и конец рации публикуют тот же STOP, и глушить им обычный эффект нельзя.
-        Очередь клипов режима снимается здесь же: иначе ``release_channel`` запустит ждущий клип,
-        и поздний ``finished`` подтвердит звук, который останавливали.
+        Голый ``STOP`` — рация (``_close_voice_stream``) и клип режима: ``sd.stop()`` зовётся, только если
+        сейчас играет клип режима, очередь клипов режима снимается. Конец PTT публикует тот же STOP, и
+        глушить им обычный эффект или Химеру нельзя. JSON ``{"abort": request_id}`` — обрыв эффекта Химеры,
+        не рации и не режима: голый ``STOP`` его не шлёт.
         """
-        if msg.data.strip().upper() != "STOP":
+        data = msg.data.strip()
+        if data.upper() == "STOP":
+            self._close_voice_stream()
+            self._answer_stop.set()
+            drop_queued_answer_clips(self)
+            if self.current_sound in self._answer_ids:
+                self.playback_manager.stop_playback(node_name="sound_node")
             return
-        self._close_voice_stream()
-        self._answer_stop.set()
-        drop_queued_answer_clips(self)
-        if self.current_sound in self._answer_ids:
-            self.playback_manager.stop_playback(node_name="sound_node")
+        if data.startswith("{"):
+            self._abort_chimera(data)
+
+    def _abort_chimera(self, data: str) -> None:
+        try:
+            body = json.loads(data)
+        except ValueError:
+            return
+        if isinstance(body, dict):
+            self.abort_request(str(body.get("abort") or ""))
 
     def voice_in_callback(self, msg):
         """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
@@ -457,7 +472,11 @@ class SoundNode(SoundRequestsMixin, Node):
                 node_name="sound_node",
             )
 
-            if not success:
+            if self.aborted(request_id):
+                # стоп оборвал sd.play: цикл play_audio вышел как успех, но звук не доиграл
+                self.get_logger().info(f"⏹️ Оборвано: {sound_name}")
+                outcome, reason = SoundEvent.KIND_SKIPPED, "cancelled"
+            elif not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
                 outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_BUSY
             elif clip_outcome(self._answer_stop, generation, True) == "stopped":

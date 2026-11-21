@@ -159,6 +159,10 @@ def _slots(result: ActionResult) -> Mapping[str, Any]:
     if result.tool == kn.LIBRARY_TOOL:
         title = str(slots.get("title") or "").strip()
         slots["name"] = f"«{title}»" if title else kn.LIBRARY_UNNAMED
+    if result.tool == "chimera_perform":
+        # «Спел{title}.»: шаблон ждёт ведущий пробел и кавычки, иначе склейка даёт «СпелЭтюд.»
+        name = str(slots.get("title") or slots.get("clip") or "").strip()
+        slots["title"] = f" «{name}»" if name else ""
     return slots
 
 
