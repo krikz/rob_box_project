@@ -5,7 +5,7 @@
 
 Родитель — action, из которого дерево bt_navigator зовёт FollowPath. Голос, Quest и HIL-цель
 ``NavigateToPose`` и полоса HIL ``NavigateThroughPoses`` идут одним правилом: код не различает клиента.
-Там же разворот у цели (#4694, ``YawAtGoal``): xy внутри допуска, yaw нет — twist в ``/cmd_vel_yaw``.
+Там же финальный подъезд к цели (#4694, ``YawAtGoal``): держит цель, едет, twist в ``/cmd_vel_yaw``.
 
 Срабатывание — как у тулов навигации (#4456): отмена цели ``controller_server`` через
 ``/follow_path/_action/cancel_goal`` (по ``goal_id``) и нулевой ``Twist`` в ``/cmd_vel`` (имена — общие,
