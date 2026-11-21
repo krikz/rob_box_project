@@ -160,6 +160,68 @@ def test_4480_exhausted_retry_does_not_voice_the_volume_lie():
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# #5007: «говорю медленнее» без set_speed (акт 4 n409, run 44890078495)
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Речь модели из n409 дословно (command, actions=[], строки ``[set_speed]`` нет).
+SPEED_LIE = "Хорошо, говорю медленнее. Тётя Крыша в коридоре меня и так услышит."
+SPEED_TOOLS = (*TOOLS, "set_speed", "set_pitch", "set_volume")
+
+
+@pytest.mark.parametrize("text", [
+    SPEED_LIE,
+    "Говорю быстрее.",
+    "Теперь я тараторю быстрее.",
+    "Я замедлился.",
+    "Стал говорить помедленнее.",
+])
+def test_5007_speed_claim_words(text):
+    assert done_claims(text) == ("speed",)
+
+
+@pytest.mark.parametrize("text", [
+    "Заговорю помедленнее.",          # будущее - обещание voice_promise, не утверждение о сделанном
+    "Не говорю медленнее: не просили.",
+    "Уже говорю медленнее.",          # было раньше, не этот ход
+    "Тараторю.",                      # сравнительной в окне нет - не утверждение о смене
+    "Говорю о погоде.",
+])
+def test_5007_not_a_speed_claim(text):
+    assert "speed" not in done_claims(text)
+
+
+def test_5007_speed_claim_without_a_tool_is_a_violation_with_set_speed_allowed():
+    result = validate(parse({"speech": SPEED_LIE, "actions": []}), SPEED_TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert "set_speed" in result.all[0].allowed
+    assert "set_speed" in explain(result)
+
+
+def test_5007_speed_claim_with_its_tool_is_not_a_violation():
+    cmd = Command(speech=SPEED_LIE, actions=(ToolCall("set_speed", {"action": "slower"}),))
+    assert unkept_done_claims(cmd) == ()
+
+
+def test_5007_other_tools_do_not_back_the_speed_claim():
+    cmd = Command(speech=SPEED_LIE, actions=(ToolCall("set_volume", {}), ToolCall("set_pitch", {})))
+    assert unkept_done_claims(cmd) == ("speed",)
+
+
+def test_5007_exhausted_retry_does_not_voice_the_speed_lie():
+    ports = Ports([Answer(Invalid(kn.VIOLATION_DONE_CLAIM, "speech утверждает speed без тула"), "deepseek")])
+    # «говори помедленнее» закрывает Tier-1 voice_step до модели: вход без просьбы о темпе
+    _run(ports, "Робот, что там с речью")
+    assert ports.executed == []
+    assert ports.said == [phrases.text(kn.DONE_CLAIM_PHRASE)] and SPEED_LIE not in ports.said
+
+
+def test_5007_code_speed_phrase_is_the_same_words_and_is_said_by_code_after_the_tool():
+    """``speed.slower`` / ``speed.faster`` - те же слова, что ложь n409: таблица их ловит, говорит их код после тула."""
+    for key in ("speed.slower", "speed.faster"):
+        assert done_claims(phrases.text(key)) == ("speed",)
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # #4541: «так и буду тебя узнавать» без записи человека
 # ---------------------------------------------------------------------------------------------------------------
 
