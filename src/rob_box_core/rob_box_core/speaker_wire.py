@@ -144,7 +144,10 @@ def _registered_payload(msg: Any) -> Dict[str, Any]:
         payload["already_known"] = True
     if msg.new_name:  # регистрация переименовала уверенно узнанный профиль голоса фразы (#4054)
         payload["new_name"] = msg.new_name
-    if msg.conflict_name:
+    # Имя конфликта может быть пустым: безымянный профиль именем не называется (#5019).
+    # Признак конфликта — id чужого профиля, не его имя; иначе ack теряет voice_conflict,
+    # и диалог не видит, что регистрация села рядом с чужим безымянным профилем.
+    if msg.conflict_speaker_id:
         payload["voice_conflict"] = {
             "name": msg.conflict_name,
             "speaker_id": msg.conflict_speaker_id,
