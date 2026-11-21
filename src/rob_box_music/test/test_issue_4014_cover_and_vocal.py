@@ -23,9 +23,9 @@ from rob_box_music.source import (
     source_candidates,
 )
 
-pytestmark = pytest.mark.unit
-
-HILL = CoverWork("Running Up That Hill", "runningu", "balalaika", "Running Up That Hill", named=True)
+HILL = CoverWork(
+    "Running Up That Hill", "runningu", "balalaika", "Running Up That Hill", named=True
+)
 PICKED = replace(HILL, named=False)
 READY = SourceContext(gen_ready=True, cover_ready=True, day_left=120.0, balance=900.0)
 
@@ -64,16 +64,22 @@ def test_joint_named_piece_declines_with_its_own_reason_not_named_song():
     assert reason == COVER_AND_VOCAL
     assert [o.id for o in options] == [f"decline:{COVER_AND_VOCAL}"]
     assert reason != NAMED_SONG
-    assert not any(o.id.startswith("generate:") or o.id.startswith("cache:") for o in options)
+    assert not any(
+        o.id.startswith("generate:") or o.id.startswith("cache:") for o in options
+    )
 
 
 def test_sing_alone_stays_named_song():
-    options, reason = source_candidates(source_ask("спой Running Up That Hill"), READY, piece=True, work=HILL)
+    options, reason = source_candidates(
+        source_ask("спой Running Up That Hill"), READY, piece=True, work=HILL
+    )
     assert reason == NAMED_SONG and [o.id for o in options] == [f"decline:{NAMED_SONG}"]
 
 
 def test_play_alone_still_offers_a_cover():
-    options, _reason = source_candidates(source_ask("сыграй Running Up That Hill"), READY, piece=True, work=HILL)
+    options, _reason = source_candidates(
+        source_ask("сыграй Running Up That Hill"), READY, piece=True, work=HILL
+    )
     assert "generate:cover:V6" in [o.id for o in options]
     assert f"decline:{COVER_AND_VOCAL}" not in [o.id for o in options]
 
