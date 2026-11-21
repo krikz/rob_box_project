@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 voice_memory.py  Cross-session persistent memory for the voice assistant.
 
@@ -67,6 +67,7 @@ except ImportError:
 # Ollama embeddings (lazy, gracefully degrades)
 # ---------------------------------------------------------------------------
 
+
 def query_words(query: str) -> List[str]:
     """Слова запроса: casefold + только буквы/цифры (#3890).
 
@@ -75,6 +76,59 @@ def query_words(query: str) -> List[str]:
     правило токенизации для поиска по фактам и по FTS5-репликам.
     """
     return re.findall(r"\w+", query.casefold())
+
+
+def _yo_fold(word: str) -> str:
+    """``ё`` → ``е``: «пьёт» и «пьет» — одна форма (#4956)."""
+    return word.replace("ё", "е")
+
+
+#: Замкнутые словоизменительные семьи (#4956). Суффиксный стеммер их не
+#: сводит: «еда»/«ест» и «пить»/«пьёт» — супплетивные корни, а на роботе
+#: нет Ollama (``vec=no``), так что векторный fallback мёртв. Семья — точное
+#: равенство формы, не префикс: «если» не «есть», «письмо» не «пить».
+#: Расширять только вместе с тестом на ложного соседа.
+_EAT_FORMS = frozenset(
+    _yo_fold(w)
+    for w in (
+        "еда еды еде еду едой едою едам едами едах "
+        "есть ест ем ешь едят едите ешьте "
+        "ел ела ело ели"
+    ).split()
+)
+_DRINK_FORMS = frozenset(
+    _yo_fold(w)
+    for w in (
+        "пить пью пьешь пьёт пьет пьем пьём пьете пьёте пьют пей пейте "
+        "пил пила пило пили"
+    ).split()
+)
+_INFLECTION_FAMILIES = (_EAT_FORMS, _DRINK_FORMS)
+
+
+def same_inflection(left: str, right: str) -> bool:
+    """Одна замкнутая семья форм (#4956), иначе False.
+
+    Не стеммер: «пицца»/«пиццу» по-прежнему разные (#3890), «чай» находится
+    подстрокой как раньше. Сравниваются уже нормализованные токены
+    (``query_words`` / ``casefold``).
+    """
+    a, b = _yo_fold(left), _yo_fold(right)
+    return any(a in family and b in family for family in _INFLECTION_FAMILIES)
+
+
+def _fact_matches(fact: str, tokens: List[str]) -> bool:
+    """Токен запроса — подстрока факта или та же семья форм (#4956).
+
+    Подстрока — прежний контракт («чай» в «зелёный чай»). Семья — точное
+    равенство формы (``same_inflection``): «еда» находит «ест», «если» нет.
+    """
+    folded = fact.casefold()
+    fact_words = query_words(fact)
+    return any(
+        token in folded or any(same_inflection(token, word) for word in fact_words)
+        for token in tokens
+    )
 
 
 class OllamaEmbedder:
@@ -645,13 +699,13 @@ class VoiceMemory:
         for hit in turn_hits:
             hit.setdefault("kind", "turn")
 
-        # #4956: fallback живёт здесь, а не в _fact_search. Подстрока «еда»
-        # не входит в «не ест лук», вектор на стенде мёртв (Ollama нет),
-        # а после new_session окно реплик пустое — модель видит «в памяти
-        # ничего нет». Каталог — только по флагу и только когда оба поиска
-        # пусты: иначе он вытеснил бы найденные реплики. Дефолт False, чтобы
-        # прямой search() не ломал контракт #3890 (ложный запрос → []).
-        # Каталог просит memory_search (browse_when_empty=True).
+        # #4956: каталог — последний fallback, не замена поиска. Семьи форм
+        # («еда»↔«ест», «пить»↔«пьёт») сводит ``same_inflection`` в
+        # ``_fact_search``: на стенде Ollama нет (``vec=no``), вектор мёртв.
+        # Каталог остаётся для запроса, которого нет ни в факте, ни в реплике,
+        # и только по флагу: иначе он вытеснил бы найденные реплики. Дефолт
+        # False, чтобы прямой search() не ломал контракт #3890 (ложный
+        # запрос → []). Каталог просит memory_search (browse_when_empty=True).
         if browse_when_empty and not fact_hits and not turn_hits:
             return self._browse_facts(limit, speaker_id=speaker_id)
 
@@ -730,9 +784,7 @@ class VoiceMemory:
         except sqlite3.OperationalError:
             return []
 
-        matches = [
-            r for r in rows if any(t in r["fact"].casefold() for t in tokens)
-        ]
+        matches = [r for r in rows if _fact_matches(r["fact"], tokens)]
 
         return [
             {
