@@ -35,6 +35,7 @@ except ImportError:
     sys.modules["rob_box_dialog_msgs"].srv = _srv
 
 from rob_box_dialog_msgs.srv import DialogControl  # noqa: E402
+from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog.command import parse  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_dialog_host.command_bridge import CommandResponse, for_turn  # noqa: E402
@@ -1011,7 +1012,7 @@ def test_chat_turn_gets_no_gate_keys_even_when_the_text_names_someone_4054(monke
 
 
 def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_window_3960(monkeypatch):
-    """n809 (марафон 23.10): срок ``action.media`` (10 с) истёк - «Музыка пока не заиграла.»; трек заиграл через 1,4 с.
+    """n809 (марафон 23.10): срок ``action.media`` истёк - «ещё собираю», не отказ (#5006); трек заиграл через 1,4 с.
     Мост ``ROSMCPToolProvider`` ждал итог тула свои 10 с по умолчанию - ровно срок класса - и вернул «Timeout ожидания
     результата», настоящий итог ушёл в кэш никому, «Включаю музыку.» не прозвучало. Теперь итог доходит настоящим
     транспортом до ``say_late``, а окно следующего хода видит ``done``, а не таймаут. Время сжато (:data:`SCALE`)."""
@@ -1031,7 +1032,7 @@ def test_music_started_after_the_class_deadline_is_said_late_and_fixes_the_windo
             time.sleep(0.05)
         asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), made._loop).result(5)  # say_late дописал журнал
         said = _said_texts(made)
-        assert [t for t, _ in said] == ["Музыка пока не заиграла.", "Включаю музыку."]
+        assert [t for t, _ in said] == [phrases.text(kn.MEDIA_STILL_WORKING_PHRASE), "Включаю музыку."]
         for _, speech_id in said:  # обе фразы отзвучали целиком
             made._engine.speech_ended(speech_id, 100)
         window = made._engine.log.window()

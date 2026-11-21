@@ -103,16 +103,34 @@ assert_not_present \
     "$SCRIPT" \
     "фиксированное 6-мин окно где-либо в скрипте — это footgun для multi-step"
 
-# --- Test 2: check_patterns вызывается с $STEP_BEFORE ------------------------
+# --- Test 2: окно check_patterns — STEP_BEFORE, не фиксированные минуты ------
 echo ""
-echo "=== Test 2: check_patterns вызывается с \$STEP_BEFORE ==="
-# Минимум 2 вхождения: scenario-loop path и single-step path.
+echo "=== Test 2: check_patterns берёт окно шага, не фиксированные минуты ==="
+# #1771: оба пути передают окно шага, не $(date -u -d '-6 minutes').
+# single-path зовёт check_patterns "$STEP_BEFORE" напрямую.
+# scenario-loop (#4981) зовёт check_patterns "${STEP_JUDGE_BEFORE}": после
+# stt_replay STEP_BEFORE сдвинут на повтор, и вызов тула первой попытки
+# выпал бы из docker logs --since. По умолчанию STEP_JUDGE_BEFORE="$STEP_BEFORE"
+# (инъекция #4951 оставляет это окно; иначе подменяется STEP_FIRST_BEFORE).
+# Гард не ослаблен: окно по-прежнему от STEP_BEFORE, просто имя переменной
+# в scenario-loop другое, и присваивание по умолчанию проверяется отдельно.
 assert_count \
-    "check_patterns_with_STEP_BEFORE" \
+    "check_patterns_single_with_STEP_BEFORE" \
     'check_patterns[[:space:]]+"\$STEP_BEFORE"' \
     "$SCRIPT" \
-    "2" \
-    "check_patterns должен использовать STEP_BEFORE в scenario-loop (1x) и single-path (1x)"
+    "1" \
+    "single-path должен звать check_patterns \"\$STEP_BEFORE\""
+assert_count \
+    "check_patterns_scenario_with_STEP_JUDGE_BEFORE" \
+    'check_patterns[[:space:]]+"\$\{STEP_JUDGE_BEFORE\}"' \
+    "$SCRIPT" \
+    "1" \
+    "scenario-loop должен звать check_patterns \"\${STEP_JUDGE_BEFORE}\""
+assert_present \
+    "step_judge_before_defaults_to_step_before" \
+    'STEP_JUDGE_BEFORE="\$STEP_BEFORE"' \
+    "$SCRIPT" \
+    "STEP_JUDGE_BEFORE обязан по умолчанию брать STEP_BEFORE (#1771 + #4981)"
 
 # --- Test 3: STEP_BEFORE пересчитывается внутри scenario-loop ----------------
 echo ""
@@ -185,5 +203,5 @@ if [ "$TESTS_FAILED" -gt "0" ]; then
     exit 1
 fi
 echo ""
-echo -e "${GRN}PASS${END}: check_patterns использует \$STEP_BEFORE, фиксированное 6-мин окно устранено."
+echo -e "${GRN}PASS${END}: check_patterns берёт окно шага (STEP_BEFORE / STEP_JUDGE_BEFORE), фиксированное 6-мин окно устранено."
 exit 0

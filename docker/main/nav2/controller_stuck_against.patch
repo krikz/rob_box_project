@@ -1,0 +1,255 @@
+--- a/nav2_controller/include/nav2_controller/controller_server.hpp
++++ b/nav2_controller/include/nav2_controller/controller_server.hpp
+@@ -61,6 +61,10 @@
+    */
+   ~ControllerServer();
+ 
++  // #5003: CPython must be initialized from main(), before spin. Public so
++  // main.cpp can call it; the action thread must not.
++  void stuckAgainstInit();
++
+ protected:
+   /**
+    * @brief Configures controller parameters and member variables
+@@ -178,6 +182,15 @@
+   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
+ 
+   /**
++   * @brief #5003: progress fails when the commanded twist holds, the base does
++   * not move required_movement_radius, and the local costmap is blocked on the
++   * command course. The decision lives in rob_box_teleop.stuck_against.
++   */
++  bool stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose);
++  void stuckAgainstReset();
++  void stuckAgainstWarnOnce(const char * why);
++
++  /**
+    * @brief get the thresholded velocity
+    * @param velocity The current velocity from odometry
+    * @param threshold The minimum velocity to return non-zero
+@@ -230,6 +243,10 @@
+   std::string progress_checker_id_;
+   std::string progress_checker_type_;
+ 
++  // #5003: twist published on the previous control tick.
++  geometry_msgs::msg::Twist last_cmd_vel_;
++  bool have_last_cmd_{false};
++
+   // Goal Checker Plugin
+   pluginlib::ClassLoader<nav2_core::GoalChecker> goal_checker_loader_;
+   GoalCheckerMap goal_checkers_;
+--- a/nav2_controller/src/controller_server.cpp
++++ b/nav2_controller/src/controller_server.cpp
+@@ -23,6 +23,8 @@
+ #include "nav2_core/exceptions.hpp"
+ #include "nav_2d_utils/conversions.hpp"
+ #include "nav_2d_utils/tf_help.hpp"
++#include "nav2_costmap_2d/cost_values.hpp"
++#include <Python.h>
+ #include "nav2_util/node_utils.hpp"
+ #include "nav2_util/geometry_utils.hpp"
+ #include "nav2_controller/controller_server.hpp"
+@@ -381,6 +383,8 @@
+ 
+     setPlannerPath(action_server_->get_current_goal()->path);
+     progress_checker_->reset();
++    have_last_cmd_ = false;
++    stuckAgainstReset();
+ 
+     last_valid_cmd_time_ = now();
+     rclcpp::WallRate loop_rate(controller_frequency_);
+@@ -533,11 +537,170 @@
+   feedback->distance_to_goal =
+     nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
+   action_server_->publish_feedback(feedback);
++  last_cmd_vel_ = cmd_vel_2d.twist;
++  have_last_cmd_ = true;
++
++  // #5003: checked after the command is recorded, including the zero twist
++  // this catch writes when DWB throws NoLegalTrajectoriesException. A check
++  // before compute never sees that zero, and failure_tolerance (0.3 s) aborts
++  // the goal before a second tick. The decision is recent command in the
++  // window, not a command on this tick (rob_box_teleop.stuck_against).
++  if (stuckAgainstObstacle(pose)) {
++    throw nav2_core::PlannerException("Failed to make progress: stuck against obstacle");
++  }
+ 
+   RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
+   publishVelocity(cmd_vel_2d);
+ }
+ 
++
++void ControllerServer::stuckAgainstInit()
++{
++  // #5003: CPython must be initialized from the main thread, before spin.
++  // Called once from main(). The action-server thread must not call Py_Initialize.
++  if (Py_IsInitialized()) {
++    return;
++  }
++  Py_Initialize();
++}
++
++void ControllerServer::stuckAgainstWarnOnce(const char * why)
++{
++  // A failed import must not look like "the fix is in and the base is free".
++  static bool warned = false;
++  if (warned) {
++    return;
++  }
++  warned = true;
++  RCLCPP_WARN(
++    get_logger(),
++    "stuck-against progress check unavailable, not applied: %s", why);
++}
++
++void ControllerServer::stuckAgainstReset()
++{
++  if (!Py_IsInitialized()) {
++    stuckAgainstWarnOnce("Python was not initialized from main");
++    return;
++  }
++  PyGILState_STATE gil = PyGILState_Ensure();
++  PyObject * module = PyImport_ImportModule("rob_box_teleop.stuck_against");
++  if (module == nullptr) {
++    PyObject * type = nullptr;
++    PyObject * value = nullptr;
++    PyObject * trace = nullptr;
++    PyErr_Fetch(&type, &value, &trace);
++    PyObject * text = value != nullptr ? PyObject_Str(value) : nullptr;
++    const char * why = text != nullptr ? PyUnicode_AsUTF8(text) : "import failed";
++    stuckAgainstWarnOnce(why != nullptr ? why : "import failed");
++    Py_XDECREF(text);
++    Py_XDECREF(type);
++    Py_XDECREF(value);
++    Py_XDECREF(trace);
++    PyGILState_Release(gil);
++    return;
++  }
++  PyObject * fn = PyObject_GetAttrString(module, "reset_controller_state");
++  Py_DECREF(module);
++  if (fn == nullptr || !PyCallable_Check(fn)) {
++    PyErr_Clear();
++    Py_XDECREF(fn);
++    stuckAgainstWarnOnce("reset_controller_state is missing");
++    PyGILState_Release(gil);
++    return;
++  }
++  PyObject * result = PyObject_CallObject(fn, nullptr);
++  Py_DECREF(fn);
++  if (result == nullptr) {
++    PyErr_Clear();
++    stuckAgainstWarnOnce("reset_controller_state raised");
++  }
++  Py_XDECREF(result);
++  PyGILState_Release(gil);
++}
++
++bool ControllerServer::stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose)
++{
++  if (!have_last_cmd_) {
++    return false;
++  }
++  if (!Py_IsInitialized()) {
++    stuckAgainstWarnOnce("Python was not initialized from main");
++    return false;
++  }
++  auto * costmap = costmap_ros_->getCostmap();
++  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
++  const unsigned int size_x = costmap->getSizeInCellsX();
++  const unsigned int size_y = costmap->getSizeInCellsY();
++  const unsigned char * map = costmap->getCharMap();
++  const double resolution = costmap->getResolution();
++  double origin_x = 0.0;
++  double origin_y = 0.0;
++  // mapToWorld(0, 0) is the centre of cell 0. The criterion indexes cells by
++  // their corner, so shift back half a cell. map[i] >= INSCRIBED (253) is the
++  // block: inscribed and lethal, not the inflation below that.
++  costmap->mapToWorld(0, 0, origin_x, origin_y);
++  origin_x -= resolution / 2.0;
++  origin_y -= resolution / 2.0;
++  const unsigned char lethal = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
++
++  PyGILState_STATE gil = PyGILState_Ensure();
++  PyObject * module = PyImport_ImportModule("rob_box_teleop.stuck_against");
++  if (module == nullptr) {
++    PyObject * type = nullptr;
++    PyObject * value = nullptr;
++    PyObject * trace = nullptr;
++    PyErr_Fetch(&type, &value, &trace);
++    PyObject * text = value != nullptr ? PyObject_Str(value) : nullptr;
++    const char * why = text != nullptr ? PyUnicode_AsUTF8(text) : "import failed";
++    stuckAgainstWarnOnce(why != nullptr ? why : "import failed");
++    Py_XDECREF(text);
++    Py_XDECREF(type);
++    Py_XDECREF(value);
++    Py_XDECREF(trace);
++    PyGILState_Release(gil);
++    return false;
++  }
++  PyObject * fn = PyObject_GetAttrString(module, "controller_stuck");
++  Py_DECREF(module);
++  if (fn == nullptr || !PyCallable_Check(fn)) {
++    PyErr_Clear();
++    Py_XDECREF(fn);
++    stuckAgainstWarnOnce("controller_stuck is missing");
++    PyGILState_Release(gil);
++    return false;
++  }
++  PyObject * costs = PyList_New(static_cast<Py_ssize_t>(size_x) * size_y);
++  if (costs == nullptr) {
++    Py_DECREF(fn);
++    stuckAgainstWarnOnce("could not allocate the cost list");
++    PyGILState_Release(gil);
++    return false;
++  }
++  for (unsigned int i = 0; i < size_x * size_y; ++i) {
++    PyList_SET_ITEM(costs, i, PyLong_FromLong(map[i] >= lethal ? lethal : 0));
++  }
++  lock.unlock();
++  PyObject * result = PyObject_CallFunction(
++    fn, "dddddddiOi",
++    now().seconds(), pose.pose.position.x, pose.pose.position.y,
++    last_cmd_vel_.linear.x, last_cmd_vel_.angular.z,
++    origin_x, origin_y, resolution,
++    static_cast<int>(size_x), costs, static_cast<int>(size_y));
++  Py_DECREF(costs);
++  Py_DECREF(fn);
++  if (result == nullptr) {
++    PyErr_Clear();
++    stuckAgainstWarnOnce("controller_stuck raised");
++    PyGILState_Release(gil);
++    return false;
++  }
++  const bool stuck = PyObject_IsTrue(result) == 1;
++  Py_DECREF(result);
++  PyGILState_Release(gil);
++  return stuck;
++}
++
+ void ControllerServer::updateGlobalPath()
+ {
+   if (action_server_->is_preempt_requested()) {
+--- a/nav2_controller/src/main.cpp
++++ b/nav2_controller/src/main.cpp
+@@ -21,6 +21,8 @@
+ {
+   rclcpp::init(argc, argv);
+   auto node = std::make_shared<nav2_controller::ControllerServer>();
++  // #5003: CPython from the main thread, once, before the action thread spins.
++  node->stuckAgainstInit();
+   rclcpp::spin(node->get_node_base_interface());
+   rclcpp::shutdown();
+ 
+--- a/nav2_controller/CMakeLists.txt
++++ b/nav2_controller/CMakeLists.txt
+@@ -67,6 +67,10 @@
+ ament_target_dependencies(${library_name}
+   ${dependencies}
+ )
++# #5003: stuckAgainstObstacle calls rob_box_teleop.stuck_against through libpython.
++# find_package, not a bare -lpython: the include path comes with the target.
++find_package(Python3 COMPONENTS Development REQUIRED)
++target_link_libraries(${library_name} Python3::Python)
+ 
+ if(BUILD_TESTING)
+   find_package(ament_lint_auto REQUIRED)

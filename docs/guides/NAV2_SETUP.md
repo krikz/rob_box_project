@@ -162,11 +162,14 @@ allow_unknown: true      # Разрешить проходить через не
 - **DriveOnHeading**: Движение по заданному направлению
 - **Wait**: Ожидание (препятствие может уйти)
 
-**Последовательность recovery** (из BT):
-1. ClearCostmaps (локальная + глобальная)
+**Последовательность recovery** (из BT, внешний цикл RoundRobin):
+1. ClearCostmaps (локальная + глобальная) → BackUp 0.15 метра
 2. Spin 1.57 рад (90°)
 3. Wait 5 секунд
-4. BackUp 0.30 метра
+
+Первый ребёнок RoundRobin — единственный, кто при успехе реально выполняется:
+на SUCCESS RecoveryNode зовёт haltChild, и RoundRobin сбрасывает индекс в 0.
+Поэтому отъезд стоит вместе с очисткой карт, а не после неё.
 
 ### 5. BT Navigator (Behavior Tree)
 
@@ -182,10 +185,9 @@ RecoveryNode (6 retries)
 └── ReactiveFallback (если застряли)
     ├── GoalUpdated (новая цель → прервать recovery)
     └── RoundRobin (перебор recovery actions)
-        ├── ClearCostmaps
-        ├── Spin
-        ├── Wait
-        └── BackUp
+        ├── ClearCostmaps → BackUp 0.15 м
+        ├── Spin 1.57
+        └── Wait 5
 ```
 
 ## ⚙️ Конфигурация

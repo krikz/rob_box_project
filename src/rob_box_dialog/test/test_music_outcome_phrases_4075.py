@@ -216,11 +216,27 @@ def test_announcement_returns_when_the_performance_ends():
     assert ports.said == [STARTED]
 
 
+def test_class_deadline_while_owner_is_silent_is_still_working_not_a_refusal():
+    """#5006: срок класса — «ещё собираю», не «не заиграла» и не грусть; своя фраза тула и настоящий отказ остаются."""
+    from rob_box_dialog.respond import ActionResult, failed, outcome_emotion, still_working
+
+    request = ToolCall("request_music", {"intent": "track"})
+    waiting = phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)
+    assert _said(request, ("timeout", None, {})) == [waiting]
+    assert waiting not in phrases.catalog()["media.timeout"]
+    timed_out = ActionResult("t1/0", 0, "personality", "request_music", "action.media", "timeout")
+    assert still_working(timed_out) and not failed(timed_out)
+    assert outcome_emotion((timed_out,)) is None
+    sound = ToolCall("play_sound", {"name": "robot_alert"})
+    assert _said(sound, ("timeout", None, {"sound": "robot_alert"})) == [phrases.text("sound.timeout", sound="robot_alert")]
+    assert _said(request, ("rejected", "error", {})) == [phrases.text("media.rejected")]
+
+
 def test_only_the_plain_success_is_quiet_during_a_performance():
     """Провал, ожидание генерации и стоп - данные об исходе, а не шум: говорятся и во время выступления."""
     request = ToolCall("request_music", {"intent": "track"})
     assert _said(request, ("rejected", "error", {}), performing=True) == [phrases.text("media.rejected")]
-    assert _said(request, ("timeout", None, {}), performing=True) == [phrases.text("media.timeout")]
+    assert _said(request, ("timeout", None, {}), performing=True) == [phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)]
     gen = ToolCall("generate_music", SONG)
     assert len(_said(gen, ("done", None, SONG_BRIDGED), performing=True)) == 1
     stop = ToolCall("dj_set", {"action": "stop"})

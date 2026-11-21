@@ -202,7 +202,8 @@ def test_late_outcome_replaces_the_action_in_place_even_after_the_window_dropped
     turns = TurnLog(on_outcome=log.outcome)
     turns.begin("turn-1", 0, "включи музыку")
     turns.result("turn-1", _result("turn-1/0", "request_music", "timeout"))
-    assert log.view()["actions"] == {"request_music": {"failed": 1}}
+    # срок класса action.media — «ещё собираю», не провал (#5006): итог как есть, поздний done заменяет его
+    assert log.view()["actions"] == {"request_music": {"timeout": 1}}
     turns.reset()  # ход выпал из окна (новая сессия) — журнал смены всё равно получает поздний итог
     turns.late(_result("turn-1/0", "request_music", "done"), lambda before: None)
     assert [(e.kind, e.what, e.status) for e in log.events()] == [(ACTION, "request_music", "done")]
@@ -237,8 +238,9 @@ def test_summary_counts_done_failed_question_and_other_outcomes_each_once():
     log.outcome(_result("t4/0", "move_direction", "cancelled", cls="action.motion"))
     log.outcome(_result("t5/0", "set_volume", "rejected", cls="action.local", reason="busy"))
     clock.skip(3)
-    assert log.view()["summary"] == ("Журнал смены за последние 3 мин: действия — выполнено: 1, не вышло: 2, "
-                                     "спросил подтверждения: 1, отменено: 1.")
+    # dj_set timeout — срок класса, не «не вышло» (#5006); отказ set_volume остаётся провалом
+    assert log.view()["summary"] == ("Журнал смены за последние 3 мин: действия — выполнено: 1, не вышло: 1, "
+                                     "спросил подтверждения: 1, итога нет в срок: 1, отменено: 1.")
 
 
 def test_the_same_call_id_in_another_iteration_of_the_turn_is_another_call():
