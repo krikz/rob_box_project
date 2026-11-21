@@ -51,13 +51,13 @@ def test_tolerances_come_from_general_goal_checker_not_a_made_up_degree():
     checker = _params()["controller_server"]["ros__parameters"]["general_goal_checker"]
     follow = _params()["controller_server"]["ros__parameters"]["FollowPath"]
     assert xy == checker["xy_goal_tolerance"] == 0.25
-    assert yaw == checker["yaw_goal_tolerance"] == pytest.approx(0.30)
+    assert yaw == checker["yaw_goal_tolerance"] == pytest.approx(0.22)
     assert omega == follow["max_vel_theta"] == pytest.approx(0.6)
     assert speed == follow["max_speed_xy"] == pytest.approx(0.15)
-    # 0.30 рад ≈ 17.2°. M2 28.5° и R3 57.1° вне допуска — checker честно не принял бы цель.
+    # 0.22 рад ≈ 12.6°. M2 28.5° и R3 57.1° вне допуска — checker честно не принял бы цель.
     assert yag.yaw_outside(M2_POSE[2], M2_GOAL[2], yaw)
     assert yag.yaw_outside(R3_POSE[2], R3_GOAL[2], yaw)
-    assert not yag.yaw_outside(math.radians(16.0), 0.0, yaw)
+    assert not yag.yaw_outside(math.radians(12.0), 0.0, yaw)
 
 
 def test_approach_target_survives_the_measured_rotation_sweep():
@@ -118,15 +118,15 @@ def test_bearing_crosses_the_branch_cut_by_the_short_way():
     bearing = yag.bearing_to(pose, goal)
     assert bearing == pytest.approx(math.radians(-170.0), abs=1e-9)
     assert abs(bearing) <= math.pi
-    step = yag.approach_at_goal(pose, goal, 0.25, 0.30, 0.15, 0.6)
+    step = yag.approach_at_goal(pose, goal, 0.25, 0.22, 0.15, 0.6)
     assert step is not None and step.omega < 0.0 and step.vx == 0.0
 
 
 def test_missing_pose_or_nonpositive_speed_is_none():
-    assert yag.approach_at_goal(None, M2_GOAL, 0.25, 0.30, 0.15, 0.6) is None
-    assert yag.approach_at_goal(M2_POSE, None, 0.25, 0.30, 0.15, 0.6) is None
-    assert yag.approach_at_goal(M2_POSE, M2_GOAL, 0.25, 0.30, 0.0, 0.6) is None
-    assert yag.approach_at_goal(M2_POSE, M2_GOAL, 0.25, 0.30, 0.15, 0.0) is None
+    assert yag.approach_at_goal(None, M2_GOAL, 0.25, 0.22, 0.15, 0.6) is None
+    assert yag.approach_at_goal(M2_POSE, None, 0.25, 0.22, 0.15, 0.6) is None
+    assert yag.approach_at_goal(M2_POSE, M2_GOAL, 0.25, 0.22, 0.0, 0.6) is None
+    assert yag.approach_at_goal(M2_POSE, M2_GOAL, 0.25, 0.22, 0.15, 0.0) is None
 
 
 def test_goal_differs_ignores_a_frozen_tail_and_sees_a_new_one():

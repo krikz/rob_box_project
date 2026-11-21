@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[3]
 PARAMS = REPO / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml"
 
 XY_TOL = 0.25
-YAW_TOL = 0.30
+YAW_TOL = 0.22
 # depot4694_m1yaw_20261118T0239Z: entered 0.25 m ~0.6 s, then 0.486 m, yaw 10.7°.
 M1_OUT_M = 0.486
 M1_YAW_RAD = math.radians(10.7)

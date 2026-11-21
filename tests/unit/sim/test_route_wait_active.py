@@ -141,9 +141,9 @@ def test_hil_success_uses_checker_tolerances_not_a_new_one(route):
     """Допуски HIL — general_goal_checker, не 0.5 «чтобы проглотить 0.48 м»."""
     checker = NAV2_PARAMS.read_text(encoding="utf-8").split("general_goal_checker:", 1)[1].split("FollowPath:", 1)[0]
     assert "xy_goal_tolerance: 0.25" in checker
-    assert "yaw_goal_tolerance: 0.30" in checker
+    assert "yaw_goal_tolerance: 0.22" in checker
     assert route.XY_GOAL_TOLERANCE == 0.25
-    assert route.YAW_GOAL_TOLERANCE == pytest.approx(0.30)
+    assert route.YAW_GOAL_TOLERANCE == pytest.approx(0.22)
     assert route.TIMEOUT == 200.0
 
 
@@ -158,14 +158,14 @@ def test_m1_nav2_succeeded_at_0_486_is_not_hil_success(route):
 
 
 def test_succeeded_inside_xy_and_yaw_stays_succeeded(route):
-    gt = (-3.60, 4.05, 16.0)  # ~0.112 м, 16° ≈ 0.279 рад < 0.30
+    gt = (-3.60, 4.05, 12.0)  # ~0.112 м, 12° ≈ 0.209 рад < 0.22
     goal = (-3.7, 4.0, 0.0)
     assert route.inside_sent_goal(gt, goal)
     assert route.hil_result("STATUS_SUCCEEDED", gt, goal) == "STATUS_SUCCEEDED"
 
 
 def test_succeeded_inside_xy_but_yaw_outside_is_not_success(route):
-    gt = (-3.70, 4.00, 18.0)  # 18° ≈ 0.314 рад > 0.30
+    gt = (-3.70, 4.00, 13.0)  # 13° ≈ 0.227 рад > 0.22
     goal = (-3.7, 4.0, 0.0)
     assert not route.inside_sent_goal(gt, goal)
     assert route.hil_result("STATUS_SUCCEEDED", gt, goal) == "OUTSIDE_TOLERANCE"
