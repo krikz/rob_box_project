@@ -13,17 +13,19 @@ tools - Коллекция MCP инструментов для Rob Box
 - music: Управление музыкой в реальном времени через Renardo
 """
 
-from .navigation import *
-from .system import *  # includes GetCurrentTimeTool, SetVolumeTool, etc.
-from .perception import *
-from .mapping import *
 from .animation import *
-from .sound import *
-from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
+from .chimera import ChimeraPerformTool  # ADR-0175 §2.1: mcp_server импортирует из .tools
 from .dialogue import *
+from .mapping import *
 from .memory import *
-from .ros_admin import *  # #4516: чтение ROS-графа и VESC для пульта TG и ТАРС (operator.admin)
+from .navigation import *
 from .people import *  # #4469: пульт Telegram по лицам (people_list, person_photo, name_person)
+from .perception import *
+from .ros_admin import *  # #4516: чтение ROS-графа и VESC для пульта TG и ТАРС (operator.admin)
+from .say import *  # AV-21: operator-agent minimal TTS (no emotion/animation)
+from .sound import *
+from .system import *  # includes GetCurrentTimeTool, SetVolumeTool, etc.
+
 try:
     # music.py тянет rob_box_music и движок v2 (engine/), которые доступны
     # только в CI-сборке (colcon). В локальной dev-среде модуль может
@@ -32,8 +34,8 @@ try:
 except (ImportError, ModuleNotFoundError):
     pass
 from .music_material import *  # #3227: add_music_material (без зависимости от music.py)
-from .web_search import *
 from .operator_admin import *  # ADR-0051 §6: operator.admin slice (ТАРС diagnostics)
+from .web_search import *
 
 __all__ = [
     # Navigation tools
@@ -68,6 +70,7 @@ __all__ = [
     # Sound tools
     "PlaySoundTool",
     "GetSoundInfoTool",
+    "ChimeraPerformTool",  # ADR-0175 §2.1: вызов, речь, пение и игра Химерой
     # Dialogue tools
     "SpeakTextTool",
     "ListenForResponseTool",

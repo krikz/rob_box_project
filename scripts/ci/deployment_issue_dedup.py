@@ -1022,6 +1022,58 @@ def _proximity_guard_recovered(log_text: str) -> bool:
     return bool(state)
 
 
+# Стартовый fail-fast (issue #4989, run 44817771673): нода пишет ERROR и падает
+# («process has died»), docker restart поднимает контейнер, и к проверке логов он
+# жив. Карточку на такую гонку не заводим. «Строка знакомая» сама по себе ничего
+# не решает (ADR-0148): без свидетельства «жив после» в ЭТОМ дампе строка остаётся
+# critical. X_LINK и любой отказ, после которого контейнер не поднялся или
+# поднялся и снова упал, карточку получают.
+#
+# ros2 launch без respawn пишет «process has died» и выходит — контейнер
+# перезапускает docker (`restart: unless-stopped`), повторный старт виден как
+# новый «process started with pid» ПОСЛЕ смерти. respawn=True того же launch
+# пишет «process has died ... restarting process» и контейнер не роняет.
+_PROCESS_DIED_RE = re.compile(r"process has died", re.IGNORECASE)
+_PROCESS_STARTED_RE = re.compile(r"process started with pid", re.IGNORECASE)
+_PROCESS_RESTARTING_RE = re.compile(r"restarting process", re.IGNORECASE)
+_FAILFAST_MARKERS = ("fail-fast", "fail fast")
+
+
+def _failfast_recovered(log_text: str) -> bool:
+    """True, если fail-fast в дампе умер, контейнер поднялся и больше не падает.
+
+    Решает порядок строк, а не текст ошибки: смерть процесса, затем старт, и после
+    этого старта — ни одной новой смерти. Нет старта после смерти или смерть
+    повторилась — контейнер не «жив после», окно не закрыто.
+    """
+    died = False
+    started_after_death = False
+    for line in log_text.splitlines():
+        if _PROCESS_DIED_RE.search(line):
+            if started_after_death:
+                return False
+            died = True
+            started_after_death = False
+        elif died and (_PROCESS_STARTED_RE.search(line) or _PROCESS_RESTARTING_RE.search(line)):
+            started_after_death = True
+    return started_after_death
+
+
+def _is_recovered_failfast_line(line: str, log_text: str) -> bool:
+    """Строка, которую закрытое окно «жив после» снимает с critical.
+
+    Снимаются две строки и только они: сам fail-fast и служебное «process has died»,
+    которым ros2 launch отмечает ту же смерть. Вне закрытого окна (нет старта после
+    смерти или смерть повторилась) обе остаются critical — голый crash-loop карточку
+    получает. Любая другая ошибка в том же дампе не снимается.
+    """
+    if not _failfast_recovered(log_text):
+        return False
+    if any(marker in line.lower() for marker in _FAILFAST_MARKERS):
+        return True
+    return bool(_PROCESS_DIED_RE.search(line))
+
+
 def _classify_error_like_line(
     line: str,
     exclude_patterns: Iterable[str],
@@ -1045,21 +1097,28 @@ def _classify_error_like_line(
     return "critical"
 
 
-def _classify_with_proximity_echo(
+def _classify_with_dump_windows(
     line: str,
     exclude_patterns: Iterable[str],
     demoted_patterns: Iterable[str],
     *,
     own_blind_present: bool,
+    log_text: str,
 ) -> str | None:
-    """Классификация с правилом дубля эха proximity_guard.
+    """Классификация с окнами дампа: эхо proximity_guard и стартовый fail-fast.
 
     Эхо — не самостоятельный пункт, только когда в дампе уже есть собственная
     строка слепоты ноды (её и так классифицирует окно возврата). Без собственной
     строки эхо остаётся critical: понижать его нечем, возврата из обрезки не видно.
+
+    Fail-fast снимается, только если тот же дамп показывает «жив после»: процесс
+    умер и после этого стартовал без новой смерти. Знакомая строка без этого
+    свидетельства остаётся critical.
     """
     severity = _classify_error_like_line(line, exclude_patterns, demoted_patterns)
     if severity == "critical" and own_blind_present and _is_health_monitor_proximity_echo(line):
+        return None
+    if severity == "critical" and _is_recovered_failfast_line(line, log_text):
         return None
     return severity
 
@@ -1077,7 +1136,9 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
     if severity == "critical":
         for line in lines:
             if (
-                _classify_with_proximity_echo(line, critical_patterns, demoted, own_blind_present=own_blind)
+                _classify_with_dump_windows(
+                    line, critical_patterns, demoted, own_blind_present=own_blind, log_text=log_text
+                )
                 == "critical"
             ):
                 return line
@@ -1088,7 +1149,9 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         # Warning — это и строка со словом warn/warning, и строка, понижённая из
         # critical (см. _classify_error_like_line): без второго условия понижённые
         # строки пропали бы из отчёта совсем, а не стали предупреждением.
-        classified = _classify_with_proximity_echo(line, critical_patterns, demoted, own_blind_present=own_blind)
+        classified = _classify_with_dump_windows(
+            line, critical_patterns, demoted, own_blind_present=own_blind, log_text=log_text
+        )
         if not (WARNING_MATCH_RE.search(line) or classified == "warning"):
             continue
         if _matches_any(patterns, line):
@@ -1123,7 +1186,10 @@ def _build_issue_title(candidate: Mapping[str, str]) -> str:
     severity_emoji = "🚨" if candidate["severity"] == "critical" else "⚠️"
     severity_text = "Critical" if candidate["severity"] == "critical" else "Warning"
     scope = candidate["scope"].capitalize()
-    return f"{severity_emoji} Deployment {severity_text}: {candidate['environment']} / {scope} / {candidate['container']} / {candidate['kind']}"
+    return (
+        f"{severity_emoji} Deployment {severity_text}: {candidate['environment']} / {scope} / "
+        f"{candidate['container']} / {candidate['kind']}"
+    )
 
 
 def _build_issue_body(

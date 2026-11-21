@@ -63,6 +63,7 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
         note_perform_end(node, event)
         planner.emit(event)
 
+    _arm_chimera_abort(node)
     executor.performer = PerformHost(node, executor.execute_owned, lambda: getattr(node, "_loop", None),
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
@@ -70,6 +71,24 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      speaking=lambda: "speech" in planner.state.busy())
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
+
+
+def _arm_chimera_abort(node: Any) -> None:
+    """Стоп диалога обрывает клип Химеры: она играет в процессе тулов, сюда доходит только топик.
+
+    Сообщение — JSON ``{"abort": "chimera"}``, не голый ``STOP``: тот закрывает голосовой стрим рации.
+    """
+    from std_msgs.msg import String
+
+    pub = node.create_publisher(String, "/voice/sound/stop", 10)
+
+    def publish() -> bool:
+        msg = String()
+        msg.data = json.dumps({"abort": "chimera"})
+        pub.publish(msg)
+        return True
+
+    node.publish_chimera_abort = publish
 
 
 def note_perform_speech(node: Any, host: Any, kind: str, speech_id: str, spoken_chars: int) -> str:
