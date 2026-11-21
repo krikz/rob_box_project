@@ -77,21 +77,31 @@ def test_loaded_behavior_trees_have_no_script_node():
         assert "<Script" not in text and "bt_script" not in text
 
 
-def test_navigate_recovery_is_the_pre_4785_spin_not_an_always_backup_stub():
-    """Без Script ветка BackUp невыбираема — в RoundRobin прежний Spin, не BackUp."""
+def test_navigate_recovery_backs_up_unconditionally_not_by_script():
+    """Отъезд — штатный BackUp v3, не Script и не заглушка «всегда backup».
+
+    Прогон 18:47Z убрал Script: Humble BT.CPP v3 его не грузит, и ветка с
+    ``if`` стала невыбираемой. Gate 2 21.11 (R1 проход B) показал цену:
+    у полки recovery 130 с крутил только Spin. BackUp снова в RoundRobin,
+    но безусловно и без Script: сзади lethal своя проверка столкновения
+    отказывает, и ход переходит к Spin. Формула ``corner_escape`` по-прежнему
+    в дерево не вшита — зазоры в него не приходят.
+    """
     recovery = ET.parse(TREE).getroot().find("BehaviorTree/RecoveryNode")
     assert recovery is not None
     actions = recovery.find("./ReactiveFallback/RoundRobin")
     assert actions is not None and actions.get("name") == "RecoveryActions"
     names = [child.tag for child in list(actions)]
-    assert names == ["Sequence", "Spin", "Wait"]
+    assert names == ["Sequence", "BackUp", "Spin", "Wait"]
+    backup = actions.find("BackUp")
+    assert backup is not None and backup.get("if") is None
+    assert list(backup) == []
     spin = actions.find("Spin")
     assert spin is not None and spin.get("spin_dist") == "1.57"
     assert spin.get("if") is None
     assert list(spin) == []
-    assert actions.find("BackUp") is None
-    assert recovery.find(".//BackUp") is None
     assert actions.find("Fallback") is None
+    assert actions.find("Script") is None
 
 
 def test_backup_stop_m_stays_the_proximity_threshold():
@@ -101,9 +111,7 @@ def test_backup_stop_m_stays_the_proximity_threshold():
     ]
     assert float(bt["backup_stop_m"]) == STOP_M
     assert "nav2_back_up_action_bt_node" in bt["plugin_lib_names"]
-    body = "".join(
-        el.text or "" for el in ET.parse(TREE).getroot().iter()
-    )
+    body = "".join(el.text or "" for el in ET.parse(TREE).getroot().iter())
     assert "corner_escape" not in body
 
 
