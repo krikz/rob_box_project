@@ -1,0 +1,171 @@
+--- a/nav2_controller/include/nav2_controller/controller_server.hpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_controller/include/nav2_controller/controller_server.hpp	2026-11-21 11:49:06.100961679 +0300
+@@ -178,6 +178,14 @@
+   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
+ 
+   /**
++   * @brief #5003: progress fails when the commanded twist holds, the base does
++   * not move required_movement_radius, and the local costmap is blocked on the
++   * command course. The decision lives in rob_box_teleop.stuck_against.
++   */
++  bool stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose);
++  void stuckAgainstReset();
++
++  /**
+    * @brief get the thresholded velocity
+    * @param velocity The current velocity from odometry
+    * @param threshold The minimum velocity to return non-zero
+@@ -230,6 +238,10 @@
+   std::string progress_checker_id_;
+   std::string progress_checker_type_;
+ 
++  // #5003: twist published on the previous control tick.
++  geometry_msgs::msg::Twist last_cmd_vel_;
++  bool have_last_cmd_{false};
++
+   // Goal Checker Plugin
+   pluginlib::ClassLoader<nav2_core::GoalChecker> goal_checker_loader_;
+   GoalCheckerMap goal_checkers_;
+--- a/nav2_controller/src/controller_server.cpp	2026-11-21 11:45:38.344284318 +0300
++++ b/nav2_controller/src/controller_server.cpp	2026-11-21 11:49:41.096248521 +0300
+@@ -23,6 +23,8 @@
+ #include "nav2_core/exceptions.hpp"
+ #include "nav_2d_utils/conversions.hpp"
+ #include "nav_2d_utils/tf_help.hpp"
++#include "nav2_costmap_2d/cost_values.hpp"
++#include "Python.h"
+ #include "nav2_util/node_utils.hpp"
+ #include "nav2_util/geometry_utils.hpp"
+ #include "nav2_controller/controller_server.hpp"
+@@ -381,6 +383,8 @@
+ 
+     setPlannerPath(action_server_->get_current_goal()->path);
+     progress_checker_->reset();
++    have_last_cmd_ = false;
++    stuckAgainstReset();
+ 
+     last_valid_cmd_time_ = now();
+     rclcpp::WallRate loop_rate(controller_frequency_);
+@@ -478,6 +482,13 @@
+     throw nav2_core::PlannerException("Failed to make progress");
+   }
+ 
++  // #5003: a wall slide keeps the radius checker green. A held command, no
++  // base motion and a blocking cell on that course is its own progress failure,
++  // so NavigateRecovery ticks ClearThenBackUp without a second clean failure.
++  if (stuckAgainstObstacle(pose)) {
++    throw nav2_core::PlannerException("Failed to make progress: stuck against obstacle");
++  }
++
+   nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+ 
+   geometry_msgs::msg::TwistStamped cmd_vel_2d;
+@@ -533,11 +544,97 @@
+   feedback->distance_to_goal =
+     nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
+   action_server_->publish_feedback(feedback);
++  last_cmd_vel_ = cmd_vel_2d.twist;
++  have_last_cmd_ = true;
+ 
+   RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
+   publishVelocity(cmd_vel_2d);
+ }
+ 
++
++void ControllerServer::stuckAgainstReset()
++{
++  // controller_server is not a rclpy node: nothing else initializes Python.
++  if (!Py_IsInitialized()) {
++    Py_Initialize();
++  }
++  PyObject * module = PyImport_ImportModule("rob_box_teleop.stuck_against");
++  if (module == nullptr) {
++    PyErr_Clear();
++    return;
++  }
++  PyObject * fn = PyObject_GetAttrString(module, "reset_controller_state");
++  Py_DECREF(module);
++  if (fn == nullptr || !PyCallable_Check(fn)) {
++    PyErr_Clear();
++    Py_XDECREF(fn);
++    return;
++  }
++  PyObject * result = PyObject_CallObject(fn, nullptr);
++  Py_DECREF(fn);
++  Py_XDECREF(result);
++  PyErr_Clear();
++}
++
++bool ControllerServer::stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose)
++{
++  if (!have_last_cmd_) {
++    return false;
++  }
++  if (!Py_IsInitialized()) {
++    Py_Initialize();
++  }
++  auto * costmap = costmap_ros_->getCostmap();
++  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
++  const unsigned int size_x = costmap->getSizeInCellsX();
++  const unsigned int size_y = costmap->getSizeInCellsY();
++  const unsigned char * map = costmap->getCharMap();
++  const double resolution = costmap->getResolution();
++  double origin_x = 0.0;
++  double origin_y = 0.0;
++  costmap->mapToWorld(0, 0, origin_x, origin_y);
++  origin_x -= resolution / 2.0;
++  origin_y -= resolution / 2.0;
++  const unsigned char lethal = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
++
++  PyObject * module = PyImport_ImportModule("rob_box_teleop.stuck_against");
++  if (module == nullptr) {
++    PyErr_Clear();
++    return false;
++  }
++  PyObject * fn = PyObject_GetAttrString(module, "controller_stuck");
++  Py_DECREF(module);
++  if (fn == nullptr || !PyCallable_Check(fn)) {
++    PyErr_Clear();
++    Py_XDECREF(fn);
++    return false;
++  }
++  PyObject * costs = PyList_New(static_cast<Py_ssize_t>(size_x) * size_y);
++  if (costs == nullptr) {
++    Py_DECREF(fn);
++    return false;
++  }
++  for (unsigned int i = 0; i < size_x * size_y; ++i) {
++    PyList_SET_ITEM(costs, i, PyLong_FromLong(map[i] >= lethal ? lethal : 0));
++  }
++  lock.unlock();
++  PyObject * result = PyObject_CallFunction(
++    fn, "dddddddiOi",
++    now().seconds(), pose.pose.position.x, pose.pose.position.y,
++    last_cmd_vel_.linear.x, last_cmd_vel_.angular.z,
++    origin_x, origin_y, resolution,
++    static_cast<int>(size_x), costs, static_cast<int>(size_y));
++  Py_DECREF(costs);
++  Py_DECREF(fn);
++  if (result == nullptr) {
++    PyErr_Clear();
++    return false;
++  }
++  const bool stuck = PyObject_IsTrue(result) == 1;
++  Py_DECREF(result);
++  return stuck;
++}
++
+ void ControllerServer::updateGlobalPath()
+ {
+   if (action_server_->is_preempt_requested()) {
+--- a/nav2_controller/CMakeLists.txt	2026-11-21 11:49:05.630957834 +0300
++++ b/nav2_controller/CMakeLists.txt	2026-11-21 11:49:06.100961679 +0300
+@@ -67,6 +67,8 @@
+ ament_target_dependencies(${library_name}
+   ${dependencies}
+ )
++# #5003: stuckAgainstObstacle calls rob_box_teleop.stuck_against through libpython.
++target_link_libraries(${library_name} python3.10)
+ 
+ if(BUILD_TESTING)
+   find_package(ament_lint_auto REQUIRED)
