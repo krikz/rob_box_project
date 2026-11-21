@@ -3,9 +3,9 @@
 # supercollider тега здесь нет: compose берёт supercollider-${IMAGE_TAG} (манифест: image_versions: false).
 # PERCEPTION_TAG — для sensor-bridge (profile sensors); образ perception собирает Main-сборка.
 
-VOICE_ASSISTANT_TAG=dev-a273bca
-TELEGRAM_BOT_TAG=dev-a273bca
-SUPERVISOR_TAG=dev-a273bca
-QUEST_TAG=dev-a273bca
+VOICE_ASSISTANT_TAG=dev-c61913b
+TELEGRAM_BOT_TAG=dev-c61913b
+SUPERVISOR_TAG=dev-c61913b
+QUEST_TAG=dev-c61913b
 # ↓ пишет Main-сборка (perception), ↑ — Sound-сборка. Строка-разделитель: их параллельные коммиты (Build All) правят этот файл без конфликта rebase.
 PERCEPTION_TAG=dev-c61913b
