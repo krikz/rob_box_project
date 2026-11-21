@@ -73,7 +73,8 @@ RUN apt-get update && apt-get install -y \
 #   the previous row/column (#4682);
 # - progress also fails when the base is stuck against an obstacle (#5003):
 #   a held command, no motion of required_movement_radius, blocking cell on
-#   the command course. The decision is rob_box_teleop.stuck_against.
+#   the command course. The decision is C++ in controller_server (ADR-0148).
+#   The process does not embed CPython (#5021).
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
 COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 COPY controller_stuck_against.patch /tmp/controller_stuck_against.patch
