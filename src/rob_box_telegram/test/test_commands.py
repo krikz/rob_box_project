@@ -110,14 +110,10 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
         await self.commands.repl_handler(update, context)
 
         node.forward_to_stt.assert_not_called()
-        update.message.reply_text.assert_awaited_once_with(
-            "Использование: /repl <Renardo/FoxDot код>"
-        )
+        update.message.reply_text.assert_awaited_once_with("Использование: /repl <Renardo/FoxDot код>")
 
     async def test_repl_handler_forwards_single_line_code(self):
-        update, context, node = self._make_update_and_context(
-            "/repl p1 >> pluck([0,2,4])"
-        )
+        update, context, node = self._make_update_and_context("/repl p1 >> pluck([0,2,4])")
 
         await self.commands.repl_handler(update, context)
 
@@ -129,9 +125,7 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
 
     async def test_repl_handler_preserves_newlines_in_multiline_code(self):
         multiline_code = "Clock.bpm = 83\np1 >> pads((2, 4, 6), amp=0.3)"
-        update, context, node = self._make_update_and_context(
-            f"/repl\n{multiline_code}"
-        )
+        update, context, node = self._make_update_and_context(f"/repl\n{multiline_code}")
 
         await self.commands.repl_handler(update, context)
 
@@ -141,9 +135,7 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_repl_handler_strips_botname_suffix(self):
-        update, context, node = self._make_update_and_context(
-            "/repl@RoBBoxbot p1 >> blip([0,2])"
-        )
+        update, context, node = self._make_update_and_context("/repl@RoBBoxbot p1 >> blip([0,2])")
 
         await self.commands.repl_handler(update, context)
 
@@ -167,9 +159,7 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
         node.forward_to_stt.assert_called_once_with("/status", chat_id=42)
 
     async def test_goto_handler_forwards_waypoint_name(self):
-        update, context, node = self._make_update_and_context(
-            "/goto kitchen", args=["kitchen"]
-        )
+        update, context, node = self._make_update_and_context("/goto kitchen", args=["kitchen"])
 
         await self.commands.goto_handler(update, context)
 
@@ -183,21 +173,15 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
         node.forward_to_stt.assert_called_once_with("/clear", chat_id=42)
 
     async def test_volume_handler_validates_range(self):
-        update, context, node = self._make_update_and_context(
-            "/volume 200", args=["200"]
-        )
+        update, context, node = self._make_update_and_context("/volume 200", args=["200"])
 
         await self.commands.volume_handler(update, context)
 
         node.forward_to_stt.assert_not_called()
-        update.message.reply_text.assert_awaited_once_with(
-            "⚠️ Уровень громкости должен быть от 0 до 100"
-        )
+        update.message.reply_text.assert_awaited_once_with("⚠️ Уровень громкости должен быть от 0 до 100")
 
     async def test_volume_handler_forwards_level(self):
-        update, context, node = self._make_update_and_context(
-            "/volume 75", args=["75"]
-        )
+        update, context, node = self._make_update_and_context("/volume 75", args=["75"])
 
         await self.commands.volume_handler(update, context)
 
@@ -205,11 +189,13 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
 
 
 class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
-    """``/faces`` and ``/face`` handlers (issue #3025).
+    """``/face`` handler (issue #3025) and the old disk-backed ``/faces``.
 
-    These handlers read the live face store directly from disk. The
-    tests monkeypatch ``commands.FACE_STORE_MOUNT`` to a tmp dir so
-    we don't need a real ``/data/faces`` in the container.
+    ``/face`` still reads the face-card snapshot from disk. ``/faces`` no
+    longer does (issue #3655, owner service) — those two cases moved to
+    ``test_issue_3655_faces_from_owner.py``. The tests monkeypatch
+    ``commands.FACE_CARD_ROOT`` to a tmp dir so we don't need a real
+    ``/data/faces`` in the container.
 
     The two handlers are read-only — they never write to the store.
     We don't need PIL for the empty-store paths; the collage path is
@@ -222,12 +208,12 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         import rob_box_telegram.auth as auth_module
 
         auth_module._allowed_users = {42}
-        self._orig_root = self.commands.FACE_STORE_MOUNT
+        self._orig_root = self.commands.FACE_CARD_ROOT
 
     def tearDown(self):
         # Restore the production mount so other tests / re-imports
         # keep working.
-        self.commands.FACE_STORE_MOUNT = self._orig_root
+        self.commands.FACE_CARD_ROOT = self._orig_root
 
     def _make_update_and_context(self, args=None):
         node = MagicMock()
@@ -242,46 +228,6 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         context.user_data = {}
         return update, context
 
-    async def test_faces_handler_empty_store(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            self.commands.FACE_STORE_MOUNT = td
-            update, context = self._make_update_and_context()
-            await self.commands.faces_handler(update, context)
-        update.message.reply_text.assert_awaited_once()
-        text = update.message.reply_text.call_args.args[0]
-        self.assertIn("Лицевая база пуста", text)
-        # Must NOT call reply_photo — no collage for /faces
-        update.message.reply_photo.assert_not_awaited()
-
-    async def test_faces_handler_lists_named_first(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            from pathlib import Path
-
-            root = Path(td)
-            (root / "4ff0ddc5").mkdir()
-            (root / "4ff0ddc5" / "meta.json").write_text(
-                '{"name": "Дэнчик", "person_id": "4ff0ddc5", "encounter_count": 7}',
-                encoding="utf-8",
-            )
-            (root / "bbb22222").mkdir()
-            (root / "bbb22222" / "meta.json").write_text(
-                '{"person_id": "bbb22222", "encounter_count": 1}',  # no name = stranger
-                encoding="utf-8",
-            )
-
-            self.commands.FACE_STORE_MOUNT = td
-            update, context = self._make_update_and_context()
-            await self.commands.faces_handler(update, context)
-
-        text = update.message.reply_text.call_args.args[0]
-        self.assertIn("Дэнчик", text)
-        self.assertIn("4ff0ddc5", text)
-        self.assertIn("«незнакомец»", text)
-
     async def test_face_handler_no_args_shows_usage(self):
         update, context = self._make_update_and_context(args=[])
         await self.commands.face_handler(update, context)
@@ -294,7 +240,7 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as td:
-            self.commands.FACE_STORE_MOUNT = td
+            self.commands.FACE_CARD_ROOT = td
             update, context = self._make_update_and_context(args=["nonexistent"])
             await self.commands.face_handler(update, context)
         text = update.message.reply_text.call_args.args[0]
@@ -350,7 +296,7 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
             ref = Image.new("RGB", (16, 16), color=(255, 255, 255))
             ref.save(person / "reference.jpg", format="JPEG")
 
-            self.commands.FACE_STORE_MOUNT = td
+            self.commands.FACE_CARD_ROOT = td
             update, context = self._make_update_and_context(args=["4ff0ddc5"])
             await self.commands.face_handler(update, context)
 
@@ -364,9 +310,9 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         data = photo_arg.read()
         self.assertTrue(data.startswith(b"\xff\xd8"))  # JPEG magic
         # caption arg carries the summary text
-        caption = update.message.reply_photo.call_args.kwargs.get(
-            "caption"
-        ) or update.message.reply_photo.call_args.args[1]
+        caption = (
+            update.message.reply_photo.call_args.kwargs.get("caption") or update.message.reply_photo.call_args.args[1]
+        )
         self.assertIn("Дэнчик", caption)
         self.assertIn("последняя встреча по лицу", caption)
         # No separate reply_text on the happy path — caption is enough
@@ -393,14 +339,12 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
             )
             # No reference.jpg, no encounters/ — build_face_collage → None.
 
-            self.commands.FACE_STORE_MOUNT = td
+            self.commands.FACE_CARD_ROOT = td
             update, context = self._make_update_and_context(args=["4ff0ddc5"])
             await self.commands.face_handler(update, context)
 
         update.message.reply_text.assert_awaited_once()
-        text = update.message.reply_text.call_args.kwargs.get(
-            "text"
-        ) or update.message.reply_text.call_args.args[0]
+        text = update.message.reply_text.call_args.kwargs.get("text") or update.message.reply_text.call_args.args[0]
         self.assertIn("Дэнчик", text)
         self.assertIn("последняя встреча по лицу", text)
         update.message.reply_photo.assert_not_awaited()
