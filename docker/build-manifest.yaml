@@ -231,6 +231,7 @@ pis:
           groups:
             - paths:
                 - src/rob_box_telegram/rob_box_telegram
+                - src/rob_box_supervisor/rob_box_supervisor
                 - src/rob_box_core
               extensions: [".py"]
             # ADR-0150 PR-2 (#3687): telegram_node публикует Utterance.

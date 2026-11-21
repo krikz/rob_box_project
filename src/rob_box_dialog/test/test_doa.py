@@ -26,7 +26,7 @@ def test_only_samples_during_speech_count():
     track.on_direction(100.0, 2.2)
     track.on_vad(False, 3.0)
     track.on_direction(270.0, 3.1)
-    assert track.during(0.0, 4.0) == pytest.approx(95.0)
+    assert track.during(0.0, 4.0).usable_deg == pytest.approx(95.0)
 
 
 def test_window_selects_the_phrase():
@@ -34,8 +34,8 @@ def test_window_selects_the_phrase():
     track.on_vad(True, 0.0)
     track.on_direction(10.0, 1.0)
     track.on_direction(200.0, 5.0)
-    assert track.during(4.0, 6.0) == pytest.approx(200.0)
-    assert track.during(7.0, 8.0) is None
+    assert track.during(4.0, 6.0).usable_deg == pytest.approx(200.0)
+    assert track.during(7.0, 8.0).usable_deg is None
 
 
 def test_old_samples_are_dropped():
@@ -43,8 +43,8 @@ def test_old_samples_are_dropped():
     track.on_vad(True, 0.0)
     track.on_direction(10.0, 0.0)
     track.on_direction(20.0, 20.0)
-    assert track.during(-1.0, 1.0) is None
-    assert track.during(19.0, 21.0) == pytest.approx(20.0)
+    assert track.during(-1.0, 1.0).usable_deg is None
+    assert track.during(19.0, 21.0).usable_deg == pytest.approx(20.0)
 
 
 def test_agreed_samples_are_confident_and_opposed_cancel():
@@ -63,8 +63,10 @@ def test_agreed_samples_are_confident_and_opposed_cancel():
     track.on_direction(80.0, 1.0)
     track.on_direction(90.0, 1.1)
     track.on_direction(100.0, 1.2)
-    assert track.during(0.0, 2.0) == pytest.approx(90.0, abs=0.1)
+    assert track.during(0.0, 2.0).usable_deg == pytest.approx(90.0, abs=0.1)
 
     track.on_direction(10.0, 3.0)
     track.on_direction(190.0, 3.1)
-    assert track.during(2.5, 4.0) is None, "разброс ~180° — направление не отдаём, потребитель не крутится"
+    opposed = track.during(2.5, 4.0)
+    assert opposed.usable_deg is None, "разброс ~180° — угол недостоверен, потребитель не крутится"
+    assert opposed.reliable is False and opposed.doa_conf < DOA_CONFIDENCE_MIN

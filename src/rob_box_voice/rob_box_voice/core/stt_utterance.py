@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from rob_box_core.stt_hypotheses import NO_HYPOTHESES, SttHypotheses, fill_hypotheses
 
@@ -36,6 +36,16 @@ def _set_time(field: Any, moment: float) -> None:
     field.nanosec = int((moment - int(moment)) * 1e9)
 
 
+def _direction_fields(angle: Optional[float], confidence: Optional[float]) -> tuple:
+    """Поля ``doa_deg``/``doa_conf`` реплики: нет чтения — NaN (не измеряли), не ноль.
+
+    Ноль уверенности — измеренный R=0. Порог здесь не применяется: его читает потребитель из знания.
+    """
+    if angle is None or confidence is None:
+        return float("nan"), float("nan")
+    return float(angle), float(confidence)
+
+
 def fill_respeaker_utterance(
     msg: Any,
     *,
@@ -46,6 +56,8 @@ def fill_respeaker_utterance(
     speaker_tag: str = "",
     provider: str = "",
     hypotheses: SttHypotheses = NO_HYPOTHESES,
+    doa_deg: Optional[float] = None,
+    doa_conf: Optional[float] = None,
 ) -> Any:
     """Записать фразу ReSpeaker в ``msg`` и вернуть его.
 
@@ -62,4 +74,5 @@ def fill_respeaker_utterance(
     _set_time(msg.started_at, now_s - max(float(duration_s), 0.0))
     _set_time(msg.ended_at, now_s)
     fill_hypotheses(msg, hypotheses)
+    msg.doa_deg, msg.doa_conf = _direction_fields(doa_deg, doa_conf)
     return msg

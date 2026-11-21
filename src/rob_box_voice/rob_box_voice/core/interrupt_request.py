@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Sequence
 
 from rob_box_dialog.words import has_wake_word
 
@@ -21,6 +21,21 @@ from rob_box_dialog.words import has_wake_word
 def _stamp(field: Any, moment: float) -> None:
     field.sec = int(moment)
     field.nanosec = int((moment - int(moment)) * 1e9)
+
+
+def _direction_fields(reading: Any) -> tuple:
+    """Поля запроса: чтение трека (``DoaReading``) или голый угол старого колбэка.
+
+    Нет чтения и голый ``None`` — NaN (не измеряли). Угол ниже порога на провод всё равно уходит:
+    признак «недостоверен» — это ``doa_conf`` ниже порога знания, не пропавший угол.
+    """
+    if reading is None:
+        return float("nan"), float("nan")
+    angle = getattr(reading, "doa_deg", reading)
+    conf = getattr(reading, "doa_conf", None)
+    if angle is None:
+        return float("nan"), float("nan") if conf is None else float(conf)
+    return float(angle), float("nan") if conf is None else float(conf)
 
 
 class InterruptOffer:
@@ -31,7 +46,7 @@ class InterruptOffer:
         publish: Callable[[Any], None],
         make_msg: Callable[[], Any],
         wake_words: Callable[[], Sequence[str]],
-        doa_deg: Callable[[], Optional[float]],
+        doa_deg: Callable[[], Any],
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._publish, self._make_msg = publish, make_msg
@@ -55,8 +70,7 @@ class InterruptOffer:
         msg = self._make_msg()
         msg.utterance_id = utterance_id or ""
         msg.text_partial = text
-        doa = self._doa_deg()
-        msg.doa_deg = float("nan") if doa is None else float(doa)
+        msg.doa_deg, msg.doa_conf = _direction_fields(self._doa_deg())
         _stamp(msg.stamp, self._clock())
         self._publish(msg)
         return True
