@@ -97,7 +97,10 @@ controller_server:
       stateful: false
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25  # Increased from 0.15 - don't overshoot trying to be too precise
-      yaw_goal_tolerance: 0.30  # Финальный курс, около 17.2°
+      # 0.22, не 0.30: чекер останавливает по своей оценке, а истина = оценка + дрейф.
+      # Планка по истине 0.35 рад (d-20261120-depot-gt-032-035), наблюдаемый дрейф курса
+      # до 0.11 рад (Gate 2, 60 целей): 0.22 + 0.11 ≈ 0.33 < 0.35. xy не сужаем.
+      yaw_goal_tolerance: 0.22
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: true

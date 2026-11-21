@@ -38,7 +38,7 @@ TIMEOUT = 200.0
 # Допуски general_goal_checker из nav2_params.yaml для проверки HIL-результата по GT.
 # Это вердикт goal checker (hil_result / inside_sent_goal), не планка приёмки Depot.
 XY_GOAL_TOLERANCE = 0.25
-YAW_GOAL_TOLERANCE = 0.30
+YAW_GOAL_TOLERANCE = 0.22
 # Планка приёмки Depot по истине Gazebo: docs/shifu-decisions.md#d-20261120-depot-gt-032-035
 # (0.32 м / 0.35 рад; источник — Telegram-директива координатору, 20.11.2026 15:23 UTC).
 # Заменяет 0.30/0.30 из #d-20261120-depot-m4-yaw. Штатный чекер Nav2 — XY_GOAL_TOLERANCE /
@@ -91,7 +91,7 @@ def hil_result(nav_status, gt, goal):
     """STATUS_SUCCEEDED только если поза в допусках xy и yaw от отправленной цели.
 
     Nav2 закрывает FollowPath по хвосту плана / stateful latch. TIMEOUT не переименовываем.
-    Вердикт goal checker (0.25 м / 0.30 рад), не планка приёмки Depot.
+    Вердикт goal checker (0.25 м / 0.22 рад), не планка приёмки Depot.
     """
     if nav_status != "STATUS_SUCCEEDED":
         return nav_status
@@ -104,7 +104,7 @@ def _over(err, tol):
 
 
 # Nav2 закрыл цель успешно. OUTSIDE_TOLERANCE — тот же успех, но поза вне допуска
-# чекера 0.25 м / 0.30 рад; по #d-20261120-depot-gt-032-035 такая точка всё равно
+# чекера 0.25 м / 0.22 рад; по #d-20261120-depot-gt-032-035 такая точка всё равно
 # засчитывается, если истина Gazebo внутри планки. Остальное (REJECTED, CANCELED,
 # INTERRUPTED, ABORTED, неизвестное) — не успех.
 _ACCEPT_OK_STATUS = frozenset({"STATUS_SUCCEEDED", "OUTSIDE_TOLERANCE"})

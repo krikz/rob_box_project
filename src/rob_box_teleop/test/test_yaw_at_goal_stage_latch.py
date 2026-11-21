@@ -14,9 +14,9 @@ import math
 
 from rob_box_teleop import yaw_at_goal as yag
 
-# Допуски боевого checker'а (nav2_params.yaml, решение 20.11: не трогать).
+# Допуски боевого checker'а (nav2_params.yaml general_goal_checker).
 _XY = 0.25
-_YAW = 0.30
+_YAW = 0.22
 _MAX_V = 0.15
 _MAX_W = 0.6
 _DT = 0.2  # период тика ноды при check_rate_hz=5 не важен: 0.2 с — как в логе 21.11
@@ -122,7 +122,7 @@ def test_livelock_at_the_approach_boundary_converges_without_wz_sign_flips():
     # Строже 0.10 здесь нельзя: доворот на курсе цели сам ходит по окружности.
     worst = yag.APPROACH_TARGET_M + yag.ROTATION_SWEEP_M
     assert yag.pose_distance(pose, _GOAL) <= worst + 1e-6
-    # Порог done — yaw_tol минус запас, не сам запас: 0.30 − 0.05 = 0.25 рад.
+    # Порог done — yaw_tol минус запас, не сам запас: 0.22 − 0.05 = 0.17 рад.
     assert (
         abs(yag.shortest_yaw(pose[2], _GOAL[2]))
         <= _YAW - yag.FINISH_YAW_MARGIN_RAD + 1e-6

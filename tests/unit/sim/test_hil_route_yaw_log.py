@@ -194,11 +194,11 @@ def test_plan_line_none_when_no_path(route_mod, capsys):
 
 
 def test_accept_point_uses_shifu_plank_not_goal_checker(route_mod):
-    """Планка приёмки 0.32/0.35 (d-20261120-depot-gt-032-035), не допуск goal checker 0.25/0.30."""
+    """Планка приёмки 0.32/0.35 (d-20261120-depot-gt-032-035), не допуск goal checker 0.25/0.22."""
     assert route_mod.ACCEPT_XY_TOLERANCE == pytest.approx(0.32)
     assert route_mod.ACCEPT_YAW_TOLERANCE == pytest.approx(0.35)
     assert route_mod.XY_GOAL_TOLERANCE == 0.25  # goal checker не сдвинут
-    assert route_mod.YAW_GOAL_TOLERANCE == pytest.approx(0.30)
+    assert route_mod.YAW_GOAL_TOLERANCE == pytest.approx(0.22)
 
     # (a) 0.274 м / 0.179 рад, не таймаут: checker сказал бы OUTSIDE_TOLERANCE, приёмка — PASS.
     verdict, reasons = route_mod.accept_point("OUTSIDE_TOLERANCE", 0.274, 0.179, 40.0)
@@ -269,7 +269,7 @@ def test_accept_pass_only_on_nav2_success(route_mod):
     verdict, reasons = route_mod.accept_point("CANCELED", 0.40, 0.40, 40.0)
     assert (verdict, reasons) == ("FAIL", ["not_succeeded", "xy", "yaw"])
 
-    # STATUS_SUCCEEDED 0.31 м / 0.34 рад — внутри 0.32/0.35, вне чекера 0.25/0.30.
+    # STATUS_SUCCEEDED 0.31 м / 0.34 рад — внутри 0.32/0.35, вне чекера 0.25/0.22.
     verdict, reasons = route_mod.accept_point("STATUS_SUCCEEDED", 0.31, 0.34, 40.0)
     assert (verdict, reasons) == ("PASS", [])
 
