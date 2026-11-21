@@ -1,17 +1,6 @@
---- a/nav2_controller/include/nav2_controller/controller_server.hpp
+--- a/nav2_controller/include/nav2_controller/controller_server.hpp	2025-11-17 20:48:57.000000000 +0300
 +++ b/nav2_controller/include/nav2_controller/controller_server.hpp
-@@ -61,6 +61,10 @@
-    */
-   ~ControllerServer();
- 
-+  // #5003: CPython must be initialized from main(), before spin. Public so
-+  // main.cpp can call it; the action thread must not.
-+  void stuckAgainstInit();
-+
- protected:
-   /**
-    * @brief Configures controller parameters and member variables
-@@ -178,6 +182,15 @@
+@@ -178,6 +178,17 @@
    bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
  
    /**
@@ -20,6 +9,8 @@
 +   * command course. The decision lives in rob_box_teleop.stuck_against.
 +   */
 +  bool stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose);
++  void stuckAgainstInit();
++  void stuckAgainstImportPath();
 +  void stuckAgainstReset();
 +  void stuckAgainstWarnOnce(const char * why);
 +
@@ -27,7 +18,7 @@
     * @brief get the thresholded velocity
     * @param velocity The current velocity from odometry
     * @param threshold The minimum velocity to return non-zero
-@@ -230,6 +243,10 @@
+@@ -230,6 +241,10 @@
    std::string progress_checker_id_;
    std::string progress_checker_type_;
  
@@ -49,7 +40,23 @@
  #include "nav2_util/node_utils.hpp"
  #include "nav2_util/geometry_utils.hpp"
  #include "nav2_controller/controller_server.hpp"
-@@ -381,6 +383,8 @@
+@@ -48,6 +50,15 @@
+ {
+   RCLCPP_INFO(get_logger(), "Creating controller server");
+ 
++  // #5004: this constructor runs on the main thread, before spin
++  // (nav2_controller/src/main.cpp builds the node, then spins it). It is the
++  // only such point that ships in libcontroller_server_core.so: the image
++  // copies the library, not the executable, and `ros2 run` launches the stock
++  // binary whose main() never calls into the patch. on_configure ticks on the
++  // lifecycle manager's thread and the goal runs on std::async, so neither may
++  // call Py_Initialize.
++  stuckAgainstInit();
++
+   declare_parameter("controller_frequency", 20.0);
+ 
+   declare_parameter("progress_checker_plugin", default_progress_checker_id_);
+@@ -381,6 +392,8 @@
  
      setPlannerPath(action_server_->get_current_goal()->path);
      progress_checker_->reset();
@@ -58,7 +65,7 @@
  
      last_valid_cmd_time_ = now();
      rclcpp::WallRate loop_rate(controller_frequency_);
-@@ -533,11 +537,170 @@
+@@ -533,11 +546,193 @@
    feedback->distance_to_goal =
      nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
    action_server_->publish_feedback(feedback);
@@ -81,12 +88,35 @@
 +
 +void ControllerServer::stuckAgainstInit()
 +{
-+  // #5003: CPython must be initialized from the main thread, before spin.
-+  // Called once from main(). The action-server thread must not call Py_Initialize.
-+  if (Py_IsInitialized()) {
++  // #5004: called from the constructor, which runs on the main thread before
++  // spin. The action-server thread must not call Py_Initialize. Idempotent:
++  // a process that already embedded CPython is left alone.
++  if (!Py_IsInitialized()) {
++    Py_Initialize();
++  }
++  stuckAgainstImportPath();
++}
++
++void ControllerServer::stuckAgainstImportPath()
++{
++  // #5004: the package arrives as a compose bind mount, not an installed
++  // module. start_nav2_direct.sh prepends this directory to PYTHONPATH only
++  // when it exists at process start; put it on sys.path here so the import
++  // does not depend on that. No-op when the mount is absent.
++  if (!Py_IsInitialized()) {
 +    return;
 +  }
-+  Py_Initialize();
++  const char * code =
++    "import os, sys\n"
++    "p = '/opt/rob_box/teleop'\n"
++    "if os.path.isdir(os.path.join(p, 'rob_box_teleop')) and p not in sys.path:\n"
++    "    sys.path.insert(0, p)\n";
++  PyGILState_STATE gil = PyGILState_Ensure();
++  PyObject * ran = PyRun_SimpleString(code);
++  if (ran != 0) {
++    PyErr_Clear();
++  }
++  PyGILState_Release(gil);
 +}
 +
 +void ControllerServer::stuckAgainstWarnOnce(const char * why)
@@ -229,17 +259,6 @@
  void ControllerServer::updateGlobalPath()
  {
    if (action_server_->is_preempt_requested()) {
---- a/nav2_controller/src/main.cpp
-+++ b/nav2_controller/src/main.cpp
-@@ -21,6 +21,8 @@
- {
-   rclcpp::init(argc, argv);
-   auto node = std::make_shared<nav2_controller::ControllerServer>();
-+  // #5003: CPython from the main thread, once, before the action thread spins.
-+  node->stuckAgainstInit();
-   rclcpp::spin(node->get_node_base_interface());
-   rclcpp::shutdown();
- 
 --- a/nav2_controller/CMakeLists.txt
 +++ b/nav2_controller/CMakeLists.txt
 @@ -67,6 +67,10 @@

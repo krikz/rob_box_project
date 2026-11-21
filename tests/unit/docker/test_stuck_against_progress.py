@@ -141,7 +141,16 @@ def test_patch_applies_after_existing_controller_patches(tmp_path: Path):
     cmake_text = cmake.read_text(encoding="utf-8")
     assert "target_link_libraries(${library_name} Python3::Python)" in cmake_text
     assert "find_package(Python3 COMPONENTS Development REQUIRED)" in cmake_text
+    # #5004: инициализация — в конструкторе, не в main.cpp. Образ везёт только
+    # libcontroller_server_core.so, а `ros2 run` запускает штатный бинарь,
+    # чей main() патч не трогает. Конструктор тикает в main() до spin.
+    ctor = after.index('RCLCPP_INFO(get_logger(), "Creating controller server");')
+    assert after.index("stuckAgainstInit();", ctor) < after.index(
+        'declare_parameter("controller_frequency", 20.0);', ctor
+    )
+    assert "stuckAgainstImportPath" in after
+    assert "'/opt/rob_box/teleop'" in after
     main = (src_root / "nav2_controller" / "src" / "main.cpp").read_text(
         encoding="utf-8"
     )
-    assert "node->stuckAgainstInit();" in main
+    assert "stuckAgainst" not in main
