@@ -76,8 +76,8 @@ def test_count_restart_after_edit_is_red_m5_shape():
     verdict = etm.step_verdict(N807, text)
     assert not verdict["pass"]
     assert verdict["forbidden_calls"] == []  # отмена несказанного не причина
-    assert "четырнадцать x2" in verdict["repeated_numbers"] and "девятнадцать x2" in verdict["repeated_numbers"]
-    assert "один" not in " ".join(verdict["repeated_numbers"])  # несказанный пред-синтез не считается
+    assert "14 x2" in verdict["repeated_numbers"] and "19 x2" in verdict["repeated_numbers"]
+    assert "1 x2" not in verdict["repeated_numbers"]  # несказанный пред-синтез не считается
 
 
 def test_correct_continuation_is_green():
@@ -93,7 +93,7 @@ def test_correct_continuation_is_green():
 def test_no_started_events_falls_back_to_robot_speech():
     text = log("🔊 TTS: speech_id=a1, text='Девять, десять'", "🔊 TTS: speech_id=a2, text='Девять, десять'")
     # без SpeechEvent started (v1/сухой лог) -- общий канал речи, повтор виден
-    assert etm.repeated_numerals(text) == ["девять x2", "десять x2"]
+    assert etm.repeated_numerals(text) == ["9 x2", "10 x2"]
 
 
 def test_flag_off_does_not_check_numbers():
@@ -104,7 +104,7 @@ def test_flag_off_does_not_check_numbers():
 
 def test_numeral_word_boundaries():
     text = log(ev("started", "a"), tts("a", "Опять одиночка, пять раз. Пять!"))
-    assert etm.repeated_numerals(text) == ["пять x2"]
+    assert etm.repeated_numerals(text) == ["5 x2"]
 
 
 def test_n813_command_ack_is_not_an_answer_about_music():
