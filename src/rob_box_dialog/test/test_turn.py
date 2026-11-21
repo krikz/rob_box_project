@@ -685,7 +685,7 @@ def test_3995_bare_animation_twice_runs_it_and_code_speaks_not_silence():
     assert len(ports.asked) == 2 and agg.llm_calls == 2
     assert ports.executed == [[("play_animation", dict(SLEEP.args))]]
     assert len(ports.said) == 1 and ports.said[0][0] in phrases.catalog()[kn.SILENT_ANSWER_PHRASE]
-    assert ports.said[0][2] != "sad", "анимация исполнена — фраза не грустная"
+    assert ports.said[0][2] is None, "анимация исполнена — фраза не грустная"
     assert ports.stages[-1] == ("done", "done", f"invalid_salvaged:{kn.VIOLATION_SILENT_ANSWER}")
 
 
