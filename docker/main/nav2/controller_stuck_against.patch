@@ -112,7 +112,7 @@
 +    "if os.path.isdir(os.path.join(p, 'rob_box_teleop')) and p not in sys.path:\n"
 +    "    sys.path.insert(0, p)\n";
 +  PyGILState_STATE gil = PyGILState_Ensure();
-+  PyObject * ran = PyRun_SimpleString(code);
++  int ran = PyRun_SimpleString(code);
 +  if (ran != 0) {
 +    PyErr_Clear();
 +  }
