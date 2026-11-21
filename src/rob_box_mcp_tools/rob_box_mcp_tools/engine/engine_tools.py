@@ -52,9 +52,9 @@ from rob_box_music.theme import ThemeProfile, match_style_text, match_window_tex
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from rob_box_music.request_slots import RequestSlots
-from rob_box_music.source import (CACHE, GEN_KINDS, GENERATE, SYNTH, Route, SourceAsk, ask_engine, blank_engine,
-                                  cache_text, decline_text, engine_route, gen_kind, route_note, settle_engine,
-                                  source_ask)
+from rob_box_music.source import (CACHE, COVER_AND_VOCAL, GEN_KINDS, GENERATE, SYNTH, Route, SourceAsk, ask_engine,
+                                  blank_engine, cache_text, cover_and_vocal_text, decline_text, engine_route,
+                                  gen_kind, route_note, settle_engine, source_ask)
 from rob_box_music.works import RTTTL, SCORE, key_slot
 
 from .brief import split_brief, unsupported, unsupported_note
@@ -455,6 +455,20 @@ def tool_result(data: Dict[str, Any], what: str) -> MCPToolResult:
         from rob_box_dialog_host.media_phrases import no_more_error
         return MCPToolResult(success=False, data=data, error=no_more_error(data["message"]))
     return MCPToolResult(success=False, data=data, error=f"{what}: {data.get('reason')}")
+
+
+def _cover_and_vocal(ask: SourceAsk, work: Any) -> Optional[MCPToolResult]:
+    """Одна реплика просит и кавер названной пьесы, и вокал (#4014, ADR-0176).
+
+    Факт — слот ``ask.cover_and_vocal`` (глаголы пути, не новая регулярка) и собранная названная пьеса.
+    Отказ до маршрута: ни кавер, ни песня робота не стартуют. Фраза — :func:`cover_and_vocal_text`.
+    «Спой <название>» слота не ставит — остаётся ``named_song`` (#4015).
+    """
+    if not ask.cover_and_vocal or work is None or not work.named:
+        return None
+    payload = {"ok": False, "reason": SOURCE_DECLINED, "route": f"decline:{COVER_AND_VOCAL}"}
+    payload["message"] = cover_and_vocal_text(work)
+    return tool_result(payload, _NOT_PLAYING[True])
 
 
 class DjSetTool(MCPTool):
@@ -912,6 +926,9 @@ class RequestMusicTool(MCPTool):
         if _asked_back(piece):  # непонятно, что названо (#4016): переспрос, а не песня или пьеса по обрывку
             return tool_result(piece, what)
         work = cover_work(piece) if self._cover is not None else None  # исполнителя кавера нет — кавер-пути нет
+        joint = _cover_and_vocal(ask, work)
+        if joint is not None:  # и кавер, и вокал (#4014): отказ до маршрута, ни кавер, ни песня не стартуют
+            return joint
         route = self._source.route(ask, piece=classic, work=work, gen_failed=gen_failed)
         bridge = is_bridge(route, self._cover)
         if route.kind != SYNTH and not bridge:

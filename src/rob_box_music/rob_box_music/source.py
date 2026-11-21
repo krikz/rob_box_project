@@ -85,6 +85,9 @@ REASON_WORDS = {
     # «спой <названное произведение>» (#4015): генерация подключена, но песня робота — свой текст (ADR-0158 §3.4),
     # чужих слов в ней нет; это не «не подключено» и не провал сервиса
     "named_song": "чужие песни по названию я не пою — только свои",
+    # одна реплика просит и кавер названной пьесы, и вокал (#4014, ADR-0176): кавер вокала не несёт, песня робота —
+    # свой текст; склейки этих двух путей нет, это не «чужие песни по названию» (#4015)
+    "cover_and_vocal": "кавер — без вокала, а песня робота поётся своим текстом, не чужим",
 }
 #: Причина «спеть названное произведение нельзя» (:data:`REASON_WORDS`): человек назвал произведение, каталог его
 #: нашёл (``CoverWork.named``), а петь просили — кандидата песни нет до выбора (:func:`source_candidates`), фраза —
@@ -93,6 +96,11 @@ NAMED_SONG = "named_song"
 #: Что робот может с названным произведением вместо песни: мелодия нашлась в каталоге (``CoverWork`` строится только
 #: из собранной пьесы), её сыграет «сыграй <название>».
 NAMED_SONG_OFFER = "Могу сыграть её мелодию."
+#: Причина «в одной реплике и кавер, и вокал» (:data:`REASON_WORDS`, #4014, ADR-0176). Не :data:`NAMED_SONG`:
+#: человек просил и сыграть названную пьесу, и спеть её, а не только спеть чужое. Склейки путей нет.
+COVER_AND_VOCAL = "cover_and_vocal"
+#: Что можно вместо склейки: кавер без вокала — отдельной просьбой «сыграй», песня робота — своим текстом.
+COVER_AND_VOCAL_OFFER = "Могу сыграть кавер без вокала или спеть песню своим текстом — вместе это не одно."
 #: Виды генерации, которые заказывает тул ``generate_music`` (одна таблица видов; кавер — только по пьесе заказа,
 #: ADR-0158 PR-4). Литерал: enum схемы тула читает генератор каталога (``tools/gen_tool_catalog.py``,
 #: ``SHARED_CONSTANT_MODULES``).
@@ -153,6 +161,9 @@ class SourceAsk:
     engine: str = ""
     tweak: bool = False
     live: str = ""
+    #: Одна реплика просит и сыграть/сгенерировать названное, и спеть (#4014). Поле в конце: позиционные
+    #: ``SourceAsk(...)`` прежних тестов не сдвигаются. Ставит :func:`source_ask`, не промпт.
+    cover_and_vocal: bool = False
 
     def describe(self) -> str:
         flags = [name for name in ("generated", "vocal", "robot_voice", "fresh", "own", "live") if getattr(self, name)]
@@ -335,8 +346,9 @@ def source_ask(text: str) -> SourceAsk:
     """Слоты просьбы о пути из слов человека (код, без LLM)."""
     kind = sing_kind(text)
     live = kind if kind and sing_markers(text) == LIVE else ""
+    joint = cover_and_vocal_asked(text)
     return replace(_path_ask(text, kind), genre=ask_genre(text), engine=ask_engine(text), tweak=ask_tweak(text),
-                   live=live)
+                   live=live, cover_and_vocal=joint)
 
 
 _CLAUSE_TOKEN_RE = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*|[.,!?;:—–]")
@@ -675,6 +687,33 @@ def sing_kind(text: str) -> str:
       споёшь?», «давай споём/сочиним» — просьба."""
     kinds = {kind for _verb, kind in _asked_verbs(text)}
     return "rap" if "rap" in kinds else "song" if kinds else ""
+
+
+def _table_verb(text: str, table: Sequence[str]) -> bool:
+    """В реплике есть глагол из ``table`` как просьба, не после отрицания.
+
+    «Сыграй» и «сгенерируй» пением без своего дополнения не считаются, поэтому :func:`_asked_verbs` их не отдаёт.
+    Слово берётся из той же таблицы, новой регулярки нет.
+    """
+    words = set(table)
+    for _start, clause in _clauses(_phrase(text)):
+        for i, word in enumerate(clause):
+            if word in words and not _not_asked(clause, i, False):
+                return True
+    return False
+
+
+def cover_and_vocal_asked(text: str) -> bool:
+    """Одна реплика просит и кавер (сыграть / сгенерировать), и вокал (#4014, ADR-0176).
+
+    Факт маршрута, не новая регулярка: «сыграй» — ``SING_PLAY_VERBS``, «сгенерируй» — ``SING_CREATE_VERBS``,
+    «спой» — глагол, который уже читает :func:`_asked_verbs` (``SING_VERBS``). «Сыграй X» или «сгенерируй рок»
+    без «спой» — не этот факт. «Спой X» без просьбы сыграть или сгенерировать — не этот факт (#4015).
+    """
+    verbs = {verb for verb, _kind in _asked_verbs(text)}
+    sings = bool(verbs & set(kn.SING_VERBS))
+    plays = _table_verb(text, kn.SING_PLAY_VERBS) or _table_verb(text, tuple(kn.SING_CREATE_VERBS))
+    return sings and plays
 
 
 def _generation_asked(text: str) -> bool:
@@ -1148,6 +1187,11 @@ def _named_cell(ask: SourceAsk, ctx: SourceContext, piece: bool) -> Optional[Tup
     return (synth,) if synth is not None else None
 
 
+def _named_piece_reason(ask: SourceAsk) -> str:
+    """Названная пьеса, которую просят спеть: и кавер и вокал — свой отказ (#4014), иначе чужая песня по названию."""
+    return COVER_AND_VOCAL if ask.cover_and_vocal else NAMED_SONG
+
+
 def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
                       work: Optional[CoverWork] = None) -> Tuple[Tuple[Option, ...], str]:
     """``(кандидаты, почему генерации нет)``. Порядок — синтез, генерация, кэш; звучащих нет — ``decline:<причина>``
@@ -1155,6 +1199,8 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     Пьеса с ``work`` (петь не просили) — вместо генерации кандидаты кавера (:func:`_cover_options`, ADR-0158 PR-4).
     Пьесу назвал человек (``work.named``) и просит спеть («спой Running Up That Hill», #4015) — кандидата песни нет,
     причина :data:`NAMED_SONG`: песня робота — свой текст, чужих слов у него нет (ADR-0158 §3.4); это не ``not_wired``.
+    Та же пьеса и факт «и сыграй, и спой» (``ask.cover_and_vocal``, #4014) — своя причина :data:`COVER_AND_VOCAL`:
+    ни кавер, ни песня; это не :data:`NAMED_SONG` и не склейка путей.
     Пьесу подобрал код («спой что-нибудь», «спой народную песню») — песня робота, как без пьесы.
     Вилка Шифу 27.10 (2×2): синт назван и петь просят (``ask.live`` — #4079, или пение от тула генерации) — один
     ``live:<вид>``: поёт робот сам (``perform`` диалога); синт назван без пения — один синтез (жанр, который синт не
@@ -1166,8 +1212,8 @@ def source_candidates(ask: SourceAsk, ctx: SourceContext, piece: bool = False,
     if piece and work is not None and not ask.vocal:
         covers, reason = _cover_options(ask, ctx, work)
         options = [o for o in [synth, *covers] if o is not None]
-    elif piece and work is not None and work.named:  # спеть названное (синтез не поёт): песни на чужое нет
-        options, reason = [], NAMED_SONG
+    elif piece and work is not None and work.named:  # названное: и сыграть и спеть — свой отказ, иначе named_song
+        options, reason = [], _named_piece_reason(ask)
     else:
         gen, reason = _gen_option(ask, ctx)
         options = [o for o in (synth, gen) if o is not None] + ([] if piece else _cache_options(ask, ctx))
@@ -1374,6 +1420,12 @@ def cache_text(route: Route) -> str:
     return " ".join(p for p in (_excuse(route), f"Ставлю {what}: {title}.") if p)
 
 
+def cover_and_vocal_text(work: CoverWork) -> str:
+    """«Сыграй X и спой» (#4014): фраза из :data:`COVER_AND_VOCAL`, не из :data:`NAMED_SONG` и не из промпта."""
+    title = work.spoken or work.title
+    return f"«{title}» так не сделаю: {REASON_WORDS[COVER_AND_VOCAL]}. {COVER_AND_VOCAL_OFFER}"
+
+
 def named_song_text(work: CoverWork) -> str:
     """«Спой <названное>» (#4015): что назвали, настоящая причина (:data:`NAMED_SONG`, не «не подключено») и что можно
     вместо — мелодию этого же произведения (каталог её нашёл: ``CoverWork`` есть только у собранной пьесы)."""
@@ -1384,9 +1436,12 @@ def decline_text(route: Route) -> str:
     """Честный отказ (звука нет; только когда генерации физически нет — ключ, деньги, сервис): что просили, почему
     нельзя и другая клетка вилки Шифу 27.10 — песню робот споёт сам вживую под синт (:data:`LIVE_OFFER`), инструментал
     сыграет своим (стили, которые синтез играет). Путь ``live:*`` (#4079) — поёт сам робот, не тул музыки: тулу —
-    :data:`LIVE_TOOL_TEXT` (генерацию не запускаю). Спеть просили названное произведение — :func:`named_song_text`."""
+    :data:`LIVE_TOOL_TEXT` (генерацию не запускаю). Спеть просили названное произведение — :func:`named_song_text`.
+    И кавер, и вокал в одной реплике — :func:`cover_and_vocal_text` (#4014), не фраза :data:`NAMED_SONG`."""
     if route.kind == LIVE:
         return LIVE_TOOL_TEXT
+    if route.gen_reason == COVER_AND_VOCAL and route.work is not None:
+        return cover_and_vocal_text(route.work)
     if route.gen_reason == NAMED_SONG and route.work is not None:
         return named_song_text(route.work)
     head = _excuse(route) or f"Сыграть это сейчас не могу: {REASON_WORDS.get(route.gen_reason, 'нечем')}."
@@ -1410,3 +1465,4 @@ __all__ += ["BY_CODE", "LIVE", "LIVE_OFFER", "LIVE_OFFER_BY_REASON", "LIVE_TOOL_
             "sing_candidates", "sing_kind", "sing_markers", "synth_key"]
 __all__ += ["fork_cell", "fork_gen_kind"]
 __all__ += ["GEN_KINDS", "NAMED_SONG", "NAMED_SONG_OFFER", "SONG_GEN_KINDS", "named_song_text"]
+__all__ += ["COVER_AND_VOCAL", "COVER_AND_VOCAL_OFFER", "cover_and_vocal_asked", "cover_and_vocal_text"]
