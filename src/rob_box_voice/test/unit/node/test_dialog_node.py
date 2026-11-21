@@ -501,6 +501,61 @@ def test_clear_stop_interrupt_cancels_speech_of_epoch(node):
     assert _published(node, "/voice/speech/cancel")
 
 
+def _sound_answer_lines(node):
+    """Строки режима, которые нода реально отдала логгеру. Префикс один — приёмка грепает его.
+
+    Логгер берётся тот, что нода захватила на старте (``RosLogHandler``): повторный ``get_logger()``
+    в заглушке rclpy — уже другой мок, и строки хода в нём нет.
+    """
+    logger = node._package_logs._ros
+    return [
+        call.args[0]
+        for call in logger.info.call_args_list
+        if call.args and isinstance(call.args[0], str) and call.args[0].startswith("🔇 [sound-answer]")
+    ]
+
+
+def test_turn_logs_mode_enable_and_disable(node):
+    """Включение и снятие пишутся из хода, до ответа модели. Режима нет — строки нет."""
+    snap = node._session.snapshot
+    node._sound_answer.gate.observe("привет", snap.session_id, snap.session_generation)
+    dn.sound_answer_line(node)
+    assert _sound_answer_lines(node) == []
+
+    node._on_utterance(_utterance("Робот, отвечай звуками"))
+    node.last_turn.result(timeout=10)
+    assert _sound_answer_lines(node)[0] == "🔇 [sound-answer] включён"
+    node._on_utterance(_utterance("Робот, обычным голосом"))
+    node.last_turn.result(timeout=10)
+    assert _sound_answer_lines(node)[-1] == "🔇 [sound-answer] снят"
+
+
+def test_speech_port_logs_the_chosen_clip_and_an_empty_catalog(node, tmp_path):
+    """Клип и пустой каталог логирует порт речи, когда шаг реально подменяет ответ."""
+    (tmp_path / "bird.wav").write_bytes(b"")
+    gate = node._sound_answer.gate
+    gate.clip_dir = str(tmp_path)
+    snap = node._session.snapshot
+    gate.observe("отвечай звуками", snap.session_id, snap.session_generation)
+    dn.sound_answer_line(node)
+
+    assert node._ports.say("t", 0, "привет") == ""
+    assert "🔇 [sound-answer] клип 'bird'" in _sound_answer_lines(node)
+
+    empty = tmp_path / "empty.json"
+    empty.write_text('{"version": "empty", "clips": []}', encoding="utf-8")
+    gate.manifest_path = str(empty)
+    spoken = node._ports.say("t2", 0, "хорошо")
+    assert spoken  # пустой каталог речь не съедает
+    assert "🔇 [sound-answer] клипа нет (каталог пуст)" in _sound_answer_lines(node)
+
+
+def test_voice_stop_logs_that_stop_aborted_the_clip(node):
+    """«Стоп» дошёл до владельца клипа — одна строка обрыва, не текст ответа."""
+    node._interrupt("стоп", "u-stop", "utterance")
+    assert "🔇 [sound-answer] 'стоп' оборвал клип" in _sound_answer_lines(node)
+
+
 def test_voice_stop_reaches_the_clip_owner_and_late_finished_stays_silent(node, tmp_path):
     """Голосовой «стоп» снимает ожидание и поднимает флаг, по которому клип — ``stopped``, не ``finished``.
 

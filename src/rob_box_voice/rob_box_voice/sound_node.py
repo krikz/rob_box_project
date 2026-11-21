@@ -35,6 +35,7 @@ from .core.sound_answer import (
     arm,
     clip_file_ready,
     clip_outcome,
+    clip_path,
     default_manifest,
     load_manifest,
 )
@@ -62,6 +63,27 @@ def abort_chimera(node, data: str) -> None:
         return
     if isinstance(body, dict):
         node.abort_request(str(body.get("abort") or ""))
+
+
+def load_answer_clips(node) -> int:
+    """Клипы режима «отвечай звуками» в ``node.sounds`` — по id, из каталога конфига.
+
+    Каталог пуст или файла нет — клипа в словаре нет, и это не ошибка: ``select_sound`` честно
+    скажет ``not_found``. Громкость та же, что у остальных звуков. Возвращает, сколько легло.
+    """
+    loaded = 0
+    for clip in load_manifest(node.sound_answer_manifest).clips:
+        path = clip_path(node.sound_answer_clip_dir, clip)
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            audio = AudioSegment.from_wav(path)
+            node.sounds[clip.clip_id] = audio + node.volume_db if node.volume_db else audio
+            loaded += 1
+            node.get_logger().info(f"  ✓ клип {clip.clip_id}: {len(audio)}ms, {audio.frame_rate}Hz")
+        except Exception as exc:  # noqa: BLE001 — битый файл не роняет ноду, клипа просто нет
+            node.get_logger().error(f"  ❌ клип {clip.clip_id} не прочитан: {exc}")
+    return loaded
 
 
 def drop_queued_answer_clips(node) -> None:
@@ -94,7 +116,6 @@ def dispatch_sound_stop(node, data: str) -> None:
         return
     if body.startswith("{"):
         abort_chimera(node, body)
-
 
 
 class SoundNode(SoundRequestsMixin, Node):
@@ -283,6 +304,9 @@ class SoundNode(SoundRequestsMixin, Node):
                     self.get_logger().error(f"  ❌ Ошибка загрузки {filename}: {e}")
 
         self.get_logger().info(f"✅ Загружено звуков: {loaded_count}/{len(os.listdir(self.sound_pack_dir))}")
+        clips = load_answer_clips(self)
+        if clips:
+            self.get_logger().info(f"✅ Клипов режима «отвечай звуками»: {clips}")
 
         # Информация об аудио устройстве
         if self.device_index is not None:

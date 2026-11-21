@@ -187,6 +187,48 @@ class AnswerChoice:
     reason: str
 
 
+@dataclass(frozen=True)
+class ModeOutcome:
+    """Исход шага режима. Фразу лога строит код из этих полей, не из текста ответа.
+
+    ``action`` — что сделал код: ``enabled`` / ``disabled`` / ``clip`` / ``no_clip`` /
+    ``stopped``. ``clip_id`` пуст, когда клипа в этом шаге нет. ``reason`` — почему так
+    вышло (``catalog_empty``, ``precise``, ``no_file``, роль клипа, форма команды).
+    """
+
+    action: str
+    clip_id: str = ""
+    reason: str = ""
+
+
+#: Префикс строки лога. Один на все исходы: приёмка грепает его в ``docker logs``.
+LOG_PREFIX = "🔇 [sound-answer]"
+#: Фраза исхода по действию. Нет действия в таблице — фраза строится из причины.
+_ACTION_LINES = {
+    "enabled": "включён",
+    "disabled": "снят",
+}
+#: Фраза исхода «клипа нет» по причине. Нет причины в таблице — причина пишется как есть.
+_NO_CLIP_LINES = {
+    "catalog_empty": "клипа нет (каталог пуст)",
+    "no_catalog": "клипа нет (каталог пуст)",
+    "precise": "клипа нет (точный текст)",
+}
+
+
+def log_line(outcome: ModeOutcome) -> str:
+    """Одна строка лога из исхода. Текст ответа модели сюда не входит — только поля результата."""
+    if outcome.action in _ACTION_LINES:
+        return f"{LOG_PREFIX} {_ACTION_LINES[outcome.action]}"
+    if outcome.action == "clip":
+        return f"{LOG_PREFIX} клип '{outcome.clip_id}'"
+    if outcome.action == "stopped":
+        return f"{LOG_PREFIX} '{outcome.reason}' оборвал клип"
+    if outcome.reason == "no_file":
+        return f"{LOG_PREFIX} клипа нет (файла нет: '{outcome.clip_id}')"
+    return f"{LOG_PREFIX} {_NO_CLIP_LINES.get(outcome.reason, 'клипа нет (' + outcome.reason + ')')}"
+
+
 def default_manifest() -> str:
     """Манифест-заглушка из пакета. На роботе его подменяет конфиг, смонтированный томом.
 
@@ -397,6 +439,8 @@ class SoundAnswerGate:
         self.name_source = name_source
         self.mode = Mode()
         self._pending: dict = {}
+        # Последний исход, который хост ещё не залогировал. ``None`` — логировать нечего.
+        self.last_outcome: Optional[ModeOutcome] = None
 
     def names(self) -> Tuple[str, ...]:
         """Имена, которые клипом не подменяются: статический список плюс то, что источник отдаёт сейчас."""
@@ -408,13 +452,16 @@ class SoundAnswerGate:
 
         Ожидание клипа ``stop`` тоже не чистит — это делает :meth:`stop_pending`, когда обрыв
         реально дошёл до владельца клипа. Команда без обрыва «Сказал.» не отменяет.
+        Исход включения и снятия остаётся в :attr:`last_outcome` — строку лога строит хост.
         """
         self._drop_if_new_session(session_id, session_generation)
         kind = classify(text)
         if kind == "enable":
             self.mode = Mode(True, session_id, int(session_generation))
+            self.last_outcome = ModeOutcome("enabled")
         elif kind == "disable":
             self.mode = Mode(False, session_id, int(session_generation))
+            self.last_outcome = ModeOutcome("disabled")
         return kind
 
     def active(self, session_id: str, session_generation: int) -> bool:
@@ -424,19 +471,26 @@ class SoundAnswerGate:
         """Идентификатор клипа вместо этой реплики, либо ``None`` — реплика звучит речью.
 
         Точный текст (число, имя, причина ошибки) клипом не подменяется и в пару к клипу не идёт.
-        Клипа нет в каталоге или файла нет — тоже речь: врать «сказал» нечем.
+        Клипа нет в каталоге или файла нет — тоже речь: врать «сказал» нечем. Почему клипа нет,
+        остаётся в :attr:`last_outcome` — строку лога из него строит хост, не этот модуль.
         """
         if not self.mode.live(session_id, session_generation) or not (text or "").strip():
             return None
         if classify(text):
             return None
         choice = choose(text, load_manifest(self.manifest_path), self.names())
-        if choice.clip_id is None or choice.precise:
+        if choice.precise:
+            self.last_outcome = ModeOutcome("no_clip", reason="precise")
+            return None
+        if choice.clip_id is None:
+            self.last_outcome = ModeOutcome("no_clip", reason=choice.reason or "no_catalog")
             return None
         clip = load_manifest(self.manifest_path).by_id(choice.clip_id)
         if clip is None or not file_ready(self.clip_dir, clip):
+            self.last_outcome = ModeOutcome("no_clip", clip_id=choice.clip_id, reason="no_file")
             return None
         self._pending[request_id] = choice.clip_id
+        self.last_outcome = ModeOutcome("clip", clip_id=choice.clip_id, reason=choice.reason)
         return choice.clip_id
 
     def stop_pending(self) -> Tuple[str, ...]:
@@ -444,6 +498,11 @@ class SoundAnswerGate:
         pending = tuple(self._pending)
         self._pending.clear()
         return pending
+
+    def take_outcome(self) -> Optional[ModeOutcome]:
+        """Забрать последний исход и забыть его. Хост логирует каждый исход один раз."""
+        outcome, self.last_outcome = self.last_outcome, None
+        return outcome
 
     def trigger_payload(self, clip_id: str, request_id: str) -> str:
         """Тело ``/voice/sound/trigger``: тот же JSON, что у ``play_sound``."""
@@ -526,6 +585,7 @@ class SpeechAsClip:
         request_id = self.gate.new_request_id()
         # Поколение сессии, не эпоха: стоп эпохи поднимает, режим после него жив (ADR-0175 §1.2).
         clip_id = self.gate.instead_of_speech(text, snap.session_id, _session_generation(snap), request_id)
+        # Исход шага забирает хост (:func:`take_speech_outcome`) и пишет его в лог. Здесь логгера нет.
         if clip_id is None:
             self.spoken.append(text)
             if boundary != "none":
@@ -543,6 +603,13 @@ class SpeechAsClip:
         """Фраза кода из ``finished`` — исходной речью, не клипом. Иначе «Сказал.» сам станет звуком."""
         self.spoken.append(phrase)
         return self._say(turn_id, epoch, phrase)
+
+
+def take_speech_outcome(clip: Any) -> Optional[ModeOutcome]:
+    """Исход последнего шага обёртки. Хост логирует его и забывает — второй строки из того же шага нет."""
+    gate = getattr(clip, "gate", None)
+    take = getattr(gate, "take_outcome", None)
+    return take() if take is not None else None
 
 
 def phrase_from_event(clip: Any, msg: Any) -> Optional[str]:

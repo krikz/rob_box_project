@@ -13,6 +13,8 @@ from rob_box_dialog_msgs.msg import SoundEvent
 from rob_box_voice.core.sound_answer import (
     DISABLE_FORMS,
     ENABLE_FORMS,
+    LOG_PREFIX,
+    ModeOutcome,
     SoundAnswerGate,
     SpeechAsClip,
     StopFlag,
@@ -23,7 +25,9 @@ from rob_box_voice.core.sound_answer import (
     finished_phrase,
     keeps_precise_text,
     load_manifest,
+    log_line,
     phrase_from_event,
+    take_speech_outcome,
 )
 
 _MANIFEST = Path(__file__).resolve().parents[3] / "config" / "sound_answer_manifest.json"
@@ -168,6 +172,69 @@ def test_finished_phrase_is_spoken_not_played_again(tmp_path):
     later = type("E", (), {"request_id": event.request_id, "kind": SoundEvent.KIND_SKIPPED, "reason": "stopped"})()
     assert phrase_from_event(clip, later) is None
     assert spoken == [_SAID]
+
+
+def _lines(*outcomes):
+    return [log_line(item) for item in outcomes]
+
+
+def test_log_line_is_built_from_the_outcome_not_from_the_reply():
+    """Фраза лога — из полей исхода. Текст ответа модели в строку не входит (ADR-0148)."""
+    lines = _lines(
+        ModeOutcome("enabled"),
+        ModeOutcome("disabled"),
+        ModeOutcome("clip", clip_id="bird", reason="greeting"),
+        ModeOutcome("no_clip", reason="no_catalog"),
+        ModeOutcome("no_clip", reason="catalog_empty"),
+        ModeOutcome("stopped", reason="стоп"),
+        ModeOutcome("no_clip", clip_id="bird", reason="no_file"),
+        ModeOutcome("no_clip", reason="precise"),
+    )
+    assert lines == [
+        f"{LOG_PREFIX} включён",
+        f"{LOG_PREFIX} снят",
+        f"{LOG_PREFIX} клип 'bird'",
+        f"{LOG_PREFIX} клипа нет (каталог пуст)",
+        f"{LOG_PREFIX} клипа нет (каталог пуст)",
+        f"{LOG_PREFIX} 'стоп' оборвал клип",
+        f"{LOG_PREFIX} клипа нет (файла нет: 'bird')",
+        f"{LOG_PREFIX} клипа нет (точный текст)",
+    ]
+    assert all("Привет, я робот" not in line for line in lines)
+
+
+def test_gate_records_enable_disable_clip_and_empty_catalog(tmp_path):
+    """Гейт оставляет исход, строку не пишет: логгера у модуля нет."""
+    empty = tmp_path / "empty.json"
+    empty.write_text('{"version": "empty", "clips": []}', encoding="utf-8")
+    gate = SoundAnswerGate(str(empty), str(tmp_path))
+    assert gate.observe("отвечай звуками", "s", 0) == "enable"
+    assert gate.take_outcome() == ModeOutcome("enabled")
+    assert gate.take_outcome() is None  # исход забран один раз
+    gate.observe("отвечай звуками", "s", 0)
+    assert gate.instead_of_speech("привет", "s", 0, "r-empty") is None
+    assert gate.take_outcome() == ModeOutcome("no_clip", reason="no_catalog")
+    assert gate.observe("обычным голосом", "s", 0) == "disable"
+    assert gate.take_outcome() == ModeOutcome("disabled")
+
+
+def test_ready_clip_outcome_is_taken_by_the_host_not_logged_here(tmp_path):
+    (tmp_path / "bird.wav").write_bytes(b"")
+    published = []
+
+    class _Snap:
+        session_id, epoch, session_generation = "s", 0, 0
+
+    class _Session:
+        snapshot = _Snap()
+
+    gate = SoundAnswerGate(str(_MANIFEST), str(tmp_path))
+    clip = SpeechAsClip(gate, lambda *a, **k: "speech", published.append, _Session())
+    gate.observe("отвечай звуками", "s", 0)
+    gate.take_outcome()  # исход включения забирает ход, не обёртка речи
+    assert clip("t", 0, "привет") == ""
+    assert take_speech_outcome(clip) == ModeOutcome("clip", clip_id="bird", reason="greeting")
+    assert take_speech_outcome(clip) is None
 
 
 def test_stop_generation_is_not_finished():
