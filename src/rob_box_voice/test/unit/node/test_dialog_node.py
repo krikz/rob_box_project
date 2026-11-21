@@ -22,6 +22,7 @@ M = install_dialog_msgs_stub()
 try:  # настоящий rosidl-пакет (CI) или заглушка сервиса DialogControl (Windows)
     import rob_box_dialog_msgs.srv  # noqa: F401
 except ImportError:
+
     class _Request:
         ACTION_HOLD, ACTION_RESUME, ACTION_RESET = 0, 1, 2
 
@@ -29,16 +30,15 @@ except ImportError:
             self.action, self.set_by, self.ttl_s = action, set_by, ttl_s
 
     _srv = types.ModuleType("rob_box_dialog_msgs.srv")
-    _srv.DialogControl = type("DialogControl", (), {"Request": _Request,
-                                                    "Response": lambda: types.SimpleNamespace()})
+    _srv.DialogControl = type("DialogControl", (), {"Request": _Request, "Response": lambda: types.SimpleNamespace()})
     sys.modules["rob_box_dialog_msgs.srv"] = _srv
     sys.modules["rob_box_dialog_msgs"].srv = _srv
 
-from rob_box_dialog_msgs.srv import DialogControl  # noqa: E402
 from rob_box_dialog import phrases  # noqa: E402
 from rob_box_dialog.command import parse  # noqa: E402
-from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_dialog_host.command_bridge import CommandResponse, for_turn  # noqa: E402
+from rob_box_dialog_msgs.srv import DialogControl  # noqa: E402
+from rob_box_llm.provider import ToolResult  # noqa: E402
 from rob_box_voice import dialog_node as dn  # noqa: E402
 
 TIME = type(M.TurnEvent().stamp)
@@ -74,12 +74,19 @@ def node(monkeypatch, tmp_path):
     # путь БД памяти инструментов нода берёт при старте (``rob_box_core.tools_db``): без env тест открывал бы настоящую
     # ``/data/voice_memory.db`` хоста, где он идёт (на роботе - живые факты людей). Тест, что задал путь сам до ноды,
     # его и получит.
-    monkeypatch.setenv(tools_db.TOOLS_DB_ENV, os.environ.get(tools_db.TOOLS_DB_ENV) or str(tmp_path / "tools_isolated.db"))
+    monkeypatch.setenv(
+        tools_db.TOOLS_DB_ENV, os.environ.get(tools_db.TOOLS_DB_ENV) or str(tmp_path / "tools_isolated.db")
+    )
     llm = _LLM([_reply({"speech": "Привет, я робот."})])
     chat_llm = _LLM([_reply({"speech": "Привет из чата."})])
     tools = _Tools()
-    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
-        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
+    monkeypatch.setattr(
+        dn,
+        "build_llm",
+        lambda node, counter, agent="personality": (
+            (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")
+        ),
+    )
     monkeypatch.setattr(dn, "build_tools", lambda node: tools)
     monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: tools)
     made = dn.DialogNode()
@@ -107,9 +114,16 @@ def _published(made, topic):
 
 def test_wiring_v2_topics_and_no_v1_dialogue_topics(node):
     subs = set(_topics(node, "_subscribers"))
-    assert {"/voice/stt/utterance", "/voice/speaker/result", "/voice/speech/event", "/voice/sound/event",
-            "/voice/music/state", "/voice/music/event", "/voice/providers/state",
-            "/dialog/interrupt_request"} <= subs
+    assert {
+        "/voice/stt/utterance",
+        "/voice/speaker/result",
+        "/voice/speech/event",
+        "/voice/sound/event",
+        "/voice/music/state",
+        "/voice/music/event",
+        "/voice/providers/state",
+        "/dialog/interrupt_request",
+    } <= subs
     pubs = set(_topics(node, "_publishers"))
     assert {"/dialog/session", "/dialog/intent"} <= pubs  # /dialog/plan_event — plan_host в build_tools (подменён)
     for legacy in ("/voice/dialogue/response", "/voice/tts/request", "/dialogue/control", "/dialogue/control_ack"):
@@ -167,11 +181,15 @@ class _AloudTools:
 def _aloud_node(monkeypatch, hold=False):
 
     story = "Жил-был робот."
-    command = {
-        "speech": story, "actions": [{"tool": "say_aloud", "args": {"text": story}}]}
+    command = {"speech": story, "actions": [{"tool": "say_aloud", "args": {"text": story}}]}
     llm, chat_llm, chat_tools = _LLM([]), _LLM([_reply(command)]), _AloudTools()
-    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
-        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")))
+    monkeypatch.setattr(
+        dn,
+        "build_llm",
+        lambda node, counter, agent="personality": (
+            (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (llm, "Ты робот.")
+        ),
+    )
     monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
     monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: chat_tools)
     made = dn.DialogNode()
@@ -200,7 +218,8 @@ def test_say_aloud_from_chat_confirms_by_the_finished_speech_event_not_by_the_re
         made._on_speech_event(_speech_event(M.SpeechEvent.KIND_FINISHED, "sp-77", seconds=11.6))
         asyncio.run_coroutine_threadsafe(asyncio.sleep(0.1), made._loop).result(5)
         assert [(o.channel_ref, o.text) for o in _published(made, "/dialog/output") if not o.kind][1:] == [
-            ("telegram:42", "Озвучил (12 с).")]
+            ("telegram:42", "Озвучил (12 с).")
+        ]
         assert _published(made, "/voice/speech/request") == []
     finally:
         made.shutdown()
@@ -228,7 +247,9 @@ def test_say_aloud_is_refused_while_the_operator_holds_the_robot(monkeypatch):
         made._on_utterance(_chat_utterance("расскажи историю вслух"))
         made.last_chat_turn.result(timeout=10)
         assert made.test_chat_tools.calls == []
-        assert "Не озвучил: оператор занял робота." in [o.text for o in _published(made, "/dialog/output") if not o.kind]
+        assert "Не озвучил: оператор занял робота." in [
+            o.text for o in _published(made, "/dialog/output") if not o.kind
+        ]
     finally:
         made.shutdown()
 
@@ -280,19 +301,22 @@ def _long(text, uid, ago=0.0, length=3.0):
 
 def _voice(payload):
     from rob_box_core.speaker_wire import fill_speaker_result
+
     return fill_speaker_result(M.SpeakerResult(), payload)
 
 
 def test_bare_wake_pickup_gives_llm_background_phrases_with_their_authors_3892(node):
     """Акт 3 (#3892): Борис и незнакомец говорят без вейка (биометрия до и после STT), Саша — голое «Робот»: в
     запросе LLM обе фразы с тегами авторов на момент самой фразы, не текущего собеседника."""
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                             "utterance_id": "u-b"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": "u-b"})
+    )
     node._on_utterance(_background("закажи пиццу на вечер", "u-b"))
     node._on_utterance(_background("не шумите тут", "u-x"))
     node._on_speaker(_voice({"is_known": False, "utterance_id": "u-x"}))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
-                             "utterance_id": "u-r"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9, "utterance_id": "u-r"})
+    )
     node._on_utterance(_background("Робот", "u-r"))
     node.last_turn.result(timeout=10)
     blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
@@ -304,14 +328,17 @@ def test_bare_wake_pickup_gives_llm_background_phrases_with_their_authors_3892(n
 def test_addressed_turn_sees_only_same_speakers_background_phrase_3894(node):
     """ADR-0150 §7.3: Борис и Саша говорят без вейка, Саша спрашивает с вейком — в снимке LLM `recent_unaddressed`
     с фразой Саши и автором; фраза Бориса (другой голос) туда не попадает."""
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                             "utterance_id": "u-b"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": "u-b"})
+    )
     node._on_utterance(_long("закажи пиццу на вечер", "u-b", 6.0))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
-                             "utterance_id": "u-s"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9, "utterance_id": "u-s"})
+    )
     node._on_utterance(_long("мне нужна кофемашина", "u-s", 3.0))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
-                             "utterance_id": "u-q"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9, "utterance_id": "u-q"})
+    )
     node._on_utterance(_long("Робот, что скажешь", "u-q"))
     node.last_turn.result(timeout=10)
     blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
@@ -343,33 +370,39 @@ def test_barge_in_whose_voice_comes_first_gets_its_own_speaker_and_no_foreign_ba
     профилей ждут вердикта) — порядок как у любой фразы: SpeakerResult Саши, затем её Utterance. Собеседник хода —
     Саша, фразы Бориса в `recent_unaddressed` нет. Порядок со стороны биометрии —
     ``test_issue_4145_echo_not_a_voice_profile.test_barge_in_result_reaches_the_dialog_before_its_utterance``."""
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                             "utterance_id": "u-b"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": "u-b"})
+    )
     node._on_utterance(_long("закажи пиццу на вечер", "u-b", 6.0))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
-                             "utterance_id": "u-q"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9, "utterance_id": "u-q"})
+    )
     node._on_utterance(_long("Робот, что скажешь", "u-q"))
     node.last_turn.result(timeout=10)
     blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
     speaker = blob.split("<speaker>")[1].split("</speaker>")[0]
     assert "Саша" in speaker and "Борис" not in speaker
-    recent = blob.split("recent_unaddressed")[1].split("background_since_reply")[0] if "recent_unaddressed" in blob \
-        else ""
+    recent = (
+        blob.split("recent_unaddressed")[1].split("background_since_reply")[0] if "recent_unaddressed" in blob else ""
+    )
     assert "закажи пиццу" not in recent
 
 
 def test_addressed_turn_sees_all_background_of_the_last_3_minutes_3892(node):
     """Решение Шифу 23.10 (В23): Борис и незнакомец говорят без вейка, Саша «Робот, кто говорил на фоне?» — в
-    запросе LLM раздел `background_since_reply` с обеими фразами, авторами и возрастом; ответ робота его не обнуляет, фраза старше окна не попадает."""
+    запросе LLM раздел `background_since_reply` с обеими фразами, авторами и возрастом; ответ робота его не обнуляет, фраза старше окна не попадает.
+    """
     node.test_llm.responses.append(_reply({"speech": "Ещё раз."}))
     node._on_utterance(_long("совсем давняя фраза", "u-old", 200.0))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                             "utterance_id": "u-b"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": "u-b"})
+    )
     node._on_utterance(_long("закажи пиццу на вечер", "u-b", 9.0))
     node._on_utterance(_long("не шумите тут", "u-x", 5.0))
     node._on_speaker(_voice({"is_known": False, "utterance_id": "u-x"}))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9,
-                             "utterance_id": "u-q"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-sasha", "name": "Саша", "confidence": 0.9, "utterance_id": "u-q"})
+    )
     node._on_utterance(_long("Робот, кто говорил на фоне?", "u-q"))
     node.last_turn.result(timeout=10)
     blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
@@ -378,8 +411,12 @@ def test_addressed_turn_sees_all_background_of_the_last_3_minutes_3892(node):
     assert "Борис" in section and "незнакомый голос" in section and "age_s" in section
     said = _published(node, "/voice/speech/request")[0]
     event = M.SpeechEvent()
-    event.kind, event.speech_id, event.agent, event.spoken_chars = M.SpeechEvent.KIND_FINISHED, said.speech_id, \
-        "personality", 7
+    event.kind, event.speech_id, event.agent, event.spoken_chars = (
+        M.SpeechEvent.KIND_FINISHED,
+        said.speech_id,
+        "personality",
+        7,
+    )
     node._on_speech_event(event)
     node._on_utterance(_long("Робот, что ещё", "u-n"))
     node.last_turn.result(timeout=10)
@@ -392,17 +429,28 @@ def test_speech_end_puts_spoken_part_into_window(node):
     node.last_turn.result(timeout=10)
     said = _published(node, "/voice/speech/request")[0]
     event = M.SpeechEvent()
-    event.kind, event.speech_id, event.agent, event.spoken_chars = M.SpeechEvent.KIND_FINISHED, said.speech_id, \
-        "personality", 7
+    event.kind, event.speech_id, event.agent, event.spoken_chars = (
+        M.SpeechEvent.KIND_FINISHED,
+        said.speech_id,
+        "personality",
+        7,
+    )
     node._on_speech_event(event)
     assert [e.content for e in node._engine.log.window()] == ["как дела", "Привет,"]
 
 
-@pytest.mark.parametrize("kind, ended", [
-    (M.SpeechEvent.KIND_FINISHED, True), (M.SpeechEvent.KIND_CANCELLED, True), (M.SpeechEvent.KIND_REJECTED, True),
-    (M.SpeechEvent.KIND_QUEUED, False), (M.SpeechEvent.KIND_SYNTHESIZED, False), (M.SpeechEvent.KIND_STARTED, False),
-    (M.SpeechEvent.KIND_PROGRESS, False),
-])
+@pytest.mark.parametrize(
+    "kind, ended",
+    [
+        (M.SpeechEvent.KIND_FINISHED, True),
+        (M.SpeechEvent.KIND_CANCELLED, True),
+        (M.SpeechEvent.KIND_REJECTED, True),
+        (M.SpeechEvent.KIND_QUEUED, False),
+        (M.SpeechEvent.KIND_SYNTHESIZED, False),
+        (M.SpeechEvent.KIND_STARTED, False),
+        (M.SpeechEvent.KIND_PROGRESS, False),
+    ],
+)
 def test_only_the_end_of_a_speech_puts_its_spoken_part_into_window(node, kind, ended):
     """Конец реплики - ``speech_client.is_speech_end`` (одно знание, ревью PR #4108; своей копии списка видов в ноде нет):
     ``finished``/``cancelled``/``rejected`` кладут озвученную часть в окно, остальные виды - нет: реплика ещё звучит,
@@ -421,14 +469,18 @@ def test_only_the_end_of_a_speech_puts_its_spoken_part_into_window(node, kind, e
 
 def test_control_reset_hold_resume(node):
     response = types.SimpleNamespace()
-    out = node._on_control(DialogControl.Request(action=DialogControl.Request.ACTION_RESET, set_by="operator"),
-                           response)
+    out = node._on_control(
+        DialogControl.Request(action=DialogControl.Request.ACTION_RESET, set_by="operator"), response
+    )
     assert out.ok and out.epoch == 1
-    node._on_control(DialogControl.Request(action=DialogControl.Request.ACTION_HOLD, set_by="operator", ttl_s=60.0),
-                     types.SimpleNamespace())
+    node._on_control(
+        DialogControl.Request(action=DialogControl.Request.ACTION_HOLD, set_by="operator", ttl_s=60.0),
+        types.SimpleNamespace(),
+    )
     assert node._session.snapshot.top("OperatorHold") is not None
-    node._on_control(DialogControl.Request(action=DialogControl.Request.ACTION_RESUME, set_by="operator"),
-                     types.SimpleNamespace())
+    node._on_control(
+        DialogControl.Request(action=DialogControl.Request.ACTION_RESUME, set_by="operator"), types.SimpleNamespace()
+    )
     assert node._session.snapshot.top("OperatorHold") is None
     assert _published(node, "/dialog/session"), "снимок сессии latched-топиком на каждое изменение"
 
@@ -447,6 +499,69 @@ def test_clear_stop_interrupt_cancels_speech_of_epoch(node):
     msg.text_partial, msg.utterance_id = "Робот, стоп", "u2"
     node._on_interrupt(msg)
     assert _published(node, "/voice/speech/cancel")
+
+
+def test_voice_stop_reaches_the_clip_owner_and_late_finished_stays_silent(node, tmp_path):
+    """Голосовой «стоп» снимает ожидание и поднимает флаг, по которому клип — ``stopped``, не ``finished``.
+
+    Раньше диалог публиковал только отмену речи: клип доигрывал, и код говорил «Сказал.» про звук,
+    который останавливали. Исход клипа считает ``clip_outcome`` — та же функция, что ветка потока
+    ``SoundNode.play_sound_thread``. Ноду звука сюда не импортируем: она требует аудио-бэкенды.
+    """
+    from rob_box_dialog_msgs.msg import SoundEvent
+    from rob_box_voice.core.sound_answer import arm, clip_outcome
+
+    node._sound_answer.gate.clip_dir = str(tmp_path)
+    (tmp_path / "bird.wav").write_bytes(b"")
+    node._sound_answer.gate.observe(
+        "отвечай звуками", node._session.snapshot.session_id, node._session.snapshot.session_generation
+    )
+    assert (
+        node._sound_answer.gate.instead_of_speech(
+            "привет", node._session.snapshot.session_id, node._session.snapshot.session_generation, "clip-1"
+        )
+        == "bird"
+    )
+
+    generation = arm(node._sound_answer.stopped)
+    node._interrupt("стоп", "u-stop", "utterance")
+    published = _published(node, "/voice/sound/stop")
+    assert published and published[-1].data == "STOP"
+    assert clip_outcome(node._sound_answer.stopped, generation, True) == "stopped"
+
+    late = SoundEvent()
+    late.request_id, late.kind, late.reason = "clip-1", SoundEvent.KIND_FINISHED, ""
+    node._on_sound_event(late)
+    assert "Сказал." not in node._sound_answer.spoken
+
+
+def test_known_name_from_the_session_is_not_replaced_by_a_clip(node, tmp_path):
+    """«Это Маша» остаётся речью: имя собеседника нода отдаёт гейту сама, тест список не подсовывает."""
+    from rob_box_dialog.session import SpeakerRef
+
+    (tmp_path / "elephant.wav").write_bytes(b"")
+    node._sound_answer.gate.clip_dir = str(tmp_path)
+    node._session.set_speaker(SpeakerRef(name="Маша", name_state="confirmed"))
+    snap = node._session.snapshot
+    node._sound_answer.gate.observe("отвечай звуками", snap.session_id, snap.session_generation)
+    assert (
+        node._sound_answer.gate.instead_of_speech("это Маша", snap.session_id, snap.session_generation, "name-1")
+        is None
+    )
+
+
+def test_reset_clears_the_sound_answer_mode(node, tmp_path):
+    """``DialogControl.reset`` — новая сессия при том же session_id: режим не переживает её."""
+    (tmp_path / "bird.wav").write_bytes(b"")
+    node._sound_answer.gate.clip_dir = str(tmp_path)
+    snap = node._session.snapshot
+    node._sound_answer.gate.observe("отвечай звуками", snap.session_id, snap.session_generation)
+    assert node._sound_answer.gate.active(snap.session_id, snap.session_generation)
+    node._session.reset()
+    fresh = node._session.snapshot
+    assert fresh.session_id == snap.session_id
+    node._sound_answer.gate.observe("привет", fresh.session_id, fresh.session_generation)
+    assert not node._sound_answer.gate.active(fresh.session_id, fresh.session_generation)
 
 
 def test_e2e_db_outside_data_only(node, tmp_path):
@@ -496,8 +611,10 @@ def test_sing_route_takes_the_chooser_mode_of_the_music_path_4079(monkeypatch, m
 
     monkeypatch.setattr(cm, "chooser_from_env", spy)
     params = {"music_chooser": mode}
-    node = types.SimpleNamespace(get_parameter=lambda name: types.SimpleNamespace(value=params[name]),
-                                 get_logger=lambda: logging.getLogger("dialog_node_test"))
+    node = types.SimpleNamespace(
+        get_parameter=lambda name: types.SimpleNamespace(value=params[name]),
+        get_logger=lambda: logging.getLogger("dialog_node_test"),
+    )
     host = dn.build_sing(node, lambda: [])
     assert seen == [mode] and (host._chooser._model is not None) is model  # noqa: SLF001
     assert host("Робот, спой вживую", (), False) == "live:song"
@@ -542,9 +659,9 @@ class _HttpLLM:
         self.cancelled = threading.Event()
 
     async def complete(self, messages, tools=(), settings=None):
+        self.calls += 1
         import httpx
 
-        self.calls += 1
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 await client.post(self.url, json={"messages": []})
@@ -671,8 +788,12 @@ def _voice_changed(requested, applied, provider, speech_id="", agent=speech_clie
     """``voice_changed`` владельца голоса (``speech_owner.voice_changed``: ``agent=system``, без реплики); с
     ``speech_id`` — подмена голоса одной реплики/сегмента (``speech_owner.synthesized``)."""
     event = M.SpeechEvent()
-    event.kind, event.voice_requested, event.voice_applied, event.provider = \
-        M.SpeechEvent.KIND_VOICE_CHANGED, requested, applied, provider
+    event.kind, event.voice_requested, event.voice_applied, event.provider = (
+        M.SpeechEvent.KIND_VOICE_CHANGED,
+        requested,
+        applied,
+        provider,
+    )
     event.speech_id, event.agent, event.turn_id = speech_id, agent, "req-1" if not speech_id else "t-tale"
     return event
 
@@ -683,8 +804,9 @@ def test_4045_segment_voice_substitution_does_not_change_the_robots_voice(node):
     node._on_speech_event(_voice_changed("Reliable_Man", "Reliable_Man", "minimax"))
     before = node._session.snapshot.voice
     assert (before.requested, before.applied, before.provider) == ("Reliable_Man", "Reliable_Man", "minimax")
-    node._on_speech_event(_voice_changed("Wise_Woman", "Reliable_Man", "minimax", speech_id="seg-3",
-                                         agent="personality"))
+    node._on_speech_event(
+        _voice_changed("Wise_Woman", "Reliable_Man", "minimax", speech_id="seg-3", agent="personality")
+    )
     node._on_speech_event(_voice_changed("alena", "Reliable_Man", "minimax", speech_id="line-1", agent="personality"))
     assert node._session.snapshot.voice == before
     node._on_speech_event(_voice_changed("alena", "alena", "yandex"))  # set_voice: владелец голоса ответил
@@ -751,14 +873,20 @@ def _remember(node, tmp_path, person="spk-boris"):
 
     facts = tmp_path / "voice_memory.db"
     conn = sqlite3.connect(facts)
-    conn.execute("CREATE TABLE voice_facts (id INTEGER PRIMARY KEY, fact TEXT, category TEXT, speaker_id TEXT, "
-                 "created_at REAL, updated_at REAL)")
-    conn.execute("INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
-                 "VALUES ('любит зелёный чай', 'general', ?, 0, 1)", (person,))
+    conn.execute(
+        "CREATE TABLE voice_facts (id INTEGER PRIMARY KEY, fact TEXT, category TEXT, speaker_id TEXT, "
+        "created_at REAL, updated_at REAL)"
+    )
+    conn.execute(
+        "INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
+        "VALUES ('любит зелёный чай', 'general', ?, 0, 1)",
+        (person,),
+    )
     conn.commit()
     conn.close()
-    node._speaker_memory = SpeakerMemory(str(tmp_path / "harness_voice.db"), str(facts),
-                                         is_e2e=lambda: node._e2e_follower.applied, log=node.get_logger())
+    node._speaker_memory = SpeakerMemory(
+        str(tmp_path / "harness_voice.db"), str(facts), is_e2e=lambda: node._e2e_follower.applied, log=node.get_logger()
+    )
 
 
 def test_snapshot_remembers_confirmed_speaker_3919(node, tmp_path):
@@ -766,8 +894,11 @@ def test_snapshot_remembers_confirmed_speaker_3919(node, tmp_path):
     _remember(node, tmp_path)
     node.test_llm.responses.append(_reply({"speech": "Ещё раз."}))
     for uid in ("u-1", "u-2"):
-        node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                                 "utterance_id": uid}))
+        node._on_speaker(
+            _voice(
+                {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": uid}
+            )
+        )
         node._on_utterance(_long("Робот, что скажешь", uid))
         node.last_turn.result(timeout=10)
     first, second = (json.dumps(m, ensure_ascii=False, default=str) for m in node.test_llm.messages)
@@ -782,8 +913,9 @@ def test_e2e_mode_of_the_owner_keeps_the_live_profile_untouched_3919(node, tmp_p
     node.set_parameters = lambda params: []  # заглушка rclpy: параметр e2e_mode_applied пишется в живой ноде
     node._e2e_follower.on_mode(types.SimpleNamespace(data=True))
     assert node._e2e_follower.applied
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                             "utterance_id": "u-e"}))
+    node._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": "u-e"})
+    )
     node._on_utterance(_long("Робот, что скажешь", "u-e"))
     node.last_turn.result(timeout=10)
     blob = json.dumps(node.test_llm.messages[-1], ensure_ascii=False, default=str)
@@ -800,16 +932,21 @@ def test_speaker_facts_are_read_from_the_tools_db_memory_save_writes_4082(monkey
 
     facts = tmp_path / "tools.db"
     conn = sqlite3.connect(facts)
-    conn.execute("CREATE TABLE voice_facts (id INTEGER PRIMARY KEY, fact TEXT, category TEXT, speaker_id TEXT, "
-                 "created_at REAL, updated_at REAL)")
-    conn.execute("INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
-                 "VALUES ('пьёт чай без сахара', 'general', 'spk-boris', 0, 1)")
+    conn.execute(
+        "CREATE TABLE voice_facts (id INTEGER PRIMARY KEY, fact TEXT, category TEXT, speaker_id TEXT, "
+        "created_at REAL, updated_at REAL)"
+    )
+    conn.execute(
+        "INSERT INTO voice_facts (fact, category, speaker_id, created_at, updated_at) "
+        "VALUES ('пьёт чай без сахара', 'general', 'spk-boris', 0, 1)"
+    )
     conn.commit()
     conn.close()
     monkeypatch.setenv(tools_db.TOOLS_DB_ENV, str(facts))
     made = request.getfixturevalue("node")  # нода строится после env: путь берётся при старте, как на роботе
-    made._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9,
-                             "utterance_id": "u-t"}))
+    made._on_speaker(
+        _voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.9, "utterance_id": "u-t"})
+    )
     made._on_utterance(_long("Робот, что скажешь", "u-t"))
     made.last_turn.result(timeout=10)
     assert "пьёт чай без сахара" in json.dumps(made.test_llm.messages[-1], ensure_ascii=False, default=str)
@@ -855,10 +992,12 @@ def _music_node(monkeypatch, delay, tool="request_music", args=None):
     import rob_box_mcp_tools.llm_adapter as adapter
 
     bridges = []
-    monkeypatch.setattr(adapter, "LLMToolCallAdapter", lambda node, sender=None, turn_context=None: (
-        bridges.append(_Bridge(turn_context, delay)) or bridges[-1]))
-    order = {
-        "actions": [{"tool": tool, "args": args or {"intent": "track", "text": N809}}]}
+    monkeypatch.setattr(
+        adapter,
+        "LLMToolCallAdapter",
+        lambda node, sender=None, turn_context=None: (bridges.append(_Bridge(turn_context, delay)) or bridges[-1]),
+    )
+    order = {"actions": [{"tool": tool, "args": args or {"intent": "track", "text": N809}}]}
     llm = _LLM([_reply(order)])
     monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (llm, "Ты робот."))
     made = dn.DialogNode()
@@ -896,11 +1035,15 @@ def test_chat_tool_call_gets_the_chat_text_not_the_voice_turn(monkeypatch):
             seen.append(dict(dn.tool_turn_context()))
             return ToolResult(tool_call_id=call.id, content="ok", data={"status": "done"})
 
-    order = {
-        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
+    order = {"actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
     chat_llm = _LLM([_reply(order)])
-    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
-        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
+    monkeypatch.setattr(
+        dn,
+        "build_llm",
+        lambda node, counter, agent="personality": (
+            (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")
+        ),
+    )
     monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
     monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: _ChatTools())
     made = dn.DialogNode()
@@ -940,24 +1083,45 @@ def test_register_speaker_gets_the_voice_and_the_introduction_of_its_turn_4054(m
     """Акт 2c: Нина уверенно + «привет, я Тамара … запомни мой голос» - в тул едут и «назвалась Тамарой», и «по голосу это
     Нина» (раньше только ``utterance_id`` и ``heard_text``: гейт #2925 в v2 молчал)."""
     context = _register_call(monkeypatch, TAMARA_HEARD, NINA, "Тамара")
-    assert context == {"utterance_id": "u4054", "heard_text": TAMARA_HEARD, "self_intro_name": "тамара",
-                       "known_speaker_name": "Нина"}
+    assert context == {
+        "utterance_id": "u4054",
+        "heard_text": TAMARA_HEARD,
+        "self_intro_name": "тамара",
+        "known_speaker_name": "Нина",
+    }
 
 
 def test_register_speaker_of_a_fact_about_someone_else_gets_no_introduction_4054(monkeypatch):
     """«Запомни, что Саша любит чай» голосом Нины: человек себя не называл (``self_intro_name`` нет), голос - Нина; гейт
-    по этому контексту откажет ``register_speaker("Саша")`` (``rob_box_mcp_tools/test/test_issue_4054_register_gate_v2``)."""
+    по этому контексту откажет ``register_speaker("Саша")`` (``rob_box_mcp_tools/test/test_issue_4054_register_gate_v2``).
+    """
     context = _register_call(monkeypatch, FACT_HEARD, NINA, "Саша")
     assert context == {"utterance_id": "u4054", "heard_text": FACT_HEARD, "known_speaker_name": "Нина"}
 
 
-@pytest.mark.parametrize("voice", [
-    None,
-    {"is_known": False},
-    {"is_known": True, "speaker_id": "e35517b2", "name": None, "tentative_name": "Нина", "tentative_kind": "single"},
-    {"is_known": True, "speaker_id": "e35517b2", "name": None, "tentative_name": "Нина", "tentative_kind": "contested"},
-    {"is_known": True, "speaker_id": "e35517b2", "name": None, "epithet": "Хмурый"},
-], ids=["no-biometry", "unknown", "tentative", "contested", "nameless"])
+@pytest.mark.parametrize(
+    "voice",
+    [
+        None,
+        {"is_known": False},
+        {
+            "is_known": True,
+            "speaker_id": "e35517b2",
+            "name": None,
+            "tentative_name": "Нина",
+            "tentative_kind": "single",
+        },
+        {
+            "is_known": True,
+            "speaker_id": "e35517b2",
+            "name": None,
+            "tentative_name": "Нина",
+            "tentative_kind": "contested",
+        },
+        {"is_known": True, "speaker_id": "e35517b2", "name": None, "epithet": "Хмурый"},
+    ],
+    ids=["no-biometry", "unknown", "tentative", "contested", "nameless"],
+)
 def test_register_speaker_gets_no_known_speaker_unless_the_voice_is_confident_4054(monkeypatch, voice):
     """Нет биометрии фразы, голос не узнан, гипотеза, спор, профиль без имени - ключа ``known_speaker_name`` нет: гейт
     молчит, регистрацию разбирает ADR-0127 (граница #2925: уверенно - значит уверенно)."""
@@ -993,11 +1157,15 @@ def test_chat_turn_gets_no_gate_keys_even_when_the_text_names_someone_4054(monke
             seen.append(dict(dn.tool_turn_context()))
             return ToolResult(tool_call_id=call.id, content="ok", data={"status": "done"})
 
-    order = {
-        "actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
+    order = {"actions": [{"tool": "request_music", "args": {"intent": "track", "text": "сыграй Running Up That Hill"}}]}
     chat_llm = _LLM([_reply(order)])
-    monkeypatch.setattr(dn, "build_llm", lambda node, counter, agent="personality": (
-        (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")))
+    monkeypatch.setattr(
+        dn,
+        "build_llm",
+        lambda node, counter, agent="personality": (
+            (chat_llm, "Ты ассистент чата.") if agent == "telegram" else (_LLM([]), "Ты робот.")
+        ),
+    )
     monkeypatch.setattr(dn, "build_tools", lambda node: _Tools())
     monkeypatch.setattr(dn, "build_chat_tools", lambda node, personality_tools: _ChatTools())
     made = dn.DialogNode()
@@ -1080,8 +1248,11 @@ def test_biometry_of_this_phrase_after_stt_decides_the_answer_4141(node):
     собеседнику сессии на начало хода (Саша)."""
     node._on_speaker(_voice({**SASHA_4141, "utterance_id": "u-s"}))
     node._on_utterance(_said("Робот, ты меня узнал?", "u-b"))
-    node._on_speaker(_voice({"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.91,
-                             "utterance_id": "u-b"}))
+    node._on_speaker(
+        _voice(
+            {"is_known": True, "speaker_id": "spk-boris", "name": "Борис", "confidence": 0.91, "utterance_id": "u-b"}
+        )
+    )
     node.last_turn.result(timeout=10)
     assert _speech_texts(node) == ["Узнал — ты Борис."]
 

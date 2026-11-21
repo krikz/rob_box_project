@@ -8,34 +8,93 @@ SoundNode - воспроизведение звуковых эффектов
 Молчаливого пропуска нет (ADR-0150 §5.5.2, V33, PR-3b #3690).
 """
 
+import json
+import os
+import random
+import threading
+import time
+from typing import Dict, List, Optional
+
+import numpy as np
 import rclpy
+import sounddevice as sd
+from audio_common_msgs.msg import AudioData
+from pydub import AudioSegment
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
-from audio_common_msgs.msg import AudioData
 from rob_box_dialog import expression
 from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SoundEvent
 
-import os
-import json
-import random
-import threading
-import time
-import numpy as np
-import sounddevice as sd
-from typing import Dict, List, Optional
-from pydub import AudioSegment
-from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
-from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
-    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger, trigger_source,
+from .core.sound_answer import (
+    CLIP_DIR_PARAM,
+    MANIFEST_PARAM,
+    StopFlag,
+    arm,
+    clip_file_ready,
+    clip_outcome,
+    default_manifest,
+    load_manifest,
 )
-
+from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
+    EARCON_SOUNDS,
+    SKIP_BUSY,
+    SKIP_ERROR,
+    SKIP_NOT_FOUND,
+    SoundRequestsMixin,
+    parse_trigger,
+    trigger_source,
+)
+from .utils.audio_utils import find_respeaker_device_sounddevice
 
 # Рация (voice passthrough): тишина дольше этого порога (сек) закрывает
 # голосовой stream (план P1, Task 1.2, решение D7).
 VOICE_SILENCE_TIMEOUT = 0.3
+
+
+def abort_chimera(node, data: str) -> None:
+    """JSON ``{"abort": request_id}`` рвёт только клип с этой меткой (Химера), не рацию и не режим."""
+    try:
+        body = json.loads(data)
+    except ValueError:
+        return
+    if isinstance(body, dict):
+        node.abort_request(str(body.get("abort") or ""))
+
+
+def drop_queued_answer_clips(node) -> None:
+    """Снять из очереди клип режима. Обычный эффект в очереди «стоп» не трогает.
+
+    Ждущий клип иначе стартует из ``release_channel`` после обрыва и доигрывает до ``finished``:
+    код скажет «Сказал.» про звук, который останавливали.
+    """
+    with node._play_lock:
+        queued = node._queued
+        if queued is None or queued[0] not in node._answer_ids:
+            return
+        node._queued = None
+    node._skip(queued[2], queued[1], "stopped")
+
+
+def dispatch_sound_stop(node, data: str) -> None:
+    """Голый ``STOP`` — рация и клип режима. JSON — обрыв Химеры. Чужое тело не трогает никого.
+
+    ``sd.stop()`` зовётся, только если сейчас играет клип режима: конец PTT публикует тот же STOP,
+    и глушить им обычный эффект или Химеру нельзя. Очередь снимается только у клипов режима.
+    """
+    body = data.strip()
+    if body.upper() == "STOP":
+        node._close_voice_stream()
+        node._answer_stop.set()
+        drop_queued_answer_clips(node)
+        if node.current_sound in node._answer_ids:
+            node.playback_manager.stop_playback(node_name="sound_node")
+        return
+    if body.startswith("{"):
+        abort_chimera(node, body)
+
 
 
 class SoundNode(SoundRequestsMixin, Node):
@@ -49,6 +108,9 @@ class SoundNode(SoundRequestsMixin, Node):
         self.declare_parameter("volume_db", -12.0)  # Регулировка громкости (dB), -12dB ≈ 24% громкости
         self.declare_parameter("trigger_animations", True)
         self.declare_parameter("animation_topic", "/animations/trigger")
+        # Каталог режима «отвечай звуками» (ADR-0175 §1.2). Пустой каталог файлов — пакета §0.1 ещё нет.
+        self.declare_parameter(MANIFEST_PARAM, default_manifest())
+        self.declare_parameter(CLIP_DIR_PARAM, "")
 
         sound_pack_dir = self.get_parameter("sound_pack_dir").value
         # Expand ~ только если это локальный путь (не /ws/...)
@@ -59,6 +121,14 @@ class SoundNode(SoundRequestsMixin, Node):
         self.volume_db = self.get_parameter("volume_db").value
         self.trigger_animations = self.get_parameter("trigger_animations").value
         self.animation_topic = self.get_parameter("animation_topic").value
+        self.sound_answer_manifest = str(self.get_parameter(MANIFEST_PARAM).value or "")
+        self.sound_answer_clip_dir = str(self.get_parameter(CLIP_DIR_PARAM).value or "")
+        self._answer_stop = StopFlag()
+        self._answer_ids = (
+            {clip.clip_id for clip in load_manifest(self.sound_answer_manifest).clips}
+            if self.sound_answer_manifest
+            else set()
+        )
 
         # Callback для изменения параметров во время работы
         self.add_on_set_parameters_callback(self.parameters_callback)
@@ -71,7 +141,9 @@ class SoundNode(SoundRequestsMixin, Node):
         )
         # Тишина (#3984): сцена Silence в снимке сессии - «услышал» становится тихим muffled, «готово» молчит.
         self.session_sub = self.create_subscription(
-            SessionState, "/dialog/session", self.session_callback,
+            SessionState,
+            "/dialog/session",
+            self.session_callback,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL),
         )
         # STOP закрывает голосовой стрим рации (PTT Quest/Telegram). mp3 из библиотеки генераций здесь больше не
@@ -150,8 +222,8 @@ class SoundNode(SoundRequestsMixin, Node):
         """
         self.device_index = None  # ALSA default → dmix_respeaker (через asound.conf)
         try:
-            default_out = sd.query_devices(kind='output')
-            device_name = default_out.get('name', '?') if isinstance(default_out, dict) else str(default_out)
+            default_out = sd.query_devices(kind="output")
+            device_name = default_out.get("name", "?") if isinstance(default_out, dict) else str(default_out)
             self.get_logger().info(f"✅ Sound playback: ALSA default device → dmix_respeaker ({device_name[:60]})")
         except Exception as e:
             self.get_logger().warn(f"⚠️ Не удалось получить info об ALSA default device: {e}")
@@ -169,17 +241,17 @@ class SoundNode(SoundRequestsMixin, Node):
         catalog_path = os.path.join(self.sound_pack_dir, "sound_catalog.json")
         if os.path.exists(catalog_path):
             try:
-                with open(catalog_path, 'r', encoding='utf-8') as f:
+                with open(catalog_path, "r", encoding="utf-8") as f:
                     catalog = json.load(f)
 
                 # Построить trigger_map из catalog['sounds']
-                sounds = catalog.get('sounds', {})
+                sounds = catalog.get("sounds", {})
                 for filename, info in sounds.items():
-                    if not filename.endswith('.mp3'):
+                    if not filename.endswith(".mp3"):
                         continue
-                    if 'trigger' in info:
+                    if "trigger" in info:
                         sound_name = filename.replace(".mp3", "")
-                        self.trigger_map[info['trigger']] = sound_name
+                        self.trigger_map[info["trigger"]] = sound_name
 
                 self.get_logger().info(f"✅ Загружено {len(self.trigger_map)} trigger mappings из catalog.json")
 
@@ -215,7 +287,7 @@ class SoundNode(SoundRequestsMixin, Node):
         # Информация об аудио устройстве
         if self.device_index is not None:
             devices = sd.query_devices()
-            device_name = devices[self.device_index]['name']
+            device_name = devices[self.device_index]["name"]
             self.get_logger().info(f"🔊 Аудио устройство: {device_name} (index {self.device_index})")
         else:
             self.get_logger().info("🔊 Аудио устройство: default system device")
@@ -230,7 +302,9 @@ class SoundNode(SoundRequestsMixin, Node):
         silenced = expression.session_silence(msg)
         if silenced is not None and silenced != self._silenced:
             self._silenced = silenced
-            self.get_logger().info("🤫 Тишина: earcon'ы приглушены" if silenced else "🔔 Тишина снята: earcon'ы обычные")
+            self.get_logger().info(
+                "🤫 Тишина: earcon'ы приглушены" if silenced else "🔔 Тишина снята: earcon'ы обычные"
+            )
 
     def trigger_callback(self, msg: String):
         """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
@@ -240,27 +314,8 @@ class SoundNode(SoundRequestsMixin, Node):
         self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
-        """``STOP`` закрывает голосовой стрим рации (barge-in).
-
-        JSON ``{"abort": request_id}`` — обрыв эффекта Химеры, не рации: голый ``STOP`` его не шлёт, и рация
-        эффект не глушит.
-        """
-        data = msg.data.strip()
-        if data.upper() == "STOP":
-            self._close_voice_stream()
-            return
-        if data.startswith("{"):
-            self._abort_chimera(data)
-
-    def _abort_chimera(self, data: str) -> None:
-        import json
-
-        try:
-            body = json.loads(data)
-        except ValueError:
-            return
-        if isinstance(body, dict):
-            self.abort_request(str(body.get("abort") or ""))
+        """``/voice/sound/stop``: голый ``STOP`` — рация и клип режима, JSON — обрыв Химеры."""
+        dispatch_sound_stop(self, msg.data)
 
     def voice_in_callback(self, msg):
         """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
@@ -348,7 +403,11 @@ class SoundNode(SoundRequestsMixin, Node):
         self._close_voice_stream_if_idle()
 
     def select_sound(self, trigger: str) -> Optional[str]:
-        """Выбрать звук по триггеру."""
+        """Выбрать звук по триггеру. Клип режима без файла в каталоге конфига — не найден, не выдуман."""
+        if trigger in self._answer_ids and not clip_file_ready(
+            self.sound_answer_manifest, self.sound_answer_clip_dir, trigger
+        ):
+            return None
         # 1. Проверить trigger_map (из catalog.json)
         if trigger in self.trigger_map:
             sound_name = self.trigger_map[trigger]
@@ -379,6 +438,7 @@ class SoundNode(SoundRequestsMixin, Node):
         self.publish_state(f"playing_{sound_name}")
         self.publish_sound_event(request_id, SoundEvent.KIND_STARTED, sound_name)
         outcome, reason = SoundEvent.KIND_FINISHED, ""
+        generation = arm(self._answer_stop) if sound_name in self._answer_ids else None
 
         try:
             self.get_logger().info(f"▶️ Играю: {sound_name}")
@@ -415,7 +475,7 @@ class SoundNode(SoundRequestsMixin, Node):
                 device_index=self.device_index,
                 blocking=True,  # Блокирующее воспроизведение для звуков
                 timeout=3.0,  # Меньший timeout для звуковых эффектов
-                node_name="sound_node"
+                node_name="sound_node",
             )
 
             if self.aborted(request_id):
@@ -425,6 +485,9 @@ class SoundNode(SoundRequestsMixin, Node):
             elif not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
                 outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_BUSY
+            elif clip_outcome(self._answer_stop, generation, True) == "stopped":
+                self.get_logger().info(f"🔇 Оборван: {sound_name}")
+                outcome, reason = SoundEvent.KIND_SKIPPED, "stopped"
             else:
                 self.get_logger().info(f"✅ Завершено: {sound_name}")
 
@@ -484,7 +547,6 @@ class SoundNode(SoundRequestsMixin, Node):
             "talk_2": "talking",
             "talk_3": "talking",
             "talk_4": "talking",
-
             # BASE robot emotional sounds
             "robot_thinking": "thinking",
             "robot_surprise": "surprise",
@@ -503,13 +565,11 @@ class SoundNode(SoundRequestsMixin, Node):
             "robot_talk_2": "talking",
             "robot_talk_3": "talking",
             "robot_talk_4": "talking",
-
             # Drip sounds - no specific animation
             "robot_drip_a1": None,
             "robot_drip_d4": None,
             "robot_drip_d5": None,
             "robot_drip_e4": None,
-
             # UI sounds - no animations
             "ui_activate": None,
             "ui_bell": None,
@@ -523,7 +583,6 @@ class SoundNode(SoundRequestsMixin, Node):
             "ui_radio_start": None,
             "ui_random": None,
             "ui_roger": None,
-
             # Robot special effects
             "robot_glitch": "error",
             "robot_alert": "error",
