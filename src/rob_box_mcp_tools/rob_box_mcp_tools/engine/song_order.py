@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from rob_box_music import knowledge as kn
 from rob_box_music.source import DECLINE, GENERATE, SONG_GEN_KINDS, Route, SourceAsk, decline_text, gen_kind
 
 from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, verbatim_refusal, wait_text
@@ -28,14 +29,41 @@ def bridge_hold(hold: Any, bridge: Any) -> Any:
     return hold
 
 
+def _given_after_phrase(heard: str) -> str:
+    """Слова, которые человек дал после фразы «этими словами»/«этим текстом», или «».
+
+    Решает код по таблице ``VOCAL_PHRASES`` (ADR-0148), не правило в промпте. Фраза в конце реплики
+    («спой этими словами») слов не даёт — их нет после неё. «Своими словами» в таблице нет."""
+    from rob_box_music.universes import words_of
+
+    words = words_of(heard)
+    plain = [w for w, _s, _e in words]
+    hit = next((entry for entry in kn.VOCAL_PHRASES if _phrase_span(plain, entry)), None)
+    if hit is None:
+        return ""
+    end = _phrase_span(plain, hit)
+    return heard[words[end - 1][2]:].strip(" \t,.:;—–-") if end < len(words) else ""
+
+
+def _phrase_span(words: list, entry: str) -> int:
+    """Позиция сразу за фразой таблицы в словах реплики, или 0 — фразы нет."""
+    parts = entry.split()
+    for i in range(len(words) - len(parts) + 1):
+        if words[i:i + len(parts)] == parts:
+            return i + len(parts)
+    return 0
+
+
 def song_request(args: Tuple[Any, ...], genre: str) -> SongRequest:
     """Заказ песни из аргументов тула ``(intent, text, mood, genre, turn_id, heard_text)``.
 
-    Непустой явный аргумент ``text`` всегда важнее ``heard_text``; ``heard_text`` — только когда
-    аргумент пуст (#4973: прежнее ``args[5] or args[1]`` выбрасывало поданные слова и пело
-    выдумку по жалобе). Дословные слова идут и темой, и текстом: тема нужна ``check_song``
-    (название), текст — чтобы LLM его не переписывала."""
-    lyrics = str(args[1] or "") or str(args[5] or "")
+    Слова после фразы «этими словами»/«этим текстом» в реплике хода важнее явного ``text``: LLM
+    кладёт в ``text`` саму просьбу, а данные человеком слова оставляет в ``heard_text`` (#4973,
+    ход 17:16). Затем — непустой явный ``text`` (ход 17:23: жалоба в ``heard_text`` не вытесняет
+    поданные слова). ``heard_text`` целиком — только когда аргумент пуст. Дословные слова идут и
+    темой, и текстом: тема нужна ``check_song`` (название), текст — чтобы LLM его не переписывала."""
+    given = _given_after_phrase(str(args[5] or ""))
+    lyrics = given or str(args[1] or "") or str(args[5] or "")
     return SongRequest(lyrics, genre, str(args[2] or ""), lyrics)
 
 

@@ -596,6 +596,23 @@ def test_verbatim_lyrics_that_fail_check_song_are_refused_not_rewritten(library)
     assert err.value.reason == "lyrics" and "строк" in err.value.detail
 
 
+def test_words_after_these_words_beat_the_ask_left_in_text():
+    """Ход 17:16: LLM кладёт просьбу в ``text``, слова остаются в ``heard_text`` после фразы таблицы.
+
+    Синтетическая фраза, не чей-то текст. Фраза в конце реплики слов не даёт — явный ``text`` важнее
+    (ход 17:23). «Своими словами» в таблице нет — ``text`` остаётся."""
+    from rob_box_mcp_tools.engine.song_order import song_request
+
+    given = "ветер тихо дует над рекою\n" * 6
+    heard = "сгенерируй трек на китайском голосом с этими словами " + given
+    order = song_request(("track", "сгенерируй трек с этими словами", "calm", "rock", "t1", heard), "rock")
+    assert order == sg.SongRequest(given, "rock", "calm", given)
+    no_tail = song_request(("track", given, None, "rock", "t2", "спой этими словами"), "rock")
+    assert no_tail.lyrics == given
+    own = song_request(("track", "про осень", None, "rock", "t3", "сгенерируй трек своими словами про осень"), "rock")
+    assert own.lyrics == "про осень"
+
+
 def test_explicit_theme_beats_heard_text_and_empty_theme_falls_back(empty):
     """Оба порядка аргументов: непустой theme важнее heard_text; пустой theme берёт heard_text (#4973)."""
     from rob_box_mcp_tools.engine.song_order import song_request
