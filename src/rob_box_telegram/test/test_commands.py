@@ -10,7 +10,6 @@ forwarding happens and the user receives an acknowledgement.
 from __future__ import annotations
 
 import importlib
-import io
 import sys
 import types
 import unittest
@@ -189,18 +188,10 @@ class TestTelegramCommandForwarding(unittest.IsolatedAsyncioTestCase):
 
 
 class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
-    """``/face`` handler (issue #3025) and the old disk-backed ``/faces``.
+    """``/face`` берёт карточку у владельца (issue #3655), не с диска.
 
-    ``/face`` still reads the face-card snapshot from disk. ``/faces`` no
-    longer does (issue #3655, owner service) — those two cases moved to
-    ``test_issue_3655_faces_from_owner.py``. The tests monkeypatch
-    ``commands.FACE_CARD_ROOT`` to a tmp dir so we don't need a real
-    ``/data/faces`` in the container.
-
-    The two handlers are read-only — they never write to the store.
-    We don't need PIL for the empty-store paths; the collage path is
-    exercised by ``test_face_card.py`` (PIL has a `pytest.skip` guard
-    there if missing).
+    ``fetch`` подставной: ``(ok, reason, data, jpeg)``. Диск ``/data/faces``
+    эти тесты не создают и не читают.
     """
 
     def setUp(self):
@@ -208,20 +199,14 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         import rob_box_telegram.auth as auth_module
 
         auth_module._allowed_users = {42}
-        self._orig_root = self.commands.FACE_CARD_ROOT
 
-    def tearDown(self):
-        # Restore the production mount so other tests / re-imports
-        # keep working.
-        self.commands.FACE_CARD_ROOT = self._orig_root
-
-    def _make_update_and_context(self, args=None):
+    def _make_update_and_context(self, args=None, fetch=None):
         node = MagicMock()
+        node.people_card = fetch
         update = MagicMock()
         update.effective_chat.id = 42
         update.message.reply_text = AsyncMock()
         update.message.reply_photo = AsyncMock()
-
         context = MagicMock()
         context.args = args or []
         context.bot_data = {"node": node}
@@ -235,118 +220,50 @@ class TestFaceHandlers(unittest.IsolatedAsyncioTestCase):
         text = update.message.reply_text.call_args.args[0]
         self.assertIn("/face", text)
         self.assertIn("4ff0ddc5", text)
-
-    async def test_face_handler_unknown_id(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as td:
-            self.commands.FACE_CARD_ROOT = td
-            update, context = self._make_update_and_context(args=["nonexistent"])
-            await self.commands.face_handler(update, context)
-        text = update.message.reply_text.call_args.args[0]
-        self.assertIn("Не нашёл", text)
         update.message.reply_photo.assert_not_awaited()
 
-    async def test_face_handler_sends_photo_when_collage_available(self):
-        """Happy path: tmp dir with a real JPEG reference triggers
-        ``reply_photo`` (with JPEG bytes) carrying the summary as caption,
-        and ``reply_text`` is NOT called (the caption is enough).
+    async def test_face_handler_unknown_id_is_owner_refusal(self):
+        def fetch(query, op):
+            return False, "person_not_found", {}, b""
 
-        PIL is a soft dependency; the test skips if missing or shadowed
-        by a MagicMock in ``sys.modules`` (see ``_install_fake_dependencies``
-        which sets ``pil_module.Image = MagicMock()`` to keep
-        ``commands.py`` importable without PIL — but that same mock
-        would silently swallow ``Image.new/save`` and produce a 0-byte
-        reference.jpg, which then makes ``build_face_collage`` return
-        ``None``).  We probe with a real call to ``Image.new(...).save``
-        to confirm the PIL module is functional before exercising the
-        handler.
-        """
-        try:
-            from PIL import Image
-        except Exception:
-            self.skipTest("PIL not installed — collage builder unavailable")
+        update, context = self._make_update_and_context(args=["nonexistent"], fetch=fetch)
+        await self.commands.face_handler(update, context)
+        text = update.message.reply_text.call_args.args[0]
+        self.assertIn("нет в базе", text)
+        update.message.reply_photo.assert_not_awaited()
 
-        # Reject the test harness's MagicMock PIL (see top of file).
-        probe_buf = io.BytesIO()
-        try:
-            Image.new("RGB", (1, 1), color=(0, 0, 0)).save(probe_buf, format="JPEG")
-        except Exception:
-            self.skipTest(
-                "PIL is shadowed by a MagicMock in this test run — "
-                "skipping collage happy path (covered by test_face_card.py)"
+    async def test_face_handler_sends_owner_jpeg_not_a_local_build(self):
+        jpeg = b"\xff\xd8owner-card"
+
+        def fetch(query, op):
+            self.assertEqual(query, "4ff0ddc5")
+            self.assertEqual(op, 6)
+            return (
+                True,
+                "",
+                {"id": "4ff0ddc5", "name": "Дэнчик", "encounters": 3, "last_encounter": "2023-11-14T22:13:20Z"},
+                jpeg,
             )
-        if not probe_buf.getvalue().startswith(b"\xff\xd8"):
-            self.skipTest("PIL did not produce a valid JPEG — skipping")
 
-        import tempfile
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            person = root / "4ff0ddc5"
-            person.mkdir()
-            (person / "meta.json").write_text(
-                '{"name": "Дэнчик", "person_id": "4ff0ddc5", '
-                '"speaker_id": "1ae4b0ac", "encounter_count": 1, '
-                '"last_encounter_ts": 1700000000.0, '
-                '"mode_recorded": "operator"}',
-                encoding="utf-8",
-            )
-            ref = Image.new("RGB", (16, 16), color=(255, 255, 255))
-            ref.save(person / "reference.jpg", format="JPEG")
-
-            self.commands.FACE_CARD_ROOT = td
-            update, context = self._make_update_and_context(args=["4ff0ddc5"])
-            await self.commands.face_handler(update, context)
-
-        # Collage path: reply_photo was called with bytes
+        update, context = self._make_update_and_context(args=["4ff0ddc5"], fetch=fetch)
+        await self.commands.face_handler(update, context)
         update.message.reply_photo.assert_awaited_once()
-        photo_arg = update.message.reply_photo.call_args.kwargs.get("photo")
-        if photo_arg is None:
-            # PTB signature: positional
-            photo_arg = update.message.reply_photo.call_args.args[0]
-        # BytesIO or raw bytes — both have .read()
-        data = photo_arg.read()
-        self.assertTrue(data.startswith(b"\xff\xd8"))  # JPEG magic
-        # caption arg carries the summary text
-        caption = (
-            update.message.reply_photo.call_args.kwargs.get("caption") or update.message.reply_photo.call_args.args[1]
-        )
+        photo = update.message.reply_photo.call_args.kwargs.get("photo")
+        self.assertEqual(photo.read(), jpeg)
+        caption = update.message.reply_photo.call_args.kwargs.get("caption")
         self.assertIn("Дэнчик", caption)
         self.assertIn("последняя встреча по лицу", caption)
-        # No separate reply_text on the happy path — caption is enough
         update.message.reply_text.assert_not_awaited()
 
-    async def test_face_handler_without_photos_sends_text_only(self):
-        """No reference.jpg, no encounters/*.jpg → collage is None →
-        handler sends ONLY ``reply_text`` (the сводка) and NOT
-        ``reply_photo``. This is the legitimate «лицо только что создано
-        без эмбеддингов» branch that must not raise.
-        """
-        import tempfile
-        from pathlib import Path
+    async def test_face_handler_without_snapshot_refuses_without_a_picture(self):
+        def fetch(query, op):
+            return False, "no_snapshot", {"id": "4ff0ddc5", "name": "Дэнчик"}, b""
 
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            person = root / "4ff0ddc5"
-            person.mkdir()
-            (person / "meta.json").write_text(
-                '{"name": "Дэнчик", "person_id": "4ff0ddc5", '
-                '"speaker_id": "1ae4b0ac", "encounter_count": 0, '
-                '"mode_recorded": "operator"}',
-                encoding="utf-8",
-            )
-            # No reference.jpg, no encounters/ — build_face_collage → None.
-
-            self.commands.FACE_CARD_ROOT = td
-            update, context = self._make_update_and_context(args=["4ff0ddc5"])
-            await self.commands.face_handler(update, context)
-
-        update.message.reply_text.assert_awaited_once()
-        text = update.message.reply_text.call_args.kwargs.get("text") or update.message.reply_text.call_args.args[0]
+        update, context = self._make_update_and_context(args=["4ff0ddc5"], fetch=fetch)
+        await self.commands.face_handler(update, context)
+        text = update.message.reply_text.call_args.args[0]
+        self.assertIn("нет снимка", text)
         self.assertIn("Дэнчик", text)
-        self.assertIn("последняя встреча по лицу", text)
         update.message.reply_photo.assert_not_awaited()
 
 
