@@ -66,6 +66,16 @@ _PROBE = textwrap.dedent(
     print(f"DIRECT {direct}")
     if pin not in direct:
         raise SystemExit(f"установлен не тег {pin}: {direct}")
+    # #5059: ход читает SessionSnapshot.session_generation. Пин без поля роняет каждый ход
+    # (AttributeError), хотя direct_url тега зелёный. Поле обязано быть у установленного пакета.
+    from rob_box_dialog.session import SessionSnapshot
+
+    if "session_generation" not in SessionSnapshot.__dataclass_fields__:
+        raise SystemExit(
+            "у пина нет SessionSnapshot.session_generation: "
+            + ", ".join(SessionSnapshot.__dataclass_fields__)
+        )
+    print("FIELD session_generation")
     print(f"PIN {pin}")
     """
 )
@@ -132,3 +142,4 @@ def test_installed_pin_import_is_not_shadowed_by_src():
     assert got.returncode == 0, got.stdout + got.stderr
     assert "site-packages" in got.stdout
     assert "подмена" not in got.stdout
+    assert "FIELD session_generation" in got.stdout
