@@ -83,31 +83,67 @@ ssh ros2@10.1.1.22 "docker logs voice-assistant --since 15m 2>&1 | grep -E 'TTS:
 `PASS`: одна фраза на ARM и одна на DISARM. Дребезг не даёт дополнительных фраз.
 `FAIL`: есть повторная или лишняя фраза. Приложите время и обе строки логов.
 
-## 6. Холодный старт Vision Pi
+## 6. Владелец лиц и бот Telegram (issue #5061)
+
+### 6.1 Почему `TelegramNode()` в живом контейнере нельзя
+
+Telegram пускает к `getUpdates` ровно один процесс на токен. Конструктор `TelegramNode()`
+поднимает polling. Второй экземпляр внутри живого контейнера `telegram-bot`
+(`docker exec telegram-bot python3 -c "… TelegramNode()"`) забирает токен себе, и
+Telegram отвечает живому боту `409 Conflict: terminated by other getUpdates request`.
+Библиотека ловит это внутри своего цикла и наружу не выпускает: контейнер остаётся
+`healthy`, `restarts=0`, строки `Bot crashed` нет, а входящие не принимаются до
+рестарта. Так 21.11 проверка списка лиц убила пульт робота.
+
+С #5061 бот сам пишет в лог `Telegram Conflict (409)` и поднимает polling заново с
+backoff (5, 10, 20, 40, затем 60 секунд, без предела попыток). Это лечение, а не
+разрешение: второй экземпляр всё равно на время глушит канал. Проверку так не делают.
+
+Замок `/tmp/rob_box_telegram_polling.lock` не пускает второй экземпляр в том же
+контейнере к сети: он получает `will NOT call getUpdates` и выходит до `getUpdates`.
+Чужой процесс вне контейнера (другая машина с тем же токеном) замок не видит — от него
+защищает только ретрай.
+
+### 6.2 Проверка владельца лиц — сервисом, не конструктором узла
+
+Список лиц отдаёт владелец на Vision Pi, сервис `/perception/people` (`OP_LIST = 0`).
+Зовите его из контейнера, который уже в ROS-графе и бота не поднимает.
+
+```bash
+ssh ros2@10.1.1.22 "docker exec avatar-supervisor bash -lc 'ros2 service call /perception/people rob_box_perception_msgs/srv/People \"{op: 0, filter: all, person_id: \\\"\\\", name: \\\"\\\"}\"'"
+```
+
+`PASS`: `ok=True` и `data_json` со списком. Содержимое списка — персональные данные,
+в issue и PR его не копируйте, только `ok` и число записей.
+
+`FAIL`: сервис не ответил или `ok=False`. Это отказ владельца на Vision Pi, а не
+пустая база. Не лечите его запуском `TelegramNode()`.
+
+## 7. Холодный старт Vision Pi
 
 Холодный старт выполняет оператор физически. Удалённое отключение питания запрещено.
 
-### 6.1 Подготовка
+### 7.1 Подготовка
 
 1. Проверьте, что нужные образы уже есть на Vision Pi.
 2. Убедитесь, что `ExecStart` содержит `docker compose up -d --pull never`.
 3. Попросите оператора выключить и включить питание Vision Pi.
 4. Дождитесь загрузки и запуска таймера health-check.
 
-### 6.2 Проверка
+### 7.2 Проверка
 
 ```bash
 ssh ros2@10.1.1.11 "systemctl show robbox-vision.service -p ExecStart; docker ps --format 'table {{.Names}}\t{{.Status}}'; journalctl -u robbox-vision.service -b --no-pager | tail -80"
 ```
 
-### 6.3 Критерий
+### 7.3 Критерий
 
 `PASS`: контейнеры запущены. В `ExecStart` нет `compose pull`. В журнале нет ожидания registry.
 `FAIL`: стек не запустился или попытался скачать образы. Приложите журнал.
 
-## 7. Полный голосовой марафон
+## 8. Полный голосовой марафон
 
-### 7.1 Подготовка
+### 8.1 Подготовка
 
 1. Используйте чистый worktree от `origin/develop`.
 2. Завершите другие e2e-проверки на роботе.
@@ -121,7 +157,7 @@ REF=develop TTS_PROVIDER=minimax DRY_RUN=1 bash scripts/e2e/run_night_marathon.s
 
 `PASS` preflight: JSON актуальны, все реплики помещаются в окно VAD.
 
-### 7.2 Запуск
+### 8.2 Запуск
 
 ```bash
 REF=develop TTS_PROVIDER=minimax bash scripts/e2e/run_night_marathon.sh
@@ -130,13 +166,13 @@ REF=develop TTS_PROVIDER=minimax bash scripts/e2e/run_night_marathon.sh
 Запускайте только один марафон на роботе.
 Не запускайте параллельную e2e-проверку на том же роботе.
 
-### 7.3 Критерий
+### 8.3 Критерий
 
 Приложите `tests/e2e/_artifacts/night_<UTC>/summary.tsv`.
 Приложите run_id и результат каждого акта.
 Красный акт остаётся `FAIL` до разбора и нового прогона.
 
-## 8. Chuangong
+## 9. Chuangong
 
 Текущий режим `observe` подтверждает только обнаружение подписанного релиза.
 Он не подтверждает обновление и анимацию.
@@ -168,7 +204,7 @@ REF=develop TTS_PROVIDER=minimax bash scripts/e2e/run_night_marathon.sh
 (или явно `NOT_IMPLEMENTED`). Отдельный сломанный релиз возвращается на предыдущий релиз.
 `FAIL`: любой узел не обновился или rollback не сработал. Заведите issue с raw-журналом.
 
-## 9. Колонка
+## 10. Колонка
 
 Установку выполняет только Шифу. Координатор готовит тег, релиз и команду.
 
@@ -187,7 +223,7 @@ ssh -p 2222 root@<IP> 'cat /data/opt/rbx/VERSION; ps | grep station_host | grep 
 `PASS`: версия совпадает с тегом. Процесс `station_host.py` работает. Лог содержит `слушаю`.
 `FAIL`: процесса нет или версия старая. Приложите установочный лог и `/tmp/station.log`.
 
-## 10. rbt_infra
+## 11. rbt_infra
 
 Выполняйте живые проверки по фазам из `rbt_infra/docs/adr/0001-network-architecture.md`.
 
@@ -206,7 +242,7 @@ ssh -p 2222 root@<IP> 'cat /data/opt/rbx/VERSION; ps | grep station_host | grep 
 `PASS`: выполнены критерии соответствующей фазы ADR.
 `FAIL`: любой критерий не подтверждён. Не переходите к следующей фазе.
 
-## 11. Пример закрытого случая
+## 12. Пример закрытого случая
 
 Issue #4551 закрыт после установки релиза колонки и нового SSH-подключения.
 Доказательство: `VERSION=v0.2.1`, живой процесс `station_host.py`, строки `слушаю` и голосовое подтверждение обновления.
