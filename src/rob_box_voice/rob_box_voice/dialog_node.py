@@ -35,6 +35,7 @@ Executor → respond``, :class:`rob_box_dialog.turn.TurnEngine`); транспо
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import json
@@ -43,12 +44,12 @@ import threading
 import time
 import uuid
 from types import MappingProxyType
-from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Float32, String
 
 from rob_box_core import speech_client
@@ -57,57 +58,77 @@ from rob_box_core.provider_publisher import make_publisher, publish_provider_sta
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.address import BARE_WAKE, HELD, Addressed, NotAddressed, decide_in_session, heard_from
-from rob_box_dialog.address import log_label
-from rob_box_dialog.address import person_ref_from
+from rob_box_dialog.address import (
+    BARE_WAKE,
+    HELD,
+    Addressed,
+    NotAddressed,
+    decide_in_session,
+    heard_from,
+    log_label,
+    person_ref_from,
+)
 from rob_box_dialog.backlog import Backlog
-from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK, PROGRESS_KIND, ChatPorts, ChatTurns, channel_ref
+from rob_box_dialog.chats import LOG_MARK as CHAT_LOG_MARK
+from rob_box_dialog.chats import PROGRESS_KIND, ChatPorts, ChatTurns, channel_ref
 from rob_box_dialog.e2e_events import open_events
 from rob_box_dialog.execute import transport_timeouts
 from rob_box_dialog.interrupt import TurnsInFlight, on_interrupt
 from rob_box_dialog.memory import profiled_person
+from rob_box_dialog.music_state import MusicStateMemory
 from rob_box_dialog.pickup_parties import rights_speaker
 from rob_box_dialog.prompts import personality_prompt, telegram_prompt
-from rob_box_dialog.voice_warmth import WarmVoices
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.scenes import HOLD, RESET, RESUME, SceneDirector, apply_control
 from rob_box_dialog.session import MusicStateRef, SceneFrame, Session
 from rob_box_dialog.shift_log import ShiftLog
 from rob_box_dialog.speaker_adapter import confident_name, named_self, speaker_ref
 from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
-from rob_box_voice.core.sound_answer import SpeechAsClip, phrase_from_event
 from rob_box_dialog.turn_log import TurnLog
+from rob_box_dialog.voice_warmth import WarmVoices
+from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
+from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
+from rob_box_dialog_host.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
+from rob_box_dialog_host.speaker_memory import SpeakerMemory
+from rob_box_dialog_host.tts_voice_registry import robot_default_voice
 from rob_box_dialog_msgs.msg import DialogOutput
 from rob_box_dialog_msgs.msg import Intent as IntentMsg
-from rob_box_dialog_msgs.msg import InterruptRequest, ProviderStateArray, SessionState, SoundEvent, SpeakerResult
-from rob_box_dialog_msgs.msg import SpeechEvent
+from rob_box_dialog_msgs.msg import (
+    InterruptRequest,
+    ProviderStateArray,
+    SessionState,
+    SoundEvent,
+    SpeakerResult,
+    SpeechEvent,
+)
 from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_llm.provider import LLMSettings
-from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
+from rob_box_voice.core.sound_answer import SpeechAsClip, phrase_from_event
+from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 
-from .core import echo_window, greeting_window, identity_question
-from .core import dialog_v2_parity as parity
-from .core import plan_host
 from . import robot_profile
-from .core.dialog_metrics import llm_metrics, record_interrupt
+from .core import dialog_v2_parity as parity
+from .core import echo_window, greeting_window, identity_question, plan_host
 from .core.backlog_voice import note_backlog_voice
-from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
-from rob_box_dialog_host.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
+from .core.dialog_metrics import llm_metrics, record_interrupt
 from .core.provider_reporter import ProviderStateReporter, on_provider_states, reporter_context
-from rob_box_dialog_host.speaker_memory import SpeakerMemory
 from .core.turn_context import tts_voices
 from .core.utterance_speaker import UtteranceSpeakerRegistry
-from rob_box_dialog_host.tts_voice_registry import robot_default_voice
-from rob_box_dialog.music_state import MusicStateMemory
-from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
 
 #: ``DialogControl.Request.ACTION_*`` -> действие :func:`rob_box_dialog.scenes.apply_control`.
-_CONTROL_ACTIONS = {DialogControl.Request.ACTION_HOLD: HOLD, DialogControl.Request.ACTION_RESUME: RESUME,
-                    DialogControl.Request.ACTION_RESET: RESET}
-_LATCHED = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=1,
-                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+_CONTROL_ACTIONS = {
+    DialogControl.Request.ACTION_HOLD: HOLD,
+    DialogControl.Request.ACTION_RESUME: RESUME,
+    DialogControl.Request.ACTION_RESET: RESET,
+}
+_LATCHED = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 def declare_params(node: Any) -> None:
@@ -149,9 +170,9 @@ def wire_sound_answer(node: Any) -> SpeechAsClip:
 
     «Обычным голосом» снимает режим до хода; фразу об этом уже скажет ``set_voice``, второй реплики нет.
     Фразу «сказал» говорит :func:`on_sound_answer` — только из ``finished`` и исходной речью, не клипом.
+    Имена, которые клипом не подменяются, диалог отдаёт сам (:func:`sound_answer_names`).
     """
-    from rob_box_voice.core.sound_answer import SoundAnswerGate
-    from rob_box_voice.sound_node import _default_manifest
+    from rob_box_voice.core.sound_answer import SoundAnswerGate, default_manifest
 
     pub = node.create_publisher(String, "/voice/sound/trigger", 10)
 
@@ -160,10 +181,41 @@ def wire_sound_answer(node: Any) -> SpeechAsClip:
         msg.data = payload
         pub.publish(msg)
 
-    gate = SoundAnswerGate(_default_manifest(), str(node.get_parameter("sound_answer_clip_dir").value or ""))
+    gate = SoundAnswerGate(
+        default_manifest(),
+        str(node.get_parameter("sound_answer_clip_dir").value or ""),
+        name_source=lambda: sound_answer_names(node),
+    )
     clip = SpeechAsClip(gate, node._ports.say, publish, node._session)
     node._ports.say = clip
+    node._sound_stop_pub = node.create_publisher(String, "/voice/sound/stop", 10)
     return clip
+
+
+def sound_answer_names(node: Any) -> Tuple[str, ...]:
+    """Имена, известные диалогу сейчас: собеседник снимка и уверенно узнанные голоса фраз.
+
+    Тот же источник, что у гейта ``register_speaker``: имя снимка сессии (``known_speaker_name``
+    читает его же) и :func:`confident_name` по биометрии каждой ещё живой фразы. Список читается
+    в момент решения, не на старте ноды: имя, узнанное позже, клипом уже не подменяется.
+    """
+    names = []
+    speaker = getattr(getattr(getattr(node, "_session", None), "snapshot", None), "speaker", None)
+    if getattr(speaker, "name", None):
+        names.append(str(speaker.name))
+    names.extend(_confident_voice_names(getattr(node, "_speakers", None)))
+    return tuple(dict.fromkeys(name for name in names if name))
+
+
+def _confident_voice_names(registry: Any) -> Tuple[str, ...]:
+    """Имена, под которыми биометрия уверенно узнала ещё живые фразы. Реестра нет — имён нет."""
+    results = getattr(registry, "_results", None)
+    if not isinstance(results, dict):
+        return ()
+    lock = getattr(registry, "_lock", None)
+    with lock if lock is not None else contextlib.nullcontext():
+        voices = tuple(results.values())
+    return tuple(name for name in (confident_name(voice) for voice in voices) if name)
 
 
 def on_sound_answer(clip: SpeechAsClip, msg: Any) -> None:
@@ -214,9 +266,16 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
     агента), вызовы считаются. У каждого агента своя цепочка — своё здоровье провайдеров."""
     prefix = _prefix(agent)
     raw = str(node.get_parameter(f"{prefix}llm_providers").value)
-    return assemble_llm(raw.split(","), counter, prompt=agent_prompt(node, agent),
-                        settings=_settings(node, prefix), agent=agent, log=node.get_logger().info,
-                        busy=lambda: plan_host.perform_busy(node), owners=node.product_profile.owners)
+    return assemble_llm(
+        raw.split(","),
+        counter,
+        prompt=agent_prompt(node, agent),
+        settings=_settings(node, prefix),
+        agent=agent,
+        log=node.get_logger().info,
+        busy=lambda: plan_host.perform_busy(node),
+        owners=node.product_profile.owners,
+    )
 
 
 #: Скрытый контекст хода для MCP-тулов (``llm_adapter.TURN_CONTEXT_ARGS``): ``heard_text`` — реплика хода (опора
@@ -226,7 +285,8 @@ def build_llm(node: Any, counter: CallCounter, agent: str = kn.AGENTS[0]) -> tup
 #: контекста (``Executor`` → ``asyncio.ensure_future`` → ``asyncio.to_thread``): ход Личности и ход чата Telegram не
 #: путают реплики.
 _TOOL_TURN: "contextvars.ContextVar[Mapping[str, Any]]" = contextvars.ContextVar(
-    "dialog_v2_tool_turn", default=MappingProxyType({}))
+    "dialog_v2_tool_turn", default=MappingProxyType({})
+)
 
 
 def tool_turn_context() -> Mapping[str, Any]:
@@ -247,8 +307,9 @@ async def in_tool_turn(context: Mapping[str, Any], work: Awaitable[Any]) -> Any:
     return await work
 
 
-def voice_turn_context(speakers: Any, uid: str, text: str,
-                       wake_words: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+def voice_turn_context(
+    speakers: Any, uid: str, text: str, wake_words: Optional[Sequence[str]] = None
+) -> Dict[str, Any]:
     """Контекст хода голосом для MCP-тулов (``tool_turn_context``): реплика и её id, а для гейта ``register_speaker``
     (#2925, ADR-0127 §8) - как человек назвал себя в реплике (``self_intro_name``, код по её словам) и кем голос ЭТОЙ
     реплики уверенно узнан (``known_speaker_name``, из реестра биометрии по ``utterance_id``, читается при вызове тула:
@@ -301,9 +362,15 @@ def _mcp_provider(node: Any, sender: str, for_telegram: bool = False) -> Any:
 
     adapter = LLMToolCallAdapter(node, sender=sender, turn_context=tool_turn_context)
     provider = ROSMCPToolProvider(adapter, tool_timeouts=transport_timeouts())
-    provider.update_tools([{"type": "function", "function": {"name": s.name, "description": s.description,
-                                                             "parameters": dict(s.parameters)}}
-                           for s in ToolRegistry(for_telegram=for_telegram).list_tools()])
+    provider.update_tools(
+        [
+            {
+                "type": "function",
+                "function": {"name": s.name, "description": s.description, "parameters": dict(s.parameters)},
+            }
+            for s in ToolRegistry(for_telegram=for_telegram).list_tools()
+        ]
+    )
     if not provider.list_tools():
         raise RuntimeError("dialog_node: каталог MCP-тулов пуст — команды молча не исполнялись бы")
     return adapt_tool_provider(provider)
@@ -363,8 +430,16 @@ class RobotRemote:
         return int(self._node._session.snapshot.epoch)
 
 
-def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = lambda: False,
-                robot: Any = None, sing: Any = None, voices: Any = None) -> ChatTurns:
+def build_chats(
+    node: Any,
+    tools: Any,
+    intent_pub: Any,
+    wake: Any,
+    hold: Any = lambda: False,
+    robot: Any = None,
+    sing: Any = None,
+    voices: Any = None,
+) -> ChatTurns:
     """Телеграм-агент: своя LLM-цепочка, исполнитель — свой под общим планировщиком Личности (те же владельцы),
     ответ — ``DialogOutput``; ``hold`` — держит ли оператор Личность (отказ ``say_aloud``, §9.2.3); ``robot`` — пульт
     робота (:class:`RobotRemote`, #4040): выступление и ответ лицом чата исполняет робот. ``sing`` и ``voices`` — те же
@@ -387,14 +462,34 @@ def build_chats(node: Any, tools: Any, intent_pub: Any, wake: Any, hold: Any = l
     chat_tools = build_chat_tools(node, tools)
 
     def make_engine(chat_id: int) -> TurnEngine:
-        session = Session(kn.TEXT_CHANNEL_AGENT, clock=time.time, session_id=channel_ref(chat_id), wake_words=wake,
-                          owners=node.product_profile.owners)
-        base = V2Ports(node, llm, counter, chat_tools, agent=kn.TEXT_CHANNEL_AGENT, intent_pub=intent_pub, log=log,
-                       epoch=lambda: session.snapshot.epoch, on_ask=llm_metrics(llm))
+        session = Session(
+            kn.TEXT_CHANNEL_AGENT,
+            clock=time.time,
+            session_id=channel_ref(chat_id),
+            wake_words=wake,
+            owners=node.product_profile.owners,
+        )
+        base = V2Ports(
+            node,
+            llm,
+            counter,
+            chat_tools,
+            agent=kn.TEXT_CHANNEL_AGENT,
+            intent_pub=intent_pub,
+            log=log,
+            epoch=lambda: session.snapshot.epoch,
+            on_ask=llm_metrics(llm),
+        )
         ports = ChatPorts(base, chat_id, send, log, hold, robot, progress)
         chats.adopt(base.executor)
-        engine = TurnEngine(session, ports, system_prompt=system, log=_RosLog(node.get_logger()),  # потолок хода (В31)
-                            sing=sing, voices=voices)
+        engine = TurnEngine(
+            session,
+            ports,
+            system_prompt=system,
+            log=_RosLog(node.get_logger()),  # потолок хода (В31)
+            sing=sing,
+            voices=voices,
+        )
         base.on_late = functools.partial(late_outcome, engine, ports.late)
         return engine
 
@@ -421,8 +516,9 @@ class DialogNode(Node):
         # и правила хода; владельцы - на срез тулов сессии и мост команд.
         self.product_profile = robot_profile.load(str(self.get_parameter("profile_path").value))
         self._wake = list(self.product_profile.wake_personality)
-        self._session = Session("personality", clock=time.time, wake_words=self._wake,
-                                owners=self.product_profile.owners)
+        self._session = Session(
+            "personality", clock=time.time, wake_words=self._wake, owners=self.product_profile.owners
+        )
         self._session.subscribe(functools.partial(identity_question.publish, self))
         self._shift = ShiftLog()  # журнал смены (#4076): живёт дольше сессии разговора
         self._session.subscribe(self._shift.observe)
@@ -434,9 +530,12 @@ class DialogNode(Node):
         self._speakers = UtteranceSpeakerRegistry()
         self._music = MusicStateMemory()
         self._speaker_memory = SpeakerMemory(
-            str(self.get_parameter("sqlite_db_path").value), str(self.get_parameter("voice_facts_db_path").value),
+            str(self.get_parameter("sqlite_db_path").value),
+            str(self.get_parameter("voice_facts_db_path").value),
             e2e_facts_db=str(self.get_parameter("e2e_voice_facts_db_path").value),
-            is_e2e=lambda: self._e2e_follower.applied, log=self.get_logger())
+            is_e2e=lambda: self._e2e_follower.applied,
+            log=self.get_logger(),
+        )
         # #3904: режим e2e один - владельца /speaker_id_node; профиль собеседника в e2e не идёт в боевую БД (#3919).
         self._e2e_follower = E2EModeFollower(self, self._apply_e2e_mode)
         self._turn_memory: Any = (None, None)  # (person_ref, раздел speaker_memory) хода в работе
@@ -449,24 +548,48 @@ class DialogNode(Node):
         voices = functools.partial(tts_voices, self)  # реестр имён Tier-1 «голос <имя>» (#4086) — и для чата (#4142)
         sing = build_sing(self, lambda: self._reporter.all_states())  # путь пения (#4079): один на Личность и чат
         chat_sing = sing.for_log(CHAT_LOG_MARK)  # тот же выбор, строка лога чата не похожа на голосовую (ревью #4153)
-        self._chats = build_chats(self, self._tool_executor, intent_pub, self._wake,
-                                  hold=lambda: self._session.snapshot.top("OperatorHold") is not None,
-                                  robot=RobotRemote(self),  # пульт робота (#4040): порты Личности ниже
-                                  sing=chat_sing, voices=voices)
-        self._ports = V2Ports(self, llm, counter, self._tool_executor, intent_pub=intent_pub,
-                              log=self.get_logger().info, epoch=lambda: self._session.snapshot.epoch,
-                              performer=functools.partial(plan_host.performer, self), on_ask=llm_metrics(llm))
+        self._chats = build_chats(
+            self,
+            self._tool_executor,
+            intent_pub,
+            self._wake,
+            hold=lambda: self._session.snapshot.top("OperatorHold") is not None,
+            robot=RobotRemote(self),  # пульт робота (#4040): порты Личности ниже
+            sing=chat_sing,
+            voices=voices,
+        )
+        self._ports = V2Ports(
+            self,
+            llm,
+            counter,
+            self._tool_executor,
+            intent_pub=intent_pub,
+            log=self.get_logger().info,
+            epoch=lambda: self._session.snapshot.epoch,
+            performer=functools.partial(plan_host.performer, self),
+            on_ask=llm_metrics(llm),
+        )
         self._sound_answer = wire_sound_answer(self)
-        self._reporter = ProviderStateReporter(llm, functools.partial(publish_provider_states, make_publisher(self)),
-                                               self._speak_direct)
+        self._reporter = ProviderStateReporter(
+            llm, functools.partial(publish_provider_states, make_publisher(self)), self._speak_direct
+        )
         self._warm = WarmVoices()  # прогретые голоса без имени: просьба назваться в подхвате (Шифу 05.11)
-        self._engine = TurnEngine(self._session, self._ports, system_prompt=system, sections=self._sections,
-                                  voices=voices, turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в смену
-                                  events=self._open_events(), log=_RosLog(self.get_logger()), sing=sing,
-                                  phrase_voice=self._speakers.resolve,  # голос фразы по её id (#4141)
-                                  warm_voices=self._warm.warm)
-        self._ports.on_late = functools.partial(late_outcome, self._engine,
-                                                functools.partial(say_late, self._engine))  # поздний итог (#3960)
+        self._engine = TurnEngine(
+            self._session,
+            self._ports,
+            system_prompt=system,
+            sections=self._sections,
+            voices=voices,
+            turn_log=TurnLog(on_outcome=self._shift.outcome),  # исходы — в смену
+            events=self._open_events(),
+            log=_RosLog(self.get_logger()),
+            sing=sing,
+            phrase_voice=self._speakers.resolve,  # голос фразы по её id (#4141)
+            warm_voices=self._warm.warm,
+        )
+        self._ports.on_late = functools.partial(
+            late_outcome, self._engine, functools.partial(say_late, self._engine)
+        )  # поздний итог (#3960)
         self._subscribe()
         # Паритет с v1 (#3912): статус LLM/вейков для ТАРС, приветствие по встрече лицом, стартовая фраза.
         self._tars_status_feeds = parity.start_v2_status_feeds(self, String)
@@ -478,8 +601,9 @@ class DialogNode(Node):
         self.create_timer(2.0, self._reporter.tick)
         self.add_on_set_parameters_callback(self._on_params)
         self._thread.start()
-        self.get_logger().info(f"✅ dialog_node v2: {kn.AGENTS[0]}, "
-                               f"wake={self._wake[:3]}…, e2e={self._engine_events_state()}")
+        self.get_logger().info(
+            f"✅ dialog_node v2: {kn.AGENTS[0]}, " f"wake={self._wake[:3]}…, e2e={self._engine_events_state()}"
+        )
 
     def _on_sound_event(self, msg: SoundEvent) -> None:
         """План слышит звук как раньше. Фраза режима — отдельно, исходной речью, и только на свой ``finished``."""
@@ -493,10 +617,15 @@ class DialogNode(Node):
         self.create_subscription(SoundEvent, "/voice/sound/event", self._on_sound_event, 10)
         self.create_subscription(String, MUSIC_STATE_TOPIC, self._on_music_state, _LATCHED)
         self.create_subscription(String, MUSIC_EVENT_TOPIC, functools.partial(plan_host.on_music_event, self), 10)
-        self.create_subscription(String, plan_host.TTS_PROVIDER_STATE_TOPIC,
-                                 functools.partial(plan_host.on_tts_provider_state, self), 10)
-        self.create_subscription(ProviderStateArray, "/voice/providers/state",
-                                 functools.partial(on_provider_states, self._reporter.board, time.time), _LATCHED)
+        self.create_subscription(
+            String, plan_host.TTS_PROVIDER_STATE_TOPIC, functools.partial(plan_host.on_tts_provider_state, self), 10
+        )
+        self.create_subscription(
+            ProviderStateArray,
+            "/voice/providers/state",
+            functools.partial(on_provider_states, self._reporter.board, time.time),
+            _LATCHED,
+        )
         self.create_subscription(InterruptRequest, "/dialog/interrupt_request", self._on_interrupt, 10)
 
     # -- вход ---------------------------------------------------------------------------------------------------
@@ -521,13 +650,16 @@ class DialogNode(Node):
             voice = self._speakers.peek(uid) if uid else None
             if voice is not None:  # биометрия успела раньше STT: автор фразы — её голос, не нынешний собеседник
                 note_backlog_voice(self, uid, voice)
-            self.get_logger().info(f"[backlog] accumulated reason={decision.reason} entries="
-                                   f"{self._backlog.background_phrases(now)}")
+            self.get_logger().info(
+                f"[backlog] accumulated reason={decision.reason} entries=" f"{self._backlog.background_phrases(now)}"
+            )
             return
         greeting = greeting_window.take_reply(self, decision.source, heard)
         self._interrupt(decision.text, uid, "utterance")
-        turn = in_tool_turn(voice_turn_context(self._speakers, uid, decision.text, self._wake),
-                            self._turn(decision, greeting, snap.epoch))
+        turn = in_tool_turn(
+            voice_turn_context(self._speakers, uid, decision.text, self._wake),
+            self._turn(decision, greeting, snap.epoch),
+        )
         self.last_turn = self._turns.add(asyncio.run_coroutine_threadsafe(turn, self._loop), uid)
 
     def _on_chat(self, chat_id: int, text: str, now: float) -> None:
@@ -537,15 +669,17 @@ class DialogNode(Node):
             turn = in_tool_turn({"heard_text": decision.text}, self._chats.run(chat_id, decision))
             self.last_chat_turn = asyncio.run_coroutine_threadsafe(turn, self._loop)
 
-    async def _turn(self, decision: Addressed, greeting: Optional[SceneFrame] = None,
-                    greeting_epoch: Optional[int] = None) -> None:
+    async def _turn(
+        self, decision: Addressed, greeting: Optional[SceneFrame] = None, greeting_epoch: Optional[int] = None
+    ) -> None:
         if self._turn_lock.locked():  # не стоп во время хода — APPEND: новый ждёт конца текущего, речь не рвётся
             self.get_logger().info("🧭 [turn-v2] ход уже идёт — новый ждёт его конца")
         async with self._turn_lock:
             try:
                 await self._note_speaker(decision)
-                self._sound_answer.gate.observe(decision.text, self._session.snapshot.session_id,
-                                                int(self._session.snapshot.epoch))
+                self._sound_answer.gate.observe(
+                    decision.text, self._session.snapshot.session_id, int(self._session.snapshot.session_generation)
+                )
                 greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
@@ -588,8 +722,10 @@ class DialogNode(Node):
             if robot_voice_changed(msg):
                 self._session.set_voice(msg.voice_requested or None, msg.voice_applied or None, msg.provider or None)
             else:
-                self.get_logger().info(f"🗣️ [voice] подмена голоса реплики speech_id={msg.speech_id[:8]} "
-                                       f"{msg.voice_requested!r}→{msg.voice_applied!r}: голос робота не меняется")
+                self.get_logger().info(
+                    f"🗣️ [voice] подмена голоса реплики speech_id={msg.speech_id[:8]} "
+                    f"{msg.voice_requested!r}→{msg.voice_applied!r}: голос робота не меняется"
+                )
             return
         if msg.agent == kn.TEXT_CHANNEL_AGENT:  # итог say_aloud чата (PR-12b): «Озвучил (N с)» по событию
             self._chats.on_speech(msg)
@@ -622,20 +758,39 @@ class DialogNode(Node):
 
     def _interrupt(self, text: str, uid: str, via: str) -> bool:
         """Ясный стоп (``interrupt.on_interrupt``): речь эпохи — отмена по границе слова, хода в полёте — отмена до
-        HTTP-клиента LLM. Эпоху +1 кладёт ход стопа (Tier-1). Не стоп — ничего (речь не рвётся)."""
+        HTTP-клиента LLM. Эпоху +1 кладёт ход стопа (Tier-1). Не стоп — ничего (речь не рвётся).
+
+        Клип режима рвётся тем же стопом: STOP на ``/voice/sound/stop`` доходит до владельца клипа, ожидание
+        снимается сразу — поздний ``finished`` «Сказал.» уже не скажет.
+        """
         started = time.monotonic()
         snap = self._session.snapshot
         stop = on_interrupt(text, snap, self._wake)
         if not stop.interrupts:
             return False
-        speech_client.cancel(self, agent=kn.AGENTS[0], epoch=snap.epoch, reason=f"interrupt:{uid or '-'}",
-                             boundary=stop.speech_boundary)
+        speech_client.cancel(
+            self, agent=kn.AGENTS[0], epoch=snap.epoch, reason=f"interrupt:{uid or '-'}", boundary=stop.speech_boundary
+        )
+        self._stop_sound_answer()
         cancelled = self._turns.cancel(keep_key=uid)
         record_interrupt()
-        self.get_logger().info(f"🛑 [interrupt] {stop.policy} via={via} {text[:60]!r} epoch={snap.epoch} "
-                               f"boundary={stop.speech_boundary} turns_cancelled={cancelled} "
-                               f"за {(time.monotonic() - started) * 1000:.1f} мс utterance={uid or '-'}")
+        self.get_logger().info(
+            f"🛑 [interrupt] {stop.policy} via={via} {text[:60]!r} epoch={snap.epoch} "
+            f"boundary={stop.speech_boundary} turns_cancelled={cancelled} "
+            f"за {(time.monotonic() - started) * 1000:.1f} мс utterance={uid or '-'}"
+        )
         return True
+
+    def _stop_sound_answer(self) -> None:
+        """Голосовой «стоп» до владельца клипа: STOP на ``/voice/sound/stop`` и снятие ожидания.
+
+        Поздний ``finished`` клипа, который останавливали, «Сказал.» не произнесёт: ожидания уже нет.
+        """
+        body = String()
+        body.data = "STOP"
+        self._sound_stop_pub.publish(body)
+        self._sound_answer.gate.stop_pending()
+        self._sound_answer.stop()
 
     def _on_control(self, request: Any, response: Any) -> Any:
         """``DialogControl``: hold — кадр ``OperatorHold`` (TTL), resume — снять его, reset — новая сессия.
@@ -652,8 +807,9 @@ class DialogNode(Node):
     def _restore_voice(self, provider: str, voice: str) -> None:
         """Вернуть голос (конец персоны сета, ``reset``): просьба владельцу голоса, тот ответит ``voice_changed``."""
         body = String()
-        body.data = json.dumps({"request_id": uuid.uuid4().hex[:12], "voice": voice, "provider": provider},
-                               ensure_ascii=False)
+        body.data = json.dumps(
+            {"request_id": uuid.uuid4().hex[:12], "voice": voice, "provider": provider}, ensure_ascii=False
+        )
         self._voice_pub.publish(body)
         self.get_logger().info(f"🎭 [scene] голос возвращается: {provider}:{voice}")
 
@@ -662,8 +818,11 @@ class DialogNode(Node):
     def _sections(self, snap: Any, text: str) -> Dict[str, Any]:
         """Разделы снимка хода из владельцев: собеседник, провайдеры, музыка, звучащий голос (``tts_context``, #4370) —
         данные, не правила; журнал смены — на вопрос о ней (``shift_log.shift_asked``, #4076)."""
-        return {**host_sections(snap, self._music, reporter_context(self._reporter), self._turn_memory),
-                "tts_context": plan_host.tts_context(self), **self._shift.section(text)}
+        return {
+            **host_sections(snap, self._music, reporter_context(self._reporter), self._turn_memory),
+            "tts_context": plan_host.tts_context(self),
+            **self._shift.section(text),
+        }
 
     def _speak_direct(self, text: str) -> None:
         """Фраза кода вне хода (смена провайдера): речь личности текущей эпохи."""

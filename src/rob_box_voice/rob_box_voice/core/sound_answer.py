@@ -26,7 +26,7 @@ from typing import Any, Mapping, Optional, Sequence, Tuple
 from rob_box_dialog_msgs.msg import SoundEvent
 
 #: Кадр сессии. В запиненном ядре v0.7.14 его нет в ``SCENE_KINDS`` — хост держит режим сам
-#: и снимает его на ``reset`` (новая сессия) и на «обычным голосом».
+#: и снимает его на ``reset`` (новая сессия: ``session_generation`` +1) и на «обычным голосом».
 SCENE_KIND = "SoundAnswer"
 #: Имя параметра ноды: каталог файлов манифеста. Пустой — пакета §0.1 ещё нет.
 CLIP_DIR_PARAM = "sound_answer_clip_dir"
@@ -58,16 +58,92 @@ DISABLE_FORMS: Tuple[Tuple[str, ...], ...] = (
 )
 #: «Стоп» текущего клипа — те же ясные формы, что гасят звук, и ничего больше.
 STOP_FORMS: Tuple[str, ...] = ("стоп", "стой", "хватит", "остановись", "отставить")
+#: Число словами — тоже точный текст. Закрытый список, не регекс: цифра ловится отдельно, по знаку.
+NUMBER_WORDS: Tuple[str, ...] = (
+    "ноль",
+    "один",
+    "одна",
+    "одно",
+    "два",
+    "две",
+    "три",
+    "четыре",
+    "пять",
+    "шесть",
+    "семь",
+    "восемь",
+    "девять",
+    "десять",
+    "одиннадцать",
+    "двенадцать",
+    "тринадцать",
+    "четырнадцать",
+    "пятнадцать",
+    "шестнадцать",
+    "семнадцать",
+    "восемнадцать",
+    "девятнадцать",
+    "двадцать",
+    "тридцать",
+    "сорок",
+    "пятьдесят",
+    "шестьдесят",
+    "семьдесят",
+    "восемьдесят",
+    "девяносто",
+    "сто",
+    "двести",
+    "триста",
+    "четыреста",
+    "пятьсот",
+    "шестьсот",
+    "семьсот",
+    "восемьсот",
+    "девятьсот",
+    "тысяча",
+    "тысячи",
+    "тысяч",
+    "миллион",
+    "миллиона",
+    "миллионов",
+)
 #: Служебные слова вокруг команды: «ну отвечай звуками пожалуйста».
-_FILLER = frozenset({
-    "ну", "а", "и", "же", "пожалуйста", "давай", "мне", "ты", "вы", "робот", "сейчас",
-})
+_FILLER = frozenset(
+    {
+        "ну",
+        "а",
+        "и",
+        "же",
+        "пожалуйста",
+        "давай",
+        "мне",
+        "ты",
+        "вы",
+        "робот",
+        "сейчас",
+    }
+)
 #: Слова причины ошибки: точный текст, звук его не подменяет.
-_ERROR_FORMS = frozenset({
-    "ошибка", "ошибки", "ошибку", "ошибке", "ошибкой",
-    "не", "вышло", "не удалось", "недоступен", "недоступна", "недоступно",
-    "отказ", "отказано", "отказался", "сбой", "сбоя",
-})
+_ERROR_FORMS = frozenset(
+    {
+        "ошибка",
+        "ошибки",
+        "ошибку",
+        "ошибке",
+        "ошибкой",
+        "не",
+        "вышло",
+        "не удалось",
+        "недоступен",
+        "недоступна",
+        "недоступно",
+        "отказ",
+        "отказано",
+        "отказался",
+        "сбой",
+        "сбоя",
+    }
+)
 #: Подпись клипа в данных действия. Фразу успеха из неё строить нельзя — только из ``finished``.
 CLIP_FIELD = "clip_id"
 FINISHED_FIELD = "playback"
@@ -75,6 +151,7 @@ FINISHED_VALUE = "finished"
 
 _KIND_FINISHED = int(getattr(SoundEvent, "KIND_FINISHED", 1))
 _KIND_SKIPPED = int(getattr(SoundEvent, "KIND_SKIPPED", 2))
+_NUMBER_WORDS = frozenset(NUMBER_WORDS)
 
 
 @dataclass(frozen=True)
@@ -108,6 +185,20 @@ class AnswerChoice:
     clip_id: Optional[str]
     precise: bool
     reason: str
+
+
+def default_manifest() -> str:
+    """Манифест-заглушка из пакета. На роботе его подменяет конфиг, смонтированный томом.
+
+    Вне ROS-рантайма (тесты) — файл пакета рядом с модулем. Ноду звука за этим путём не
+    импортируем: она на импорте требует ``audio_common_msgs``.
+    """
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        return os.path.join(get_package_share_directory("rob_box_voice"), "config", "sound_answer_manifest.json")
+    except Exception:  # noqa: BLE001 — ament нет (тесты, хост без рантайма)
+        return os.path.join(os.path.dirname(__file__), "..", "..", "config", "sound_answer_manifest.json")
 
 
 def load_manifest(path: str) -> Manifest:
@@ -163,9 +254,15 @@ def classify(text: str) -> str:
 
 
 def keeps_precise_text(text: str, known_names: Sequence[str] = ()) -> bool:
-    """Ответ с числом, именем или причиной ошибки звуком не подменяется."""
+    """Ответ с числом, именем или причиной ошибки звуком не подменяется.
+
+    Число — и цифра, и слово из закрытого списка (``NUMBER_WORDS``): «три метра» так же
+    точны, как «3 метра». Имя сверяется по словам, не по подстроке.
+    """
     words = _words(text)
     if any(any(ch.isdigit() for ch in word) for word in words):
+        return True
+    if any(word in _NUMBER_WORDS for word in words):
         return True
     if _error_reason(words):
         return True
@@ -269,15 +366,19 @@ def _role(text: str) -> str:
 
 @dataclass
 class Mode:
-    """Режим одной сессии разговора. Новая сессия (другой id или эпоха после reset) режима не наследует."""
+    """Режим одной сессии разговора. Новая сессия (``DialogControl.reset``) режима не наследует.
+
+    ``reset`` эпохи поднимает, ``session_id`` оставляет, поэтому поколение сессии — отдельный
+    счётчик: ``session_generation`` +1 на reset. ``replace_epoch`` (стоп) поколение не трогает —
+    режим после стопа жив.
+    """
 
     on: bool = False
     session_id: str = ""
-    epoch: int = 0
+    generation: int = 0
 
-    def live(self, session_id: str, epoch: int) -> bool:
-        # replace_epoch (стоп) эпоху поднимает, сессию оставляет — режим жив. Снимает его новая сессия.
-        return self.on and self.session_id == session_id and epoch >= self.epoch
+    def live(self, session_id: str, generation: int) -> bool:
+        return self.on and self.session_id == session_id and self.generation == int(generation)
 
 
 class SoundAnswerGate:
@@ -286,37 +387,50 @@ class SoundAnswerGate:
     Каталог читается с диска на каждое решение: конфиг смонтирован томом, пакет §0.1 подъедет без пересборки.
     """
 
-    def __init__(self, manifest_path: str, clip_dir: str, known_names: Sequence[str] = ()) -> None:
+    def __init__(
+        self, manifest_path: str, clip_dir: str, known_names: Sequence[str] = (), name_source: Optional[Any] = None
+    ) -> None:
         self.manifest_path = manifest_path
         self.clip_dir = clip_dir
         self.known_names = tuple(known_names)
+        # Вызов без аргументов → имена, известные диалогу сейчас. Статический кортеж его не заменяет.
+        self.name_source = name_source
         self.mode = Mode()
         self._pending: dict = {}
 
-    def observe(self, text: str, session_id: str, epoch: int) -> str:
-        """Команда человека до хода. ``stop`` режим не снимает: рвётся только текущий клип."""
-        self._drop_if_new_session(session_id, epoch)
+    def names(self) -> Tuple[str, ...]:
+        """Имена, которые клипом не подменяются: статический список плюс то, что источник отдаёт сейчас."""
+        fresh = self.name_source() if self.name_source is not None else ()
+        return tuple(dict.fromkeys((*self.known_names, *(str(name) for name in fresh or () if name))))
+
+    def observe(self, text: str, session_id: str, session_generation: int) -> str:
+        """Команда человека до хода. ``stop`` режим не снимает: рвётся только текущий клип.
+
+        Ожидание клипа ``stop`` тоже не чистит — это делает :meth:`stop_pending`, когда обрыв
+        реально дошёл до владельца клипа. Команда без обрыва «Сказал.» не отменяет.
+        """
+        self._drop_if_new_session(session_id, session_generation)
         kind = classify(text)
         if kind == "enable":
-            self.mode = Mode(True, session_id, epoch)
+            self.mode = Mode(True, session_id, int(session_generation))
         elif kind == "disable":
-            self.mode = Mode(False, session_id, epoch)
+            self.mode = Mode(False, session_id, int(session_generation))
         return kind
 
-    def active(self, session_id: str, epoch: int) -> bool:
-        return self.mode.live(session_id, epoch)
+    def active(self, session_id: str, session_generation: int) -> bool:
+        return self.mode.live(session_id, session_generation)
 
-    def instead_of_speech(self, text: str, session_id: str, epoch: int, request_id: str) -> Optional[str]:
+    def instead_of_speech(self, text: str, session_id: str, session_generation: int, request_id: str) -> Optional[str]:
         """Идентификатор клипа вместо этой реплики, либо ``None`` — реплика звучит речью.
 
         Точный текст (число, имя, причина ошибки) клипом не подменяется и в пару к клипу не идёт.
         Клипа нет в каталоге или файла нет — тоже речь: врать «сказал» нечем.
         """
-        if not self.mode.live(session_id, epoch) or not (text or "").strip():
+        if not self.mode.live(session_id, session_generation) or not (text or "").strip():
             return None
         if classify(text):
             return None
-        choice = choose(text, load_manifest(self.manifest_path), self.known_names)
+        choice = choose(text, load_manifest(self.manifest_path), self.names())
         if choice.clip_id is None or choice.precise:
             return None
         clip = load_manifest(self.manifest_path).by_id(choice.clip_id)
@@ -324,6 +438,12 @@ class SoundAnswerGate:
             return None
         self._pending[request_id] = choice.clip_id
         return choice.clip_id
+
+    def stop_pending(self) -> Tuple[str, ...]:
+        """«Стоп» дошёл до владельца клипа: ждущие клипы больше не подтверждаются «Сказал.»."""
+        pending = tuple(self._pending)
+        self._pending.clear()
+        return pending
 
     def trigger_payload(self, clip_id: str, request_id: str) -> str:
         """Тело ``/voice/sound/trigger``: тот же JSON, что у ``play_sound``."""
@@ -344,14 +464,21 @@ class SoundAnswerGate:
         self._pending.pop(request_id, None)
         return finished_phrase(kind, reason)
 
-    def _drop_if_new_session(self, session_id: str, epoch: int) -> None:
-        if self.mode.session_id and (self.mode.session_id != session_id or epoch < self.mode.epoch):
-            self.mode = Mode(False, session_id, epoch)
+    def _drop_if_new_session(self, session_id: str, session_generation: int) -> None:
+        """``reset`` поднимает поколение сессии при том же ``session_id`` — режим и ожидание снимаются."""
+        if self.mode.session_id and (
+            self.mode.session_id != session_id or int(session_generation) != self.mode.generation
+        ):
+            self.mode = Mode(False, session_id, int(session_generation))
             self._pending.clear()
 
 
 class StopFlag:
-    """Поколение «стоп». ``sd.stop()`` гасит и естественный конец, поэтому конец клипа им не доказывается."""
+    """Поколение «стоп». ``sd.stop()`` гасит и естественный конец, поэтому конец клипа им не доказывается.
+
+    ``set`` до старта потока не теряется: ``arm`` флаг не снимает, ``aborted`` видит поколение,
+    которое стоп уже поднял. ``clear`` остаётся для теста и для конца проигрывания, не для старта.
+    """
 
     def __init__(self) -> None:
         self.generation = 0
@@ -375,8 +502,9 @@ class SpeechAsClip:
     проигрывания сверяет и не публикует ``finished`` на оборванный клип.
     """
 
-    def __init__(self, gate: SoundAnswerGate, say: Any, publish: Any, session: Any,
-                 stopped: Optional[Any] = None) -> None:
+    def __init__(
+        self, gate: SoundAnswerGate, say: Any, publish: Any, session: Any, stopped: Optional[Any] = None
+    ) -> None:
         self.gate = gate
         self._say = say
         self._publish = publish
@@ -385,11 +513,19 @@ class SpeechAsClip:
         self.clips: list = []
         self.spoken: list = []
 
-    def __call__(self, turn_id: str, epoch: int, text: str, voice: Optional[str] = None,
-                 emotion: Optional[str] = None, boundary: str = "none") -> str:
+    def __call__(
+        self,
+        turn_id: str,
+        epoch: int,
+        text: str,
+        voice: Optional[str] = None,
+        emotion: Optional[str] = None,
+        boundary: str = "none",
+    ) -> str:
         snap = self._session.snapshot
         request_id = self.gate.new_request_id()
-        clip_id = self.gate.instead_of_speech(text, snap.session_id, int(snap.epoch), request_id)
+        # Поколение сессии, не эпоха: стоп эпохи поднимает, режим после него жив (ADR-0175 §1.2).
+        clip_id = self.gate.instead_of_speech(text, snap.session_id, _session_generation(snap), request_id)
         if clip_id is None:
             self.spoken.append(text)
             if boundary != "none":
@@ -411,20 +547,46 @@ class SpeechAsClip:
 
 def phrase_from_event(clip: Any, msg: Any) -> Optional[str]:
     """Фраза кода из события звука, если это клип режима и исход — ``finished`` без причины. Иначе ``None``."""
-    return clip.gate.on_finished(str(getattr(msg, "request_id", "") or ""), int(getattr(msg, "kind", -1)),
-                                 str(getattr(msg, "reason", "") or ""))
+    return clip.gate.on_finished(
+        str(getattr(msg, "request_id", "") or ""), int(getattr(msg, "kind", -1)), str(getattr(msg, "reason", "") or "")
+    )
 
 
 def aborted(stopped: Any, generation: int) -> bool:
-    """Поток клипа оборван, если «стоп» случился после старта этого проигрывания."""
-    return bool(getattr(stopped, "is_set", lambda: False)()) and int(generation) < _generation(stopped)
+    """Поток клипа оборван, если «стоп» случился после старта этого проигрывания.
+
+    «Стоп» до входа в поток поколение не сбрасывает: он запоминается и виден здесь же.
+    """
+    return bool(getattr(stopped, "is_set", lambda: False)()) and int(generation) <= _generation(stopped)
 
 
 def arm(stopped: Any) -> int:
-    """Поколение на старте проигрывания. «Стоп» после него — обрыв, не естественный конец."""
-    stopped.clear()
+    """Поколение на старте проигрывания. «Стоп» до входа в поток не забывается.
+
+    Раньше флаг здесь снимался: STOP, пришедший между запросом и стартом потока, клип
+    доигрывал и подтверждался. Теперь ранний стоп остаётся стопом.
+    """
     return _generation(stopped)
+
+
+def clip_outcome(stopped: Any, generation: Optional[int], played: bool) -> Optional[str]:
+    """Исход клипа режима: ``stopped`` / ``finished`` / ``None`` (это не клип режима).
+
+    ``generation is None`` — обычный эффект: «стоп» рации его исход не перекрашивает,
+    решает то, что вернул ``play_audio``. Клип режима с поднятым флагом — ``stopped``,
+    даже если устройство отчиталось об успешном конце (``sd.stop()`` гасит и естественный).
+    """
+    if generation is None:
+        return None
+    if aborted(stopped, generation):
+        return "stopped"
+    return "finished" if played else None
 
 
 def _generation(stopped: Any) -> int:
     return int(getattr(stopped, "generation", 0))
+
+
+def _session_generation(snapshot: Any) -> int:
+    """Поколение сессии снимка. Снимок без поля (тест, старый кадр) — одна сессия на всё время."""
+    return int(getattr(snapshot, "session_generation", 0))
