@@ -1,62 +1,56 @@
 --- a/nav2_controller/include/nav2_controller/controller_server.hpp	2025-11-17 20:48:57.000000000 +0300
 +++ b/nav2_controller/include/nav2_controller/controller_server.hpp
-@@ -178,6 +178,17 @@
+@@ -178,6 +178,24 @@
    bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
  
    /**
-+   * @brief #5003: progress fails when the commanded twist holds, the base does
-+   * not move required_movement_radius, and the local costmap is blocked on the
-+   * command course. The decision lives in rob_box_teleop.stuck_against.
++   * @brief #5003: progress fails when a non-zero command was held in the
++   * window, the base did not move required_movement_radius, and the local
++   * costmap is blocked on the last non-zero command course. The decision is
++   * this function (ADR-0148). It does not embed CPython: #5021.
 +   */
 +  bool stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose);
-+  void stuckAgainstInit();
-+  void stuckAgainstImportPath();
 +  void stuckAgainstReset();
-+  void stuckAgainstWarnOnce(const char * why);
++  bool stuckAgainstCourseBlocked(double course_vx) const;
++
++  struct StuckSample
++  {
++    double t{0.0};
++    double x{0.0};
++    double y{0.0};
++    bool held{false};
++  };
 +
 +  /**
     * @brief get the thresholded velocity
     * @param velocity The current velocity from odometry
     * @param threshold The minimum velocity to return non-zero
-@@ -230,6 +241,10 @@
+@@ -230,6 +248,14 @@
    std::string progress_checker_id_;
    std::string progress_checker_type_;
  
-+  // #5003: twist published on the previous control tick.
++  // #5003: twist published on the previous control tick, and the window the
++  // stuck check accumulates. Same numbers as the teleop stuck-against module.
 +  geometry_msgs::msg::Twist last_cmd_vel_;
 +  bool have_last_cmd_{false};
++  std::vector<StuckSample> stuck_samples_;
++  double stuck_cmd_since_{-1.0};
++  double stuck_last_course_{0.0};
 +
    // Goal Checker Plugin
    pluginlib::ClassLoader<nav2_core::GoalChecker> goal_checker_loader_;
    GoalCheckerMap goal_checkers_;
---- a/nav2_controller/src/controller_server.cpp
+--- a/nav2_controller/src/controller_server.cpp	2025-11-17 20:48:57.000000000 +0300
 +++ b/nav2_controller/src/controller_server.cpp
-@@ -23,6 +23,8 @@
+@@ -23,6 +23,7 @@
  #include "nav2_core/exceptions.hpp"
  #include "nav_2d_utils/conversions.hpp"
  #include "nav_2d_utils/tf_help.hpp"
 +#include "nav2_costmap_2d/cost_values.hpp"
-+#include <Python.h>
  #include "nav2_util/node_utils.hpp"
  #include "nav2_util/geometry_utils.hpp"
  #include "nav2_controller/controller_server.hpp"
-@@ -48,6 +50,15 @@
- {
-   RCLCPP_INFO(get_logger(), "Creating controller server");
- 
-+  // #5004: this constructor runs on the main thread, before spin
-+  // (nav2_controller/src/main.cpp builds the node, then spins it). It is the
-+  // only such point that ships in libcontroller_server_core.so: the image
-+  // copies the library, not the executable, and `ros2 run` launches the stock
-+  // binary whose main() never calls into the patch. on_configure ticks on the
-+  // lifecycle manager's thread and the goal runs on std::async, so neither may
-+  // call Py_Initialize.
-+  stuckAgainstInit();
-+
-   declare_parameter("controller_frequency", 20.0);
- 
-   declare_parameter("progress_checker_plugin", default_progress_checker_id_);
-@@ -381,6 +392,8 @@
+@@ -381,6 +382,8 @@
  
      setPlannerPath(action_server_->get_current_goal()->path);
      progress_checker_->reset();
@@ -65,7 +59,7 @@
  
      last_valid_cmd_time_ = now();
      rclcpp::WallRate loop_rate(controller_frequency_);
-@@ -533,11 +546,193 @@
+@@ -529,11 +532,145 @@
    feedback->distance_to_goal =
      nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
    action_server_->publish_feedback(feedback);
@@ -75,8 +69,8 @@
 +  // #5003: checked after the command is recorded, including the zero twist
 +  // this catch writes when DWB throws NoLegalTrajectoriesException. A check
 +  // before compute never sees that zero, and failure_tolerance (0.3 s) aborts
-+  // the goal before a second tick. The decision is recent command in the
-+  // window, not a command on this tick (rob_box_teleop.stuck_against).
++  // the goal before a second tick. The decision is a recent command in the
++  // window, not a command on this tick.
 +  if (stuckAgainstObstacle(pose)) {
 +    throw nav2_core::PlannerException("Failed to make progress: stuck against obstacle");
 +  }
@@ -86,189 +80,128 @@
  }
  
 +
-+void ControllerServer::stuckAgainstInit()
-+{
-+  // #5004: called from the constructor, which runs on the main thread before
-+  // spin. The action-server thread must not call Py_Initialize. Idempotent:
-+  // a process that already embedded CPython is left alone.
-+  if (!Py_IsInitialized()) {
-+    Py_Initialize();
-+  }
-+  stuckAgainstImportPath();
-+}
-+
-+void ControllerServer::stuckAgainstImportPath()
-+{
-+  // #5004: the package arrives as a compose bind mount, not an installed
-+  // module. start_nav2_direct.sh prepends this directory to PYTHONPATH only
-+  // when it exists at process start; put it on sys.path here so the import
-+  // does not depend on that. No-op when the mount is absent.
-+  if (!Py_IsInitialized()) {
-+    return;
-+  }
-+  const char * code =
-+    "import os, sys\n"
-+    "p = '/opt/rob_box/teleop'\n"
-+    "if os.path.isdir(os.path.join(p, 'rob_box_teleop')) and p not in sys.path:\n"
-+    "    sys.path.insert(0, p)\n";
-+  PyGILState_STATE gil = PyGILState_Ensure();
-+  int ran = PyRun_SimpleString(code);
-+  if (ran != 0) {
-+    PyErr_Clear();
-+  }
-+  PyGILState_Release(gil);
-+}
-+
-+void ControllerServer::stuckAgainstWarnOnce(const char * why)
-+{
-+  // A failed import must not look like "the fix is in and the base is free".
-+  static bool warned = false;
-+  if (warned) {
-+    return;
-+  }
-+  warned = true;
-+  RCLCPP_WARN(
-+    get_logger(),
-+    "stuck-against progress check unavailable, not applied: %s", why);
-+}
-+
 +void ControllerServer::stuckAgainstReset()
 +{
-+  if (!Py_IsInitialized()) {
-+    stuckAgainstWarnOnce("Python was not initialized from main");
-+    return;
-+  }
-+  PyGILState_STATE gil = PyGILState_Ensure();
-+  PyObject * module = PyImport_ImportModule("rob_box_teleop.stuck_against");
-+  if (module == nullptr) {
-+    PyObject * type = nullptr;
-+    PyObject * value = nullptr;
-+    PyObject * trace = nullptr;
-+    PyErr_Fetch(&type, &value, &trace);
-+    PyObject * text = value != nullptr ? PyObject_Str(value) : nullptr;
-+    const char * why = text != nullptr ? PyUnicode_AsUTF8(text) : "import failed";
-+    stuckAgainstWarnOnce(why != nullptr ? why : "import failed");
-+    Py_XDECREF(text);
-+    Py_XDECREF(type);
-+    Py_XDECREF(value);
-+    Py_XDECREF(trace);
-+    PyGILState_Release(gil);
-+    return;
-+  }
-+  PyObject * fn = PyObject_GetAttrString(module, "reset_controller_state");
-+  Py_DECREF(module);
-+  if (fn == nullptr || !PyCallable_Check(fn)) {
-+    PyErr_Clear();
-+    Py_XDECREF(fn);
-+    stuckAgainstWarnOnce("reset_controller_state is missing");
-+    PyGILState_Release(gil);
-+    return;
-+  }
-+  PyObject * result = PyObject_CallObject(fn, nullptr);
-+  Py_DECREF(fn);
-+  if (result == nullptr) {
-+    PyErr_Clear();
-+    stuckAgainstWarnOnce("reset_controller_state raised");
-+  }
-+  Py_XDECREF(result);
-+  PyGILState_Release(gil);
++  stuck_samples_.clear();
++  stuck_cmd_since_ = -1.0;
++  stuck_last_course_ = 0.0;
 +}
 +
-+bool ControllerServer::stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose)
++bool ControllerServer::stuckAgainstCourseBlocked(double course_vx) const
 +{
-+  if (!have_last_cmd_) {
-+    return false;
-+  }
-+  if (!Py_IsInitialized()) {
-+    stuckAgainstWarnOnce("Python was not initialized from main");
++  // Cells of the footprint strip ahead of the body edge, out to the side
++  // stop gap, not the body itself. Course is the sign of the last non-zero
++  // vx. A zero course has no direction, so the map cannot call this a block.
++  constexpr double kCmdEps = 0.03;
++  constexpr double kBlockGapM = 0.08;
++  constexpr double kXMax = 0.3064;
++  constexpr double kXMin = -0.3036;
++  constexpr double kYMax = 0.3025;
++  constexpr double kYMin = -0.3025;
++  if (std::abs(course_vx) <= kCmdEps) {
 +    return false;
 +  }
 +  auto * costmap = costmap_ros_->getCostmap();
 +  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
-+  const unsigned int size_x = costmap->getSizeInCellsX();
-+  const unsigned int size_y = costmap->getSizeInCellsY();
-+  const unsigned char * map = costmap->getCharMap();
 +  const double resolution = costmap->getResolution();
-+  double origin_x = 0.0;
-+  double origin_y = 0.0;
-+  // mapToWorld(0, 0) is the centre of cell 0. The criterion indexes cells by
-+  // their corner, so shift back half a cell. map[i] >= INSCRIBED (253) is the
-+  // block: inscribed and lethal, not the inflation below that.
-+  costmap->mapToWorld(0, 0, origin_x, origin_y);
-+  origin_x -= resolution / 2.0;
-+  origin_y -= resolution / 2.0;
++  if (resolution <= 0.0) {
++    return false;
++  }
++  const bool forward = course_vx > 0.0;
++  const double edge = forward ? kXMax : kXMin;
++  const double reach = forward ? edge + kBlockGapM : edge - kBlockGapM;
++  const double x0 = forward ? edge : reach;
++  const double x1 = forward ? reach : edge;
 +  const unsigned char lethal = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
++  int mx0 = 0;
++  int my0 = 0;
++  int mx1 = 0;
++  int my1 = 0;
++  costmap->worldToMapEnforceBounds(x0, kYMin, mx0, my0);
++  costmap->worldToMapEnforceBounds(x1, kYMax, mx1, my1);
++  for (int mx = mx0; mx <= mx1; ++mx) {
++    double cx = 0.0;
++    double cy = 0.0;
++    costmap->mapToWorld(static_cast<unsigned int>(mx), 0, cx, cy);
++    if (forward && cx <= edge) {
++      continue;
++    }
++    if (!forward && cx >= edge) {
++      continue;
++    }
++    if (std::abs(cx - edge) > kBlockGapM) {
++      continue;
++    }
++    for (int my = my0; my <= my1; ++my) {
++      if (costmap->getCost(
++          static_cast<unsigned int>(mx), static_cast<unsigned int>(my)) >= lethal)
++      {
++        return true;
++      }
++    }
++  }
++  return false;
++}
 +
-+  PyGILState_STATE gil = PyGILState_Ensure();
-+  PyObject * module = PyImport_ImportModule("rob_box_teleop.stuck_against");
-+  if (module == nullptr) {
-+    PyObject * type = nullptr;
-+    PyObject * value = nullptr;
-+    PyObject * trace = nullptr;
-+    PyErr_Fetch(&type, &value, &trace);
-+    PyObject * text = value != nullptr ? PyObject_Str(value) : nullptr;
-+    const char * why = text != nullptr ? PyUnicode_AsUTF8(text) : "import failed";
-+    stuckAgainstWarnOnce(why != nullptr ? why : "import failed");
-+    Py_XDECREF(text);
-+    Py_XDECREF(type);
-+    Py_XDECREF(value);
-+    Py_XDECREF(trace);
-+    PyGILState_Release(gil);
++bool ControllerServer::stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose)
++{
++  // Window of 2 s (shorter than the 30 s radius allowance, else a wall slide
++  // accumulates the radius), command held 0.3 s above the guard epsilon,
++  // displacement under required_movement_radius.
++  constexpr double kWindowS = 2.0;
++  constexpr double kCmdHoldS = 0.3;
++  constexpr double kCmdEps = 0.03;
++  constexpr double kProgressRadiusM = 0.08;
++  if (!have_last_cmd_) {
 +    return false;
 +  }
-+  PyObject * fn = PyObject_GetAttrString(module, "controller_stuck");
-+  Py_DECREF(module);
-+  if (fn == nullptr || !PyCallable_Check(fn)) {
-+    PyErr_Clear();
-+    Py_XDECREF(fn);
-+    stuckAgainstWarnOnce("controller_stuck is missing");
-+    PyGILState_Release(gil);
++  const double now_s = now().seconds();
++  const double vx = last_cmd_vel_.linear.x;
++  const double wz = last_cmd_vel_.angular.z;
++  const bool commanded = std::abs(vx) > kCmdEps || std::abs(wz) > kCmdEps;
++  if (commanded) {
++    if (stuck_cmd_since_ < 0.0) {
++      stuck_cmd_since_ = now_s;
++    }
++  } else {
++    stuck_cmd_since_ = -1.0;
++  }
++  const bool held =
++    commanded && stuck_cmd_since_ >= 0.0 && now_s - stuck_cmd_since_ >= kCmdHoldS;
++  stuck_samples_.push_back(
++    StuckSample{now_s, pose.pose.position.x, pose.pose.position.y, held});
++  const double cutoff = now_s - kWindowS;
++  stuck_samples_.erase(
++    std::remove_if(
++      stuck_samples_.begin(), stuck_samples_.end(),
++      [cutoff](const StuckSample & sample) {return sample.t < cutoff;}),
++    stuck_samples_.end());
++  if (std::abs(vx) > kCmdEps) {
++    stuck_last_course_ = vx;
++  }
++  if (stuck_samples_.size() < 2) {
 +    return false;
 +  }
-+  PyObject * costs = PyList_New(static_cast<Py_ssize_t>(size_x) * size_y);
-+  if (costs == nullptr) {
-+    Py_DECREF(fn);
-+    stuckAgainstWarnOnce("could not allocate the cost list");
-+    PyGILState_Release(gil);
++  const StuckSample & start = stuck_samples_.front();
++  if (stuck_samples_.back().t - start.t < kWindowS) {
 +    return false;
 +  }
-+  for (unsigned int i = 0; i < size_x * size_y; ++i) {
-+    PyList_SET_ITEM(costs, i, PyLong_FromLong(map[i] >= lethal ? lethal : 0));
++  bool any_held = false;
++  bool moved = false;
++  for (const StuckSample & sample : stuck_samples_) {
++    any_held = any_held || sample.held;
++    const double dx = sample.x - start.x;
++    const double dy = sample.y - start.y;
++    if (std::hypot(dx, dy) > kProgressRadiusM) {
++      moved = true;
++    }
 +  }
-+  lock.unlock();
-+  PyObject * result = PyObject_CallFunction(
-+    fn, "dddddddiOi",
-+    now().seconds(), pose.pose.position.x, pose.pose.position.y,
-+    last_cmd_vel_.linear.x, last_cmd_vel_.angular.z,
-+    origin_x, origin_y, resolution,
-+    static_cast<int>(size_x), costs, static_cast<int>(size_y));
-+  Py_DECREF(costs);
-+  Py_DECREF(fn);
-+  if (result == nullptr) {
-+    PyErr_Clear();
-+    stuckAgainstWarnOnce("controller_stuck raised");
-+    PyGILState_Release(gil);
++  if (!any_held || moved) {
 +    return false;
 +  }
-+  const bool stuck = PyObject_IsTrue(result) == 1;
-+  Py_DECREF(result);
-+  PyGILState_Release(gil);
-+  return stuck;
++  return stuckAgainstCourseBlocked(stuck_last_course_);
 +}
 +
  void ControllerServer::updateGlobalPath()
  {
    if (action_server_->is_preempt_requested()) {
---- a/nav2_controller/CMakeLists.txt
-+++ b/nav2_controller/CMakeLists.txt
-@@ -67,6 +67,10 @@
- ament_target_dependencies(${library_name}
-   ${dependencies}
- )
-+# #5003: stuckAgainstObstacle calls rob_box_teleop.stuck_against through libpython.
-+# find_package, not a bare -lpython: the include path comes with the target.
-+find_package(Python3 COMPONENTS Development REQUIRED)
-+target_link_libraries(${library_name} Python3::Python)
- 
- if(BUILD_TESTING)
-   find_package(ament_lint_auto REQUIRED)
