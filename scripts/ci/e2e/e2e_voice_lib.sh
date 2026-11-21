@@ -803,10 +803,57 @@ _E2E_SPEECH_GREP='SpeechEvent'
 
 _events_py() { printf '%s' "${E2E_EVENTS_PY:-${SCRIPT_DIR_E2E:-.}/e2e_events.py}"; }
 
+# #5002: окно шага -- [since, until] в одной шкале с timestamp'ами docker-лога.
+# $1=since (RFC3339), $2=until (RFC3339 с наносекундами; пусто -- только --since, как раньше).
+# Сырые строки с docker-префиксами (--timestamps). Верхняя граница обязана быть с дробью:
+# docker --until без дроби отсекает всю свою секунду, и ход, закрывшийся в ней, выпадает.
+# rc docker на --until != 0 (старый демон без флага) -- клиентский фильтр по префиксу
+# --timestamps: строковое сравнение (формат нуль-паддинг), until включительно;
+# строки без timestamp-префикса не выбрасываются (продолжение многострочного лога).
+fetch_step_window_logs() {  # $1=since $2=until
+    local since="$1" until="${2:-}" raw rc=0
+    if [ -n "$until" ]; then
+        # Редирект снаружи подстановки, не внутри: ``$(cmd 2>/dev/null)``
+        # затирает rc cmd (последняя команда подстановки -- сам редирект).
+        raw="$(${ROBOT_SSH} "docker logs voice-assistant --since '${since}' --until '${until}' --timestamps 2>&1")"
+        rc=$?
+        if [ "$rc" = "0" ]; then
+            printf '%s' "$raw"
+            return 0
+        fi
+    fi
+    raw="$(${ROBOT_SSH} "docker logs voice-assistant --since '${since}' --timestamps 2>&1" 2>/dev/null || echo '')"
+    if [ -z "$until" ]; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    # Клиентский фильтр только если в выводе есть timestamp-префиксы. Заглушки
+    # тестов и старый docker без --timestamps отдают голые строки: резать их
+    # нечем, окно остаётся как --since (прежнее поведение, не ложный пустой лог).
+    if ! printf '%s\n' "$raw" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    # mawk (awk на раннерах) не понимает {n} в regex без --re-interval: условие
+    # /^[0-9]{4}-/ никогда не истинно, next не срабатывает, фильтр печатает все
+    # строки. Класс [0-9] четырежды -- переносимо. Нижняя граница тоже режется:
+    # фолбэк docker --since без --until отдаёт сырой лог целиком, и ход ДО шага
+    # иначе снова попадает в окно.
+    printf '%s\n' "$raw" | awk -v since="$since" -v until="$until" '
+        {
+            ts = $1
+            if (ts ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/ && (ts < since || ts > until)) next
+            print
+        }
+    '
+}
+
 # Первая строка вывода -- часы робота (date +%s.%N), дальше отфильтрованный docker logs.
 # ``; true``: пустой grep не должен выглядеть как сбой SSH -- сбой виден по отсутствию числа в 1-й строке.
-_events_fetch() {  # $1=since (RFC3339 или 600s) $2=egrep
-    ${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '$1' 2>&1 | grep -aE '$2'; true" 2>/dev/null
+_events_fetch() {  # $1=since (RFC3339 или 600s) $2=egrep [$3=until, #5002]
+    local until_flag=""
+    [ -n "${3:-}" ] && until_flag=" --until '$3'"
+    ${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '$1'${until_flag} --timestamps 2>&1 | grep -aE '$2'; true" 2>/dev/null
 }
 
 _ev_kv() {  # stdin = key=value строки; $1=key
@@ -1226,7 +1273,11 @@ check_track_ref() {
         echo "  PATTERN_MISS: track_ref: id песни акта не определён, а шаг сыгран"
         return 1
     fi
-    out="$(_events_fetch "$since" 'Запрос выполнения: ' \
+    # #5002: верхняя граница -- момент проверки. Без неё вызов тула следующего шага
+    # красился бы как вызов этого (то же окно, что у acceptance).
+    local until
+    until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    out="$(_events_fetch "$since" 'Запрос выполнения: ' "$until" \
         | python3 "$(_events_py)" trackcheck --scenario "$scenario" --label "$label" --track "$E2E_STEP_TRACK_ID" 2>&1)"
     if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
         echo "  PATTERN_OK: track_ref: $(printf '%s\n' "$out" | _ev_kv detail)"
