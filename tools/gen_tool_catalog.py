@@ -568,6 +568,7 @@ SKILL_TOOLS: dict[str, tuple[str, ...]] = {
         "play_animation",
         "play_sound",
         "get_sound_info",
+        "chimera_perform",
     ),
     "knowledge": (
         "search_web",
