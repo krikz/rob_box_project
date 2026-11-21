@@ -19,8 +19,9 @@ instead of crashing.
 
 from __future__ import annotations
 
+import inspect
 import re
-from typing import Any, List, Mapping, Optional
+from typing import Any, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 
@@ -80,6 +81,24 @@ EMPTY_MULTIWORD_HINT = (
 )
 #: Слово короче этого — не «значимое» (предлоги, частицы), общее правило длины.
 _MIN_SIGNIFICANT_WORD_LEN = 3
+
+
+def search_memory(
+    memory: object, query: str, limit: int, speaker_id: Optional[str]
+) -> Tuple[Sequence[Mapping[str, Any]], bool]:
+    """Поиск с каталогом фактов, устойчивый к ядру без флага (#4961).
+
+    Каталог просит только инструмент, и только у ядра, чей ``search`` принимает
+    ``browse_when_empty`` (v0.7.11+). Ядро v0.7.10 аргумента не знает и бросало
+    ``TypeError`` на любой запрос — живой ``memory_search`` отвечал
+    ``success=false``. Решение здесь, по сигнатуре, а не в промпте: старое ядро
+    ищется без флага, и второй элемент ``False`` честно говорит, что каталог
+    этому ядру недоступен.
+    """
+    search = memory.search
+    if "browse_when_empty" in inspect.signature(search).parameters:
+        return search(query, limit=limit, speaker_id=speaker_id, browse_when_empty=True), True
+    return search(query, limit=limit, speaker_id=speaker_id), False
 
 
 def _empty_result_hint(query: str, found: int) -> Optional[str]:
@@ -259,10 +278,9 @@ class MemorySearchTool(MCPTool):
 
         try:
             # #4956: каталог фактов — только от инструмента. Прямой search()
-            # без флага остаётся пустым на несовпадении (#3890).
-            results = memory.search(
-                query, limit=limit, speaker_id=speaker_id, browse_when_empty=True
-            )
+            # без флага остаётся пустым на несовпадении (#3890). #4961: флаг
+            # уходит лишь ядру, которое его принимает, иначе поиск падает.
+            results, catalog_available = search_memory(memory, query, limit, speaker_id)
             self.log_info(
                 f"[memory_search] query={query[:40]!r} speaker={speaker_id} "
                 f"→ {len(results)} results "
@@ -301,6 +319,8 @@ class MemorySearchTool(MCPTool):
             hint = _empty_result_hint(query, len(formatted))
             if hint:
                 data["hint"] = hint
+            if not catalog_available:
+                data["catalog"] = "unavailable"
             return MCPToolResult(
                 success=True,
                 data=data,
