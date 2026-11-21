@@ -51,6 +51,15 @@ LLM, включая строку
 там они через запятую без кавычек. Поэтому кавычки и маркеры исполнения
 дают чистый ноль на невызванных тулах (колонки quoted/zapros выше).
 
+Голых кавычек с #5008 мало: мост команд печатает диагностику
+``tool_not_available → в запрос добавлены тулы ['get_music_state', ...]``
+(``command_bridge.py``) — это каталог, добавленный в СЛЕДУЮЩИЙ запрос, а
+не вызов. Имя в кавычках считается вызовом только внутри конструкции
+вызова (``tools=[...]``, ``actions=[...]``, ``ToolCall(name=...)``,
+``tool_calls=[...]``, ``tools(<digits>): 'x'``); диагностика в этот
+список не входит. Каталог ``tools(56): stop_music, ...`` без кавычек
+вызовом не является.
+
 Контракт функции
 ================
 ``tool_invoked(logs, frag)``:
@@ -125,13 +134,32 @@ def invocation_markers(tool: str) -> list:
     """Подстроки, каждая из которых доказывает РЕАЛЬНЫЙ вызов ``tool``.
 
     Все — lower-case: вызывающий сравнивает с логом в lower-case.
+
+    Кавычечные маркеры — только внутри конструкции вызова, не голое имя в
+    кавычках: диагностика моста ``в запрос добавлены тулы ['x', ...]``
+    печатает каталог, а не вызов (#5008). Конструкции:
+
+    * ``tools=['x']`` / ``actions=['x']`` — итог хода и вердикт моста;
+    * ``ToolCall(... name='x' ...)`` — вызов в истории запроса;
+    * ``tool_calls=[('x', ...]`` — дамп ответа модели;
+    * ``"tool": "x"`` — действие в JSON (query_results, recent_actions,
+      отклонённая попытка). Дамп запроса режется
+      :func:`strip_llm_request_dump` ДО вердикта (#3860); голый поиск по
+      окну без чистки обязан видеть ту же форму, иначе #3860 врёт наоборот;
+    * ``tools(<digits>): 'x'`` — turn-tools с именем В КАВЫЧКАХ. Каталог
+      ``tools(56): stop_music, ...`` печатает имена БЕЗ кавычек и вызовом
+      не является (run 34408526453).
     """
     t = tool.lower()
+    quoted = """['\"]%s['\"]""" % re.escape(t)
     return [
-        # tools=['x', 'y'] в итоговой строке хода + ToolCall(name='x')
-        "'%s'" % t,
-        '"%s"' % t,
-        # dialog_node → mcp_server и обратно
+        re.compile(r"""\btools=\[(?:[^\]\n]*,\s*)?""" + quoted),
+        re.compile(r"""\bactions=\[(?:[^\]\n]*,\s*)?""" + quoted),
+        re.compile(r"""\btoolcall\([^)\n]*\bname=""" + quoted),
+        re.compile(r"""\btool_calls=\[(?:[^\]\n]*,\s*)?\(""" + quoted),
+        re.compile(r"""\btools\([0-9]+\):\s*(?:[^'\n]*,\s*)?""" + quoted),
+        re.compile(r"""['"]tool['"]\s*:\s*""" + quoted),
+        # dialog_node → mcp_server и обратно: имя после маркера, без кавычек
         "запрос выполнения: %s" % t,
         "инструмент %s выполнен" % t,
         "публикую результат для %s" % t,
@@ -150,7 +178,7 @@ def tool_invoked(logs: str, frag: str) -> bool:
     if not TOOL_NAME_RE.match(frag_l):
         # свободный текст (кусок строки лога) — поведение как было
         return frag_l in low
-    return any(m in low for m in invocation_markers(frag_l))
+    return any(_marker_found(low, m) for m in invocation_markers(frag_l))
 
 
 def first_invocation_position(logs: str, tool: str) -> int | None:
@@ -170,16 +198,32 @@ def first_invocation_position(logs: str, tool: str) -> int | None:
     return _first_marker_position(low, invocation_markers(tool.lower()))
 
 
-def _first_marker_position(lowered_logs: str, markers: list[str] | tuple[str]) -> int | None:
-    """Helper: индекс первого вхождения любой из подстрок в lower-case логе.
+def _marker_found(lowered_logs: str, marker: "str | re.Pattern[str]") -> bool:
+    """Маркер есть в lower-case логе: подстрока или регэксп конструкции."""
+    if isinstance(marker, str):
+        return marker in lowered_logs
+    return marker.search(lowered_logs) is not None
+
+
+def _marker_position(lowered_logs: str, marker: "str | re.Pattern[str]") -> int | None:
+    """Индекс первого вхождения маркера в lower-case логе, или ``None``."""
+    if isinstance(marker, str):
+        found = lowered_logs.find(marker)
+        return found if found != -1 else None
+    match = marker.search(lowered_logs)
+    return match.start() if match else None
+
+
+def _first_marker_position(lowered_logs: str, markers: list | tuple) -> int | None:
+    """Индекс первого вхождения любой подстроки или конструкции вызова.
 
     Возвращает ``None`` если ни один маркер не найден. Раньше аналогичный
     код был inline в check_acceptance, теперь — общий хелпер.
     """
     earliest: int | None = None
     for m in markers:
-        idx = lowered_logs.find(m)
-        if idx == -1:
+        idx = _marker_position(lowered_logs, m)
+        if idx is None:
             continue
         if earliest is None or idx < earliest:
             earliest = idx
