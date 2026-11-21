@@ -2948,14 +2948,18 @@ PROGRESS_PHRASES: Mapping[str, str] = MappingProxyType({"llm": PROGRESS_LLM_PHRA
 #: — промежуточная фраза и фраза потолка по факту: прежняя музыка звучит, новая собирается. Ключи класса действия.
 MUSIC_REPLACE_PHRASES: Mapping[str, str] = MappingProxyType({"progress": "media.progress_replace",
                                                             "timeout": "media.timeout_replace"})
+#: Срок класса ``LATE_SPOKEN_CLASSES`` истёк, а владелец ещё не сказал исход (#5006, n604: трек встал через 216 мс
+#: после «Музыка пока не заиграла.»). Это «ещё собираю», не отказ: отказ ``media.timeout`` говорит роутер, когда
+#: события старта нет (``music.not_started``). Своя фраза тула (``play_sound`` → ``sound.timeout``) не подменяется.
+MEDIA_STILL_WORKING_PHRASE = "media.timeout_pending"
 #: Тулы, что заказывают новую музыку (``dj_set`` — кроме стопа; стоп и правка текущего трека ничего не собирают).
 MUSIC_STARTING_TOOLS: Tuple[str, ...] = ("dj_set", "request_music", "generate_music")
 #: Потолок истёк в ожидании LLM - фраза с именем провайдера; провайдер неизвестен - ``understand.timeout``.
 CEILING_PHRASE = "understand.ceiling"
 #: Цепочка провайдеров отказала (провайдер не жив) - фраза с его именем сразу, а не ожидание потолка.
 PROVIDER_FAILED_PHRASE = "understand.provider_failed"
-PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, *PROGRESS_PHRASES.values(),
-                             *MUSIC_REPLACE_PHRASES.values())
+PHRASE_KEYS = PHRASE_KEYS + (CEILING_PHRASE, PROVIDER_FAILED_PHRASE, MEDIA_STILL_WORKING_PHRASE,
+                             *PROGRESS_PHRASES.values(), *MUSIC_REPLACE_PHRASES.values())
 #: Журнал смены (решение Шифу 27.10 «можно просто вести лог событий и туда смотреть»; ``shift_log``): в памяти
 #: процесса, не дольше окна и не больше записей кольца; новая сессия разговора его не чистит, рестарт процесса - да.
 SHIFT_LOG_WINDOW_S = 12 * 3600.0

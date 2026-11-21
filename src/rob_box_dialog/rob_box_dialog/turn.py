@@ -926,8 +926,9 @@ async def act_on_result(engine: "TurnEngine", turn: "_Turn", result: Any, snap: 
 
 def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
     """Фраза кода об исходе действий хода (``respond.join``): без ``query`` (его данные уходят модели). Голос тоже
-    здесь: тулы ``set_voice``/``set_tts_provider`` молчат, фраза — по их результату (``knowledge.VOICE_DONE``). Слота нет
-    в данных события — общая фраза ``local.*``."""
+    здесь: тулы ``set_voice``/``set_tts_provider`` молчат, фраза — по их результату (``knowledge.VOICE_DONE``). Срок
+    класса, на котором владелец ещё не сказал исход, — «ещё собираю», не отказ (:func:`respond.still_working`). Слота
+    нет в данных события — общая фраза ``local.*``."""
     own = [r for r in results if r.cls != _QUERY]
     try:
         said = join(own)
@@ -2215,8 +2216,9 @@ def replacing_music(engine: "TurnEngine", turn: Any) -> bool:
 def replace_timeout_outcome(engine: "TurnEngine", turn: Any, results: Sequence[ActionResult],
                             outcome: Optional[str]) -> Optional[str]:
     """Срок класса вышел (исполнитель закрыл ``action.media`` статусом ``timeout``), а ход заказал смену под играющую
-    музыку (#4479, М14 n604: «Музыка пока не заиграла.» при играющем сете): факт - из снимка плеера, не из слов
-    модели; прежний сет звучит - фраза смены (``MUSIC_REPLACE_PHRASES``), иначе исход как есть."""
+    музыку (#4479): факт - из снимка плеера, не из слов модели; прежний сет звучит - фраза смены
+    (``MUSIC_REPLACE_PHRASES``). Ничего не играет - исход как есть: для музыки это «ещё собираю»
+    (:func:`respond.still_working`), не «не заиграла» (#5006)."""
     timed_out = any(r.cls == "action.media" and r.status == "timeout" for r in results)
     if timed_out and replacing_music(engine, turn):
         return phrases.text(kn.MUSIC_REPLACE_PHRASES["timeout"])
@@ -2246,13 +2248,17 @@ async def _progress(engine: "TurnEngine", turn: _Turn) -> None:
 
 
 def ceiling_phrase(turn: _Turn, provider: str, replacing: bool = False) -> str:
-    """Фраза потолка (В31): ждали действие — фраза его класса о таймауте («Музыка пока не заиграла.»), а не «не
-    понял»; ждали LLM — с именем провайдера; провайдер неизвестен — ``understand.timeout``."""
+    """Фраза потолка (В31): ждали действие — фраза его класса о таймауте, а не «не понял»; музыка, чей владелец ещё
+    может сказать исход (#5006), — «ещё собираю», не «не заиграла»; ждали LLM — с именем провайдера; провайдер
+    неизвестен — ``understand.timeout``."""
     action = kn.ACTION_CLASSES.get(turn.waiting)
     if replacing:
         return phrases.text(kn.MUSIC_REPLACE_PHRASES["timeout"])
     if action is not None:
-        return phrases.text(action.phrases.get("timeout") or TIMEOUT_PHRASE)
+        key = action.phrases.get("timeout") or TIMEOUT_PHRASE
+        if key == kn.ACTION_CLASSES["action.media"].phrases.get("timeout"):
+            key = kn.MEDIA_STILL_WORKING_PHRASE  # срок - не отказ: владелец ещё не сказал
+        return phrases.text(key)
     return phrases.text(kn.CEILING_PHRASE, provider=provider) if provider else phrases.text(TIMEOUT_PHRASE)
 
 
