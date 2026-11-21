@@ -96,6 +96,7 @@ from .tools import (
     PlayAnimationTool,
     PlaySoundTool,
     GetSoundInfoTool,
+    ChimeraPerformTool,
     SpeakTextTool,
     ListenForResponseTool,
     EstimateTtsDurationTool,
@@ -904,6 +905,8 @@ class MCPServer(Node):
         # Sound tools
         self.registry.register(PlaySoundTool(self))
         self.registry.register(GetSoundInfoTool(self))
+        # ADR-0175 §2.1: одно разовое выступление Химерой (вызов, речь, пение, игра по названию).
+        self.registry.register(ChimeraPerformTool(self))
 
         # FAQ / Event tools
         self.registry.register(FaqSearchTool(self))

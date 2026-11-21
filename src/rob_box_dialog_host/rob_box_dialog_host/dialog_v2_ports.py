@@ -346,6 +346,7 @@ class V2Ports:
             return False
         owns = bool(host.owns_backing) and not keep_backing
         stopped = host.halt(keep_backing=keep_backing) if how == "halt" else host.stop(keep_backing=keep_backing)
+        _stop_chimera(self._node)  # побочный обрыв клипа: ответ про бит не меняет (interrupt.stops_music)
         return bool(stopped) and owns
 
     def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
@@ -364,6 +365,18 @@ class V2Ports:
 
         stop = MotionCommand(intent=IntentType.STOP, text="", entities={}, confidence=1.0)
         self._intent_pub.publish(fill_intent(Intent(), stop, epoch=epoch, turn_id=turn_id))
+
+
+def _stop_chimera(node: Any) -> bool:
+    """Оборвать клип Химеры тем же стопом, что гасит выступление.
+
+    Химера играет в процессе тулов, не в этом: нода диалога публикует обрыв, звук его исполняет. Нет издателя —
+    ``False`` (нечего обрывать), не выдуманный успех. Ответ ``stop_perform`` про бит от этого не зависит.
+    """
+    publish = getattr(node, "publish_chimera_abort", None)
+    if publish is None:
+        return False
+    return bool(publish())
 
 
 def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt: str,

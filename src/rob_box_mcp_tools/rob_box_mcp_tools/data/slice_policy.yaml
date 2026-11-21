@@ -77,6 +77,7 @@ slices:
     - list_tts_voices
     - play_animation
     - play_sound
+    - chimera_perform
     - set_volume
     - set_pitch
     - set_speed

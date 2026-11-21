@@ -489,6 +489,38 @@ def test_4083_expression_duration_from_the_model_reaches_the_expression_request(
                          f"turn={agg.turn_id}")
 
 
+class _PerformHost:
+    """Выступление без бита: ``stop`` возвращает True (блок открыт), но бита нет — ответ стопа остаётся False."""
+
+    owns_backing = False
+
+    def stop(self, keep_backing: bool = False) -> bool:
+        return True
+
+    def halt(self, keep_backing: bool = False) -> bool:
+        return True
+
+
+def test_stop_perform_aborts_chimera_by_json_and_keeps_the_backing_answer():
+    """Стоп диалога публикует ``{"abort": "chimera"}``, не голый ``STOP``: тот закрывает стрим рации.
+
+    Ответ про бит не меняется: выступление без своего бита — ``False``, даже если ``stop`` вернул True.
+    """
+    node = _Node()
+    published = []
+
+    def publish() -> bool:
+        published.append(json.dumps({"abort": "chimera"}))
+        return True
+
+    node.publish_chimera_abort = publish
+    ports = V2Ports(node, _LLM([], CallCounter()), CallCounter(), _Tools(), performer=lambda: _PerformHost())
+    assert ports.stop_perform("stop") is False
+    assert published == ['{"abort": "chimera"}']
+    assert ports.stop_perform("halt", keep_backing=True) is False
+    assert published == ['{"abort": "chimera"}', '{"abort": "chimera"}']
+
+
 def test_4083_show_queue_only_for_done_with_a_batch():
     from rob_box_dialog.turn import Shown
 
