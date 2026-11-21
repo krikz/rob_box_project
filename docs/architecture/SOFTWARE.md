@@ -543,7 +543,7 @@ ros2 service call /led_matrix/clear std_srvs/srv/Trigger
 - `registry.py` — реестр зарегистрированных инструментов
 - `base.py` — базовые классы инструментов
 - `waypoint_store.py` — хранение и навигация к waypoints
-- `mapping_state.py` — состояние SLAM карты
+- `mapping_state.py` — состояние SLAM карты в памяти (файл `/maps/mapping_state.json` не читается с `4f5baba18`, #5045)
 
 ---
 

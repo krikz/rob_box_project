@@ -27,8 +27,8 @@ from rob_box_mcp_tools.engine.instrumental_order import InstrumentalOrder
 from rob_box_mcp_tools.engine.source_route import SourceRouter
 from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, DjSetTool, RequestMusicTool, song_asked
 from rob_box_music.choice import DeterministicChooser
-from rob_box_music.source import (DECLINE, GENERATE, NAMED_SONG, REASON_WORDS, CoverWork, Route, SourceAsk,
-                                  SourceContext, decline_text, source_ask, source_candidates)
+from rob_box_music.source import (COVER_AND_VOCAL, DECLINE, GENERATE, NAMED_SONG, REASON_WORDS, CoverWork, Route,
+                                  SourceAsk, SourceContext, decline_text, source_ask, source_candidates)
 from rob_box_music.works import RTTTL, WorkCandidate, WorkRef, WorkWord
 
 from .test_adr0158_pr4_cover import FakeMaker, _records
@@ -200,6 +200,21 @@ def test_named_piece_is_marked_named_and_a_picked_one_is_not(tmp_path):
     picked, _ = _request(tmp_path, studio, maker, played, words=_echo)
     assert named._stage_piece("сыграй валькирии", None)["played"]["named"] is True  # noqa: SLF001
     assert picked._stage_piece("сыграй что-нибудь", None)["played"]["named"] is False  # noqa: SLF001
+
+
+def test_play_and_sing_one_named_piece_declines_and_starts_nothing(tmp_path):
+    """#4014: «сыграй X и спой» — свой отказ, не ``named_song`` и не заказ кавера или песни."""
+    studio, maker, played = FakeStudio(), FakeMaker(), []
+    req, rig = _request(tmp_path, studio, maker, played)
+    heard = "Робот, сыграй валькирии и спой"
+    assert source_ask(heard).cover_and_vocal
+    result = req.execute(intent="melody", text="сыграй валькирии и спой", heard_text=heard)
+    assert not result.success and result.data["reason"] == SOURCE_DECLINED
+    assert result.data["route"] == f"decline:{COVER_AND_VOCAL}"
+    assert result.data["route"] != f"decline:{NAMED_SONG}"
+    message = result.data["message"]
+    assert REASON_WORDS[COVER_AND_VOCAL] in message and REASON_WORDS[NAMED_SONG] not in message
+    assert studio.requests == [] and maker.orders == [] and played == [] and not rig.owner.is_playing()
 
 
 def test_play_the_same_piece_still_goes_the_cover_way(tmp_path):
