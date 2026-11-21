@@ -22,8 +22,34 @@ if [ ! -f "$ROS_SETUP" ]; then
     exit 1
 fi
 
+# set -u стоит выше. /opt/ros/humble/setup.bash (ament) читает
+# $AMENT_TRACE_SETUP_FILES без проверки на заданность; под set -u неинтерактивный
+# bash умирает на этой строке, и healthcheck вечно красный. Снимаем nounset
+# только на время source.
+# `exit N` внутри sourced-файла убивает эту оболочку целиком — ERR-ловушка его
+# не отменяет (проверено на bash 5.1). source в подоболочке, чтобы поймать rc;
+# переменные, которые выставил setup, забираем diff'ом окружения.
+set +u
+src_env=$(mktemp)
 # shellcheck disable=SC1090
-source "$ROS_SETUP"
+(
+    source "$ROS_SETUP"
+    src_rc=$?
+    export -p >"$src_env"
+    exit "$src_rc"
+)
+src_rc=$?
+set -u
+if [ "$src_rc" -ne 0 ]; then
+    rm -f "$src_env"
+    echo "nav2 healthcheck: source ${ROS_SETUP} failed rc=${src_rc}" >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "$src_env"
+rm -f "$src_env"
+# nounset мог прийти из setup; нам он нужен для проверок ниже.
+set -u
 
 fail=0
 for node in "${NODES[@]}"; do

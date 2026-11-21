@@ -156,6 +156,29 @@ def test_no_answer_exits_one(tmp_path):
     assert "/planner_server" in proc.stderr
 
 
+def test_setup_with_unset_var_still_reaches_lifecycle(tmp_path):
+    # ament setup.bash читает $AMENT_TRACE_SETUP_FILES без проверки. Под set -u
+    # это убило бы healthcheck навсегда. Стаб кончается без exit — как реальный
+    # setup.sh, который кончается на return, а не на exit.
+    bin_dir = _setup(tmp_path)
+    setup = tmp_path / "opt" / "ros" / "humble" / "setup.bash"
+    setup.write_text('echo "$NAV2_HC_UNSET_VAR"\nexport AMENT_PREFIX_PATH=/opt/ros/humble\n', encoding="utf-8")
+    _fake_ros2(bin_dir, {node: "active [3]" for node in NODES})
+    proc = _run(tmp_path, bin_dir)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+
+
+def test_setup_exit_is_reported(tmp_path):
+    bin_dir = _setup(tmp_path)
+    setup = tmp_path / "opt" / "ros" / "humble" / "setup.bash"
+    setup.write_text("exit 7\n", encoding="utf-8")
+    _fake_ros2(bin_dir, {node: "active [3]" for node in NODES})
+    proc = _run(tmp_path, bin_dir)
+    assert proc.returncode == 1, proc.stderr
+    assert f"source {setup} failed rc=7" in proc.stderr
+
+
 def test_hung_node_exits_one_on_timeout(tmp_path):
     bin_dir = _setup(tmp_path)
     answers = {node: "active [3]" for node in NODES}
