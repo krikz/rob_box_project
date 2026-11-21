@@ -166,7 +166,9 @@ mkdir -p "$OUT_DIR"
 # not invoked»), хотя tool calls в логах были. Фикс: фиксируем момент старта
 # прогона ПО ЧАСАМ РОБОТА (docker logs --since сравнивает с timestamp
 # контейнера робота) до первого шага.
-E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+# #5031: сам вызов стоит ПОСЛЕ refuse_first_mid_series. Дата ничего не стирает,
+# но отказ first посреди серии не должен ходить на робота вообще — иначе
+# тест не отличит «базы целы» от «уже сходили, и enter_e2e_mode мог стереть».
 
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
@@ -318,6 +320,8 @@ while [ $# -gt 0 ]; do
         --e2e-marathon-phase) E2E_MARATHON_PHASE="$2"; shift 2 ;;
         # #4077 П4 -- итоги шагов прошлых актов марафона (label=СТАТУС,…) для поля requires.
         --prior-steps) E2E_PRIOR_STEPS="$2"; shift 2 ;;
+        # #5031 — номер части серии (1 = с нуля). first на части > 1 — ошибка, не стирание.
+        --e2e-marathon-part) E2E_MARATHON_PART="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -326,6 +330,75 @@ case "$E2E_MARATHON_PHASE" in
     ""|first|middle|last) ;;
     *) echo "E2E_FATAL: --e2e-marathon-phase='$E2E_MARATHON_PHASE' — ожидается first|middle|last (issue #3972)" >&2; exit 2 ;;
 esac
+
+# --- issue #5031: first посреди серии стирает каст -------------------------
+# enter_e2e_mode (ниже) на переходе OFF->ON стирает обе e2e-БД — это #2890,
+# и для одиночного прогона так и должно быть. Но first — это «серия с нуля»:
+# 21.11 часть 2 марафона запустили отдельным раннером с first, и стирание
+# унесло каст и факты прошлой части (11 шагов покраснели ложно). middle базы
+# не трогает. Тихого даунгрейда first->middle нет: оператор должен увидеть
+# ошибку и выбрать middle (или осознанно удалить e2e-БД и начать с нуля).
+# Гард стоит ДО первого обращения к роботу, которое может стереть: отказ
+# выходит раньше enter_e2e_mode. Чтение профилей — только SELECT, файл не
+# удаляется (стирает узел на переходе OFF->ON, #2890).
+_e2e_speaker_profiles() {  # печатает число строк speakers; 0 — нет файла / ошибка / пусто
+    # E2E_SPEAKERS_DB — офлайн-тест: файл на машине харнесса, робота нет.
+    # Без него файл живёт в контейнере voice-assistant (/data/speakers.e2e.db),
+    # не на хосте харнесса и не на хосте робота.
+    local db="${E2E_SPEAKERS_DB:-}" n=""
+    if [ -n "$db" ]; then
+        [ -f "$db" ] || { echo 0; return 0; }
+        n="$(python3 - "$db" <<'PY'
+import sqlite3, sys
+try:
+    con = sqlite3.connect("file:%s?mode=ro" % sys.argv[1].replace("?", "%3f"), uri=True)
+    n = con.execute("select count(*) from speakers").fetchone()[0]
+except Exception:
+    n = 0
+print(int(n))
+PY
+)"
+    else
+        # bash -lc: так фейк тестов (и живой docker exec) разбирает команду.
+        # mode=ro — файл не создаётся и не пишется. Ошибка (нет файла, нет
+        # таблицы, нет контейнера) — 0, то есть «старт с нуля», не отказ.
+        n="$(${ROBOT_SSH} "docker exec voice-assistant bash -lc 'python3 -c \"import sqlite3
+try:
+ print(int(sqlite3.connect(\\\"file:/data/speakers.e2e.db?mode=ro\\\",uri=True).execute(\\\"select count(*) from speakers\\\").fetchone()[0]))
+except Exception:
+ print(0)\"'" 2>/dev/null || echo 0)"
+    fi
+    case "$n" in
+        ""|*[!0-9]*) echo 0 ;;
+        *) echo "$n" ;;
+    esac
+}
+refuse_first_mid_series() {  # rc 0 — first честный (серия с нуля); иначе exit 2
+    [ "$E2E_MARATHON_PHASE" = "first" ] || return 0
+    local part="${E2E_MARATHON_PART:-}" why="" profiles=""
+    case "$part" in
+        ""|*[!0-9]*) part="" ;;
+    esac
+    if [ -n "$E2E_PRIOR_STEPS" ]; then
+        why="переданы итоги шагов прошлых актов (--prior-steps)"
+    elif [ -n "$part" ] && [ "$part" -gt 1 ]; then
+        why="номер части ${part} > 1 (--e2e-marathon-part)"
+    fi
+    if [ -z "$why" ]; then
+        # Профили в speakers.e2e.db — каст уже живёт. Нет файла или 0 строк —
+        # это и есть старт с нуля (#2890), стирать можно.
+        profiles="$(_e2e_speaker_profiles)"
+        [ "$profiles" -gt 0 ] && why="в speakers.e2e.db уже ${profiles} профил(ей) каста"
+    fi
+    [ -n "$why" ] || return 0
+    [ -n "$part" ] || part="?"
+    echo "E2E_FATAL: часть ${part} серии запущена режимом first, а серия не с нуля (${why}). Часть ${part} запускается режимом middle; first стирает каст — если нужен чистый старт, удалите e2e-БД осознанно (issue #5031)" >&2
+    exit 2
+}
+refuse_first_mid_series
+# Часы робота — первое обращение, которое ничего не пишет. Стоит после гарда:
+# first посреди серии выходит здесь, не дойдя ни до даты, ни до enter_e2e_mode.
+E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$E2E_TTS_PROVIDER" in
     auto|yandex|minimax|silero) ;;
     *) echo "E2E_FATAL: --tts-provider='$E2E_TTS_PROVIDER' — ожидается auto|yandex|minimax|silero" >&2; exit 2 ;;

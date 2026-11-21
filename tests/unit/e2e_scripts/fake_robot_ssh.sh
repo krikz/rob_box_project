@@ -123,6 +123,12 @@ ros2() {  # ros2 param set|get <node> <name> [value] [--no-daemon] | ros2 servic
             was="$(cat "$f" 2>/dev/null || echo false)"
             if [ "$was" = "false" ] && [ "$value" = "true" ]; then
                 echo "WIPE $node" >> "$FAKE_ROBOT_STATE/events"
+                # #5031: переход OFF->ON стирает e2e-БД (как узел, #2890).
+                # Пути задаёт тест — боевую /data фейк не трогает.
+                if [ -n "${FAKE_E2E_DBS:-}" ]; then
+                    # shellcheck disable=SC2086
+                    rm -f $FAKE_E2E_DBS
+                fi
             fi
             echo "$value" > "$f"
             echo "Set parameter successful"
