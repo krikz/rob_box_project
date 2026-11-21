@@ -217,17 +217,30 @@ def test_sang_only_after_finished_and_one_phrase():
     assert decide.sang_phrase(decide.outcome_of(plan, {"stage": "finished"}, "r1"), phrases.text) == said
 
 
+def _live_profile():
+    """Профиль с настоящими id клипов: заглушка до хоста не доходит, и «хост спрошен» иначе не проверить."""
+    profile = decide.stub_profile()
+    return decide.ChimeraProfile(
+        creatures=profile.creatures,
+        phrases=profile.phrases,
+        calls={"сова:уханье": "owl-hoot", "тюлень:писк": "seal-squeak"},
+        stub=False,
+        note="тест живого профиля, не пакет 0.1/0.2",
+    )
+
+
 def test_tool_plays_on_fake_host_and_does_not_say_sang_before_finish(tmp_path):
     lib = library(tmp_path, [_material("local:hall", "В пещере горного короля", "Григ")])
+    live = _live_profile()
     playing = FakeHost({"stage": "started"})
-    result = tool(playing, lib).execute(action="play", title="пещере короля")
+    result = tool(playing, lib, live).execute(action="play", title="пещере короля")
     assert playing.asks == 1 and playing.player.started == 1 and playing.player.playing is True
     assert result.data["status"] == "pending" and result.data["sang"] is False
     assert result.message is None and result.success is False
     assert result.data["material_id"] == "local:hall"
 
     done = FakeHost({"stage": "finished"})
-    finished = tool(done, lib).execute(action="sing", title="пещере короля", timbre="female", syllables="ла")
+    finished = tool(done, lib, live).execute(action="sing", title="пещере короля", timbre="female", syllables="ла")
     assert finished.success is True and finished.data["sang"] is True
     assert finished.message is not None and "Спел" in finished.message
     assert finished.data["request_id"] == "req-1"
@@ -235,7 +248,7 @@ def test_tool_plays_on_fake_host_and_does_not_say_sang_before_finish(tmp_path):
 
 def test_stop_stops_the_fake_player_and_blocks_a_late_start():
     host = FakeHost({"stage": "started"})
-    tool(host).execute(action="call", creature="тюлень", call="писк")
+    tool(host, profile=_live_profile()).execute(action="call", creature="тюлень", call="писк")
     assert host.player.playing is True
     assert host.stop("playback") is True
     assert host.player.playing is False and host.player.stopped == 1
@@ -245,7 +258,7 @@ def test_stop_stops_the_fake_player_and_blocks_a_late_start():
 
 def test_cancel_during_render_never_starts_playback():
     host = FakeHost({"stage": "cancelled", "when": "render"})
-    result = tool(host).execute(action="speak", phrase_id="privet", timbre="child")
+    result = tool(host, profile=_live_profile()).execute(action="speak", phrase_id="privet", timbre="child")
     assert host.player.started == 0 and host.player.playing is False
     assert result.data["reason"] == "cancelled_render" and result.data["sang"] is False
     assert result.message is not None and "счита" in result.message
@@ -262,9 +275,71 @@ def test_unknown_title_does_not_ask_the_host(tmp_path):
 
 def test_one_request_one_phrase_no_second_reply():
     host = FakeHost({"stage": "finished"})
-    result = tool(host).execute(action="call", creature="сова", call="уханье")
+    result = tool(host, profile=_live_profile()).execute(action="call", creature="сова", call="уханье")
     assert host.asks == 1
     assert result.data["sang"] is False  # вызов звучал, но «спел» — только пение и игра
     assert "Спел" not in (result.message or "")
-    assert result.message == phrases.text("chimera.done", title=" «clip:owl-hoot»", action="call")
+    assert result.message == phrases.text("chimera.done", title=" «owl-hoot»", action="call")
     assert result.error is None  # успех — одна фраза в message; error пуст, второй реплики нет
+
+
+def test_stub_profile_is_missing_file_and_does_not_publish_the_clip():
+    """Пакет 0.1/0.2 отсутствует: порт не публикует ``clip:*`` в звук и не спрашивает издателя."""
+    from rob_box_mcp_tools.tools.chimera import ChimeraHostPort
+
+    published = []
+    node = _Node()
+    node.create_publisher = lambda *a, **k: published.append(a) or node
+    port = ChimeraHostPort(node)
+    plan = decide.decide("call", decide.stub_profile(), creature="сова", call_name="уханье")
+    request_id, stage = port.perform(plan)
+    assert request_id == "" and stage["stage"] == "missing_file"
+    assert published == [] and port._active is None  # noqa: SLF001 — клип заглушки не стал активным
+    result = tool(port).execute(action="call", creature="сова", call="уханье")
+    assert result.data["reason"] == "missing_file" and result.data["stub"] is True
+    assert result.data["sang"] is False and "Спел" not in (result.message or "")
+    assert "clip:" not in (result.message or "")
+
+
+def test_stub_mark_reaches_a_finished_outcome():
+    plan = decide.decide("call", decide.stub_profile(), creature="сова", call_name="уханье")
+    assert plan.stub is True and plan.clip.startswith("clip:")
+    finished = decide.outcome_of(plan, {"stage": "finished"}, "r")
+    assert finished.stub is True and finished.as_data()["stub"] is True
+
+
+class _Perform:
+    """Владелец исполнения: ``stop`` без ``keep_backing`` — TypeError, как у настоящего ``PerformHost``."""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def stop(self, keep_backing: bool = False) -> bool:
+        self.calls.append(keep_backing)
+        return True  # открытый блок выступления — не «Химера смолкла»
+
+
+def test_port_stop_does_not_call_perform_host_stop_and_needs_a_silencer():
+    """``ChimeraHostPort.stop(keep_backing=False)`` не зовёт ``PerformHost.stop()`` без аргументов и не считает
+    открытый блок выступления тишиной Химеры. Глушителя на ноде нет — ``False``, даже если блок «открыт»."""
+    from rob_box_mcp_tools.tools.chimera import ChimeraHostPort
+
+    node = _Node()
+    perform = _Perform()
+    port = ChimeraHostPort(node, perform)
+    assert port.stop(keep_backing=False) is False and perform.calls == []
+    plan = decide.ChimeraPlan("play", "call", route=decide.ROUTE_CLIP, clip="owl-hoot")
+    port._active = plan.clip  # noqa: SLF001 — клип уже играет, глушителя нет
+    assert port.stop("playback", keep_backing=False) is False and perform.calls == []
+    node.abort_chimera = lambda clip: clip == "owl-hoot"
+    port._active = "owl-hoot"  # noqa: SLF001
+    assert port.stop(when="playback", keep_backing=False) is True and perform.calls == []
+
+
+def test_cyrillic_title_keys_ignore_case_and_keep_the_leading_letter():
+    """``_keys``: «Лунная» и «лунная» — один ключ; ведущее «В» в «В пещере…» не выпадает."""
+    from rob_box_mcp_tools.engine.score_library import _keys
+
+    assert _keys("Лунная", {}) == _keys("лунная", {})
+    cave = _keys("В пещере горного короля", {})
+    assert _keys("в", {}) <= cave and _keys("пещере", {}) <= cave

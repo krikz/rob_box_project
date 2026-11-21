@@ -29,7 +29,7 @@ from pydub import AudioSegment
 from .utils.audio_utils import find_respeaker_device_sounddevice
 from .audio_playback_manager import AudioPlaybackManager
 from .core.sound_requests import (  # noqa: F401 - EARCON_SOUNDS читают тесты и скрипты
-    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger,
+    EARCON_SOUNDS, SKIP_BUSY, SKIP_ERROR, SoundRequestsMixin, parse_trigger, trigger_source,
 )
 
 
@@ -131,6 +131,8 @@ class SoundNode(SoundRequestsMixin, Node):
         self._play_lock = threading.Lock()
         # Очередь play_sound из одного места и конец текущего звука (core/sound_requests.py, #3698).
         self._queued = None
+        self._aborted = ""
+        self._request_id = ""
         self._busy_until: Optional[float] = None
 
         # Инициализация
@@ -234,12 +236,31 @@ class SoundNode(SoundRequestsMixin, Node):
         """Триггер звукового эффекта: исход - ``SoundEvent`` с ``request_id`` запроса (его ждёт тул ``play_sound``)."""
         trigger, request_id = parse_trigger(msg.data)
         self.get_logger().info(f"🔔 Триггер: {trigger} (request {request_id[:8]})")
+        self._pending_source = trigger_source(msg.data)
         self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
-        """STOP на ``/voice/sound/stop`` закрывает голосовой стрим рации (barge-in)."""
-        if msg.data.strip().upper() == "STOP":
+        """``STOP`` закрывает голосовой стрим рации (barge-in).
+
+        JSON ``{"abort": request_id}`` — обрыв эффекта Химеры, не рации: голый ``STOP`` его не шлёт, и рация
+        эффект не глушит.
+        """
+        data = msg.data.strip()
+        if data.upper() == "STOP":
             self._close_voice_stream()
+            return
+        if data.startswith("{"):
+            self._abort_chimera(data)
+
+    def _abort_chimera(self, data: str) -> None:
+        import json
+
+        try:
+            body = json.loads(data)
+        except ValueError:
+            return
+        if isinstance(body, dict):
+            self.abort_request(str(body.get("abort") or ""))
 
     def voice_in_callback(self, msg):
         """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
@@ -397,7 +418,11 @@ class SoundNode(SoundRequestsMixin, Node):
                 node_name="sound_node"
             )
 
-            if not success:
+            if self.aborted(request_id):
+                # стоп оборвал sd.play: цикл play_audio вышел как успех, но звук не доиграл
+                self.get_logger().info(f"⏹️ Оборвано: {sound_name}")
+                outcome, reason = SoundEvent.KIND_SKIPPED, "cancelled"
+            elif not success:
                 self.get_logger().warn(f"⚠️  Аудио устройство занято, пропуск {sound_name}")
                 outcome, reason = SoundEvent.KIND_SKIPPED, SKIP_BUSY
             else:

@@ -1690,10 +1690,11 @@ TOOL_PHRASES: Mapping[str, Mapping[str, Any]] = MappingProxyType({
     "set_tts_provider": MappingProxyType({"done": VOICE_DONE, "rejected": VOICE_FAILED, "timeout": "voice.timeout"}),
     # звук - не музыка: класс action.media, но фраза о SoundEvent, а не «Включаю музыку»
     "play_sound": MappingProxyType({"rejected": "sound.skipped", "timeout": "sound.timeout"}),
-    # Химера (ADR-0175 §2.1): «спел» — только finished; отказ — своя причина, не фраза музыки
+    # Химера (ADR-0175 §2.1): «Спел» — только sang=True (конец sing/play). Конец вызова и речи —
+    # «Химера сказала» (chimera.done). Пустое поле не читается как True.
     "chimera_perform": MappingProxyType({
-        "done": "chimera.done", "rejected": "chimera.rejected", "cancelled": "chimera.cancelled",
-        "timeout": "chimera.timeout",
+        "done": ByData(("sang",), {(True,): "chimera.sang"}, "chimera.done"),
+        "rejected": "chimera.rejected", "cancelled": "chimera.cancelled", "timeout": "chimera.timeout",
     }),
     # стоп - не запуск: «Выключил музыку», а не «Включаю музыку» класса action.media. Тул сказал, что играть
     # было нечему (``was_playing=False``, живой прогон 26.10 20:57:50: ``stop track_id=None``) - так и говорим.
@@ -1816,7 +1817,10 @@ class OwnerText:
 #: «Включаю музыку.» — тихая подмена. Тул -> поля.
 OUTCOME_OWNER_TEXT: Mapping[str, OwnerText] = MappingProxyType({
     **{tool: OwnerText(whole="source_message", note="source_note") for tool in ("request_music", "generate_music")},
-    "dj_set": OwnerText(note="source_note")})
+    "dj_set": OwnerText(note="source_note"),
+    # Химера: фраза уже выбрана таблицей по sang — whole её не подменяет. note — примечание пути, если есть.
+    "chimera_perform": OwnerText(note="source_note"),
+})
 #: Тулы пульта Telegram, чей успех уносит в чат картинку (#4469): ``photo_id`` - id лица, ``caption`` - подпись; чат шлёт
 #: ``DialogOutput(kind=photo)`` с id, картинку бот забирает у владельца лиц (``/perception/people``) байтами. У
 #: ``find_similar`` в данных ещё ``photo_kind=collage``: это коллаж кандидатов, а не снимок лица.

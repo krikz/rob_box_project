@@ -102,6 +102,7 @@ class ChimeraPlan:
     syllables: str = ""
     variants: Tuple[Tuple[str, str, str], ...] = ()
     request: Mapping[str, str] = field(default_factory=dict)
+    stub: bool = False  # профиль-заглушка: клипа на диске нет, публиковать clip:* нельзя
 
     @property
     def plays(self) -> bool:
@@ -124,6 +125,7 @@ class ChimeraOutcome:
     clip: str = ""
     variants: Tuple[Tuple[str, str, str], ...] = ()
     sang: bool = False  # True только когда проигрывание фактически закончилось
+    stub: bool = False  # план шёл по профилю-заглушке: файла Химеры нет
 
     def as_data(self) -> Dict[str, Any]:
         return {
@@ -139,6 +141,7 @@ class ChimeraOutcome:
             "clip": self.clip,
             "variants": [{"material_id": m, "title": t, "composer": c} for m, t, c in self.variants],
             "sang": self.sang,
+            "stub": self.stub,
         }
 
 
@@ -166,6 +169,11 @@ def choose_piece(library: Optional[Library], title: str) -> PieceChoice:
     return PieceChoice(variants=tuple((c.id, c.title, c.composer) for c in found))
 
 
+def _plan(profile: ChimeraProfile, *args: Any, **kwargs: Any) -> ChimeraPlan:
+    """План с пометкой заглушки профиля: ветки ``decide`` её не дублируют."""
+    return ChimeraPlan(*args, stub=profile.stub, **kwargs)
+
+
 def decide(
     action: str,
     profile: ChimeraProfile,
@@ -188,7 +196,7 @@ def decide(
         "title": title,
     }
     if not profile.allows(action):
-        return ChimeraPlan("refuse", action, "unsupported_action", request=asked)
+        return _plan(profile, "refuse", action, "unsupported_action", request=asked)
     if action == "call":
         return _call(profile, creature, call_name, asked)
     if action == "speak":
@@ -199,19 +207,19 @@ def decide(
 def _call(profile: ChimeraProfile, creature: str, call_name: str, asked: Mapping[str, str]) -> ChimeraPlan:
     clip = profile.call_clip(creature, call_name)
     if clip is None:
-        return ChimeraPlan("refuse", "call", "unsupported_pairing", request=asked)
+        return _plan(profile, "refuse", "call", "unsupported_pairing", request=asked)
     if not clip:
-        return ChimeraPlan("refuse", "call", "missing_file", request=asked)
-    return ChimeraPlan("play", "call", route=ROUTE_CLIP, clip=clip, request=asked)
+        return _plan(profile, "refuse", "call", "missing_file", request=asked)
+    return _plan(profile, "play", "call", route=ROUTE_CLIP, clip=clip, request=asked)
 
 
 def _speak(profile: ChimeraProfile, phrase_id: str, timbre: str, asked: Mapping[str, str]) -> ChimeraPlan:
     if timbre not in profile.timbres:
-        return ChimeraPlan("refuse", "speak", "unsupported_timbre", timbre=timbre, request=asked)
+        return _plan(profile, "refuse", "speak", "unsupported_timbre", timbre=timbre, request=asked)
     if phrase_id not in profile.phrases:
-        return ChimeraPlan("refuse", "speak", "unsupported_pronunciation", timbre=timbre, request=asked)
-    return ChimeraPlan(
-        "play", "speak", route=ROUTE_LONG, timbre=timbre, syllables=profile.phrases[phrase_id], request=asked
+        return _plan(profile, "refuse", "speak", "unsupported_pronunciation", timbre=timbre, request=asked)
+    return _plan(
+        profile, "play", "speak", route=ROUTE_LONG, timbre=timbre, syllables=profile.phrases[phrase_id], request=asked
     )
 
 
@@ -225,13 +233,14 @@ def _melody(
     asked: Mapping[str, str],
 ) -> ChimeraPlan:
     if action == "sing" and timbre not in profile.timbres:
-        return ChimeraPlan("refuse", action, "unsupported_timbre", timbre=timbre, request=asked)
+        return _plan(profile, "refuse", action, "unsupported_timbre", timbre=timbre, request=asked)
     if piece.variants:
-        return ChimeraPlan("refuse", action, "ambiguous_title", variants=piece.variants, request=asked)
+        return _plan(profile, "refuse", action, "ambiguous_title", variants=piece.variants, request=asked)
     if not piece.material_id:
-        return ChimeraPlan("refuse", action, "unknown_title", request=asked)
+        return _plan(profile, "refuse", action, "unknown_title", request=asked)
     sung = syllables if action == "sing" else ""  # play — мелодия без текста, нейтральный вокализ
-    return ChimeraPlan(
+    return _plan(
+        profile,
         "play",
         action,
         route=ROUTE_LONG,
@@ -244,10 +253,16 @@ def _melody(
     )
 
 
+def _outcome(plan: ChimeraPlan, *args: Any, **kwargs: Any) -> ChimeraOutcome:
+    """Исход с пометкой заглушки плана: ветки ``outcome_of`` её не дублируют."""
+    return ChimeraOutcome(*args, stub=plan.stub, **kwargs)
+
+
 def outcome_of(plan: ChimeraPlan, stage: Optional[Mapping[str, Any]] = None, request_id: str = "") -> ChimeraOutcome:
     """Исход: отказ плана — сразу; иначе стадия хоста. ``sang`` — только ``finished``."""
     if not plan.plays:
-        return ChimeraOutcome(
+        return _outcome(
+            plan,
             "rejected",
             plan.reason,
             plan.action,
@@ -258,7 +273,8 @@ def outcome_of(plan: ChimeraPlan, stage: Optional[Mapping[str, Any]] = None, req
         )
     stage = stage or {}
     kind = str(stage.get("stage") or "")
-    base = ChimeraOutcome(
+    base = _outcome(
+        plan,
         "pending",
         kind or "no_stage",
         plan.action,
@@ -275,7 +291,8 @@ def outcome_of(plan: ChimeraPlan, stage: Optional[Mapping[str, Any]] = None, req
     if kind == "started":
         return _done(base, "started", status="pending", sang=False)
     if kind == "cancelled":
-        return ChimeraOutcome(
+        return _outcome(
+            plan,
             "cancelled",
             _cancel_reason(stage),
             plan.action,
@@ -288,7 +305,8 @@ def outcome_of(plan: ChimeraPlan, stage: Optional[Mapping[str, Any]] = None, req
             plan.clip,
         )
     if kind in ("missing_file", "offline"):
-        return ChimeraOutcome(
+        return _outcome(
+            plan,
             "rejected",
             kind,
             plan.action,
@@ -301,7 +319,8 @@ def outcome_of(plan: ChimeraPlan, stage: Optional[Mapping[str, Any]] = None, req
             plan.clip,
         )
     if kind == "skipped":
-        return ChimeraOutcome(
+        return _outcome(
+            plan,
             "rejected",
             str(stage.get("reason") or "skipped"),
             plan.action,
@@ -314,7 +333,8 @@ def outcome_of(plan: ChimeraPlan, stage: Optional[Mapping[str, Any]] = None, req
             plan.clip,
         )
     if not kind:
-        return ChimeraOutcome(
+        return _outcome(
+            plan,
             "timeout",
             "timeout",
             plan.action,
@@ -342,6 +362,7 @@ def _done(base: ChimeraOutcome, reason: str, status: str = "done", sang: bool = 
         base.route,
         base.clip,
         sang=sang,
+        stub=base.stub,
     )
 
 

@@ -125,10 +125,16 @@ class ChimeraPerformTool(MCPTool):
 
 
 def node_host(node: Any) -> "ChimeraHostPort":
-    """Хост ноды: один на ноду, чтобы стоп попал в тот же плеер, что и старт."""
+    """Хост ноды: один на ноду, чтобы стоп попал в тот же плеер, что и старт.
+
+    Владелец исполнения живёт на исполнителе тулов той же ноды (``plan_host.performer``). Процесс тулов его не
+    имеет — тогда порт без него, а стоп диалога обрывает клип топиком, не вызовом ``PerformHost.stop``.
+    """
     host = getattr(node, "_chimera_host", None)
     if host is None:
-        host = ChimeraHostPort(node)
+        executor = getattr(node, "_tool_executor", None)
+        perform = getattr(executor, "performer", None)
+        host = ChimeraHostPort(node, perform)
         try:
             node._chimera_host = host
         except Exception:  # noqa: BLE001 — нода без атрибутов: порт живёт только в туле
@@ -149,25 +155,43 @@ class ChimeraHostPort:
         self._active: Optional[str] = None
 
     def perform(self, plan: decide.ChimeraPlan):
-        """Спросить хост и вернуть ``(request_id, стадия)``. Нет хоста — честный timeout, не выдуманный успех."""
+        """Спросить хост и вернуть ``(request_id, стадия)``. Нет хоста — честный timeout, не выдуманный успех.
+
+        Заглушка профиля и клип ``clip:*`` до хоста не доходят: пакета 0.1/0.2 нет, публиковать имя в звук — ложь.
+        """
+        if plan.stub or plan.clip.startswith("clip:"):
+            return "", {"stage": "missing_file", "reason": "missing_file"}
         if plan.route == decide.ROUTE_CLIP:
             return self._clip(plan)
         return self._long(plan)
 
-    def stop(self, when: str = "playback") -> bool:
-        """Остановить идущее. Длинное действие, отданное владельцу исполнения, гасит его ``stop``."""
-        if self._perform is not None and self._perform.stop():
-            self._active = None
-            return True
-        if self._active is None:
+    def stop(self, when: str = "playback", keep_backing: bool = False) -> bool:
+        """Остановить идущее. ``True`` — только если Химера реально играла и оборвалась.
+
+        Открытый блок выступления (``PerformHost.stop``) сам по себе не «Химера смолкла»: его ``True`` сюда не
+        годится. ``keep_backing`` принимает тот же стоп, что зовёт диалог, и бит выступления не трогает.
+        """
+        del when, keep_backing
+        clip = self._active
+        if clip is None:
             return False
         self._active = None
-        return True
+        return self._abort(clip)
 
     def _clip(self, plan: decide.ChimeraPlan):
         from .sound import EVENT_TOPIC, TRIGGER_TOPIC, sound_deadline_s
 
+        if plan.clip.startswith("clip:"):  # второй заслон: имя заглушки в звук не публикуется
+            return "", {"stage": "missing_file", "reason": "missing_file"}
+        self._active = plan.clip
         return self._ask_sound(plan.clip, TRIGGER_TOPIC, EVENT_TOPIC, sound_deadline_s())
+
+    def _abort(self, clip: str) -> bool:
+        """Оборвать клип в процессе звука. ``False`` — глушителя нет: «остановил» было бы враньём."""
+        abort = getattr(self._node, "abort_chimera", None)
+        if abort is None:
+            return False
+        return bool(abort(clip))
 
     def _long(self, plan: decide.ChimeraPlan):
         """Длинное действие. Владелец исполнения на ноде есть — стоп его; рендера пакета 0.1/0.2 ещё нет."""
@@ -187,7 +211,7 @@ class ChimeraHostPort:
 
         def publish(request_id: str) -> None:
             msg = String()
-            msg.data = json.dumps({"sound": clip, "request_id": request_id}, ensure_ascii=False)
+            msg.data = json.dumps({"sound": clip, "request_id": request_id, "source": "chimera"}, ensure_ascii=False)
             pub.publish(msg)
 
         from rob_box_dialog_msgs.msg import SoundEvent
