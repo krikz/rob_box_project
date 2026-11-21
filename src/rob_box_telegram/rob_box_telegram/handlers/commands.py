@@ -16,6 +16,7 @@ instance which exposes ROS 2 publishers and on-demand camera frames
 (``fetch_camera_frame``).
 """
 
+import asyncio
 import io
 import logging
 
@@ -26,18 +27,11 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
-from ..face_card import build_face_collage, find_summary, format_face_summary, load_detail
 from ..face_roster_view import format_owner_listing, listing_from_owner, unavailable_listing
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
 from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
-
-
-#: Карточка ``/face`` (issue #3025) всё ещё читает снимок галереи с диска:
-#: коллаж снимков сервис владельца в список не кладёт. Список ``/faces``
-#: диск не читает — он берёт ответ ``/perception/people`` (issue #3655).
-FACE_CARD_ROOT = "/data/faces"
 
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
@@ -867,15 +861,12 @@ async def faces_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @authorized
 async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/face <id|имя>`` — карточка лица: сводка + коллаж снимков.
+    """Handle ``/face <id|имя>`` — карточка лица у владельца галереи (issue #3655).
 
-    Принимает либо короткий ``person_id`` (8 символов, как оператор
-    копирует из ``/faces``), либо полный id, либо точное имя (без
-    учёта регистра). Если ничего не передано — показывает справку.
-
-    Коллаж строится локально через PIL (4×3 сетка, эталон Шифу).
-    Если ни reference, ни encounters не нашлись — отправляем только
-    сводку, без ``reply_photo``, и не падаем с исключением.
+    Сервис ``/perception/people`` ``OP_CARD`` на Vision Pi. Диск ``/data/faces``
+    на Sound Pi не читается. Коллаж собирает владелец; бот кладёт его байты
+    в чат. Молчит Vision или снимка нет — отказ из его причины, без выдуманной
+    картинки (ADR-0148).
     """
     raw = " ".join(context.args).strip() if context.args else ""
     if not raw:
@@ -888,33 +879,27 @@ async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    summary = find_summary(FACE_CARD_ROOT, raw)
-    if summary is None:
-        await update.message.reply_text(
-            f"⚠️ Не нашёл запись «{raw}». Список — `/faces`.",
-            parse_mode="Markdown",
-        )
-        return
+    node = _node(context)
+    fetch = getattr(node, "people_card", None)
+    if fetch is None:
+        from ..person_photo import ros_card_fetch
 
-    detail = load_detail(FACE_CARD_ROOT, summary.person_id)
-    if detail is None:
-        await update.message.reply_text(
-            f"⚠️ Запись `{summary.person_id_short}` повреждена "
-            "(нет meta.json). Проверьте диск.",
-            parse_mode="Markdown",
-        )
-        return
+        fetch = ros_card_fetch(node)
+        node.people_card = fetch
+    from .. import face_card_view
+    from ..person_photo import OP_CARD
 
-    text = format_face_summary(detail)
-    collage = build_face_collage(detail)
-    if collage is None:
-        # Нет ни reference, ни encounters — это легальный кейс
-        # (лицо только что создано без эмбеддингов). Шлём только сводку.
-        await update.message.reply_text(text, parse_mode="Markdown")
+    ok, reason, data, jpeg = await _await_card(fetch, raw, OP_CARD)
+    if not ok:
+        await update.message.reply_text(face_card_view.refusal_text(reason, data))
         return
+    caption = face_card_view.caption_from_owner(data)
+    await update.message.reply_photo(photo=io.BytesIO(jpeg), caption=caption, parse_mode="Markdown")
 
-    await update.message.reply_photo(
-        photo=io.BytesIO(collage),
-        caption=text,
-        parse_mode="Markdown",
-    )
+
+async def _await_card(fetch, query: str, op: int):
+    """``fetch`` блокирует (ROS). Из корутины — в потоке; подставной fetch теста зовётся как есть."""
+    result = fetch(query, op)
+    if asyncio.isfuture(result) or asyncio.iscoroutine(result):
+        result = await result
+    return result

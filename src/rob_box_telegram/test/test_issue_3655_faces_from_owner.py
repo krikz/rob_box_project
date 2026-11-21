@@ -102,6 +102,21 @@ class TestFacesDiskPathCannotReturn(unittest.TestCase):
         self.assertNotIn("FACE_CARD_ROOT", handler)
         self.assertIn("people_list", handler)
 
+    def test_face_handler_does_not_read_disk(self):
+        """Карточка ``/face`` тоже не с диска: ни корня галереи, ни читалки снимков."""
+        source = Path(self._commands_source()).read_text(encoding="utf-8")
+        handler = source.split("async def face_handler", 1)[1].split("\nasync def ", 1)[0]
+        self.assertNotIn("FACE_CARD_ROOT", handler)
+        self.assertNotIn("load_detail", handler)
+        self.assertNotIn("find_summary", handler)
+        self.assertNotIn("build_face_collage", handler)
+        self.assertNotIn('"/data/faces"', handler)
+        self.assertIn("people_card", handler)
+        self.assertNotIn(
+            "rob_box_telegram/face_card.py",
+            "\n".join(p.name for p in (_REPO_ROOT / "src/rob_box_telegram/rob_box_telegram").glob("*.py")),
+        )
+
     def test_bot_compose_does_not_mount_faces(self):
         text = (_REPO_ROOT / "docker/sound/docker-compose.yaml").read_text(encoding="utf-8")
         bot = text.split("  telegram-bot:", 1)[1].split("\n  # ", 1)[0]
