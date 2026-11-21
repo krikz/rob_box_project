@@ -26,26 +26,18 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
-from ..face_card import (
-    build_face_collage,
-    find_summary,
-    format_face_summary,
-    format_faces_table,
-    load_detail,
-    list_people,
-)
+from ..face_card import build_face_collage, find_summary, format_face_summary, load_detail
+from ..face_roster_view import format_owner_listing, listing_from_owner, unavailable_listing
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
 from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
 
 
-#: Filesystem location of the live face store inside the telegram-bot
-#: container. ``vision-face`` (Vision Pi, writer) and ``telegram-bot``
-#: (reader, :ro, Sound Pi since ADR-0159 PR-7 — a copy of the store, not
-#: the live one until #3655) mount ``./data/faces`` under their own
-#: ``docker/<pi>/``. Issue #3025 + ADR-0123 §4: the bot must never write here.
-FACE_STORE_MOUNT = "/data/faces"
+#: Карточка ``/face`` (issue #3025) всё ещё читает снимок галереи с диска:
+#: коллаж снимков сервис владельца в список не кладёт. Список ``/faces``
+#: диск не читает — он берёт ответ ``/perception/people`` (issue #3655).
+FACE_CARD_ROOT = "/data/faces"
 
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
@@ -146,7 +138,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/clear — очистить историю чата\n"
         "/myid — показать chat ID\n\n"
         "*Лица (issue #3025):*\n"
-        "/faces — список всех лиц в лицевой базе\n"
+        "/faces — список лиц у владельца галереи (Vision Pi)\n"
         "/face <id|имя> — карточка лица (сводка + коллаж)\n",
         parse_mode="Markdown",
     )
@@ -854,16 +846,23 @@ async def operator_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 @authorized
 async def faces_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/faces`` — таблица всех записей в ``/data/faces``.
+    """Handle ``/faces`` — список лиц у владельца галереи (issue #3655).
 
-    Issue #3025 + ADR-0123 §4: бот читает диск напрямую через
-    :mod:`rob_box_telegram.face_card` (read-only volume). Никакой
-    FaceStore / ROS API не задействован — бот и vision-face живут в
-    разных контейнерах и не разделяют состояние.
+    Тот же путь, что у тула ТАРС ``list_faces``: сервис ``/perception/people``
+    ``OP_LIST`` на Vision Pi (:func:`ros_people_list`). Диск ``/data/faces``
+    на Sound Pi не читается — это копия-снимок, не источник (ADR-0159 В8).
+    Владелец не ответил — честный отказ, не «лиц нет» (ADR-0148).
     """
-    summaries = list_people(FACE_STORE_MOUNT)
-    text = format_faces_table(summaries)
-    await update.message.reply_text(text, parse_mode="Markdown")
+    node = _node(context)
+    people_call = getattr(node, "people_list", None)
+    if people_call is None:
+        from rob_box_supervisor.face_roster_tool import ros_people_list
+
+        people_call = ros_people_list(node)
+        node.people_list = people_call
+    ok, reason, data = people_call()
+    listing = listing_from_owner(data) if ok else unavailable_listing(reason)
+    await update.message.reply_text(format_owner_listing(listing), parse_mode="Markdown")
 
 
 @authorized
@@ -889,7 +888,7 @@ async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    summary = find_summary(FACE_STORE_MOUNT, raw)
+    summary = find_summary(FACE_CARD_ROOT, raw)
     if summary is None:
         await update.message.reply_text(
             f"⚠️ Не нашёл запись «{raw}». Список — `/faces`.",
@@ -897,7 +896,7 @@ async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    detail = load_detail(FACE_STORE_MOUNT, summary.person_id)
+    detail = load_detail(FACE_CARD_ROOT, summary.person_id)
     if detail is None:
         await update.message.reply_text(
             f"⚠️ Запись `{summary.person_id_short}` повреждена "
