@@ -1383,6 +1383,33 @@ def best_snapshot_bytes(store: FaceStore, person_id: str) -> Optional[bytes]:
         return None
 
 
+def card_snapshot_bytes(store: FaceStore, person_id: str) -> List[bytes]:
+    """Байты снимков карточки одного лица: эталон, затем встречи по порядку (issue #3655).
+
+    Читает только каталог этой записи. Кадров тела нет: карточка ``/face`` показывает лицо.
+    Битый или пропавший файл пропускается, а не роняет ответ. Пустой список — снимков нет.
+    Функция модуля, а не метод: класс ``FaceStore`` и так на пределе бюджета.
+    """
+    with store._lock:
+        rec = store._records.get(person_id)
+        if rec is None:
+            return []
+        paths: List[Path] = []
+        if rec.has_reference_snapshot:
+            paths.append(store._person_dir(person_id) / _REFERENCE_FILENAME)
+        enc = store._encounters_dir(person_id)
+        paths += [enc / e['face_snapshot'] for e in rec.encounters if e.get('face_snapshot')]
+    found: List[bytes] = []
+    for path in paths:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if data:
+            found.append(data)
+    return found
+
+
 __all__ = [
     'MODE_WORKSHOP',
     'MODE_EXHIBITION',
@@ -1396,4 +1423,5 @@ __all__ = [
     'FaceMatch',
     'FaceStore',
     'best_snapshot_bytes',
+    'card_snapshot_bytes',
 ]
