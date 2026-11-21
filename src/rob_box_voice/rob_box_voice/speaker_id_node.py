@@ -513,6 +513,29 @@ def _publish_speaker_result(pub, payload: dict) -> None:
     pub.publish(fill_speaker_result(SpeakerResult(), payload))
 
 
+def _conflict_log_line(name: str, outcome) -> str:
+    """Строка конфликта имён для ``get_logger()`` ноды (ADR-0127, #5019).
+
+    Харнесс марафона читает ``docker logs`` (stdout ROS-логгера), а не ``logging`` модуля БД.
+    Поэтому доказательство «завожу отдельный профиль» обязано жить здесь: без него паттерн 2
+    акта 2c не видит отказ сесть на чужой безымянный профиль (n721, cos ниже порога слияния).
+    Имя конфликта может быть пустым: безымянный профиль именем не называется.
+    """
+    shown = outcome.conflict_name or "безымянный профиль"
+    bound = ">=" if (outcome.conflict_score or 0.0) >= _se_mod.REGISTER_MATCH_THRESHOLD else "<"
+    src = outcome.speaker_id
+    dst = outcome.conflict_speaker_id
+    return (
+        f"⚠️ Speaker '{name}' (id={src[:8]}) — голос похож на уже "
+        f"известного '{shown}' (id={dst[:8]}, "
+        f"score={outcome.conflict_score:.3f} {bound} порога слияния), но "
+        f"регистрируют как '{name}' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль "
+        "и НЕ переименовываю чужой "
+        "(ADR-0127). Если это один человек — склеить вручную через "
+        f'/voice/speaker/merge {{"src_speaker_id": "{src}", "dst_speaker_id": "{dst}"}}'
+    )
+
+
 # ── #4054 (решение Шифу 27.10, порт #3801 в v2): один голос — одна личность ──────────────────────────────────────
 # Голос фразы регистрации уверенно узнан как профиль P под именем Y, а человек называет себя X («я Тамара, мы не
 # знакомы, запомни мой голос», «меня зовут Денчик» при профиле «Эйджик») — это поправка имени, а не второй человек:
@@ -2092,16 +2115,9 @@ class SpeakerIdNode(Node):
                 "— voice matched an already-known speaker, no duplicate created"
             )
         elif outcome.name_conflict:
-            self.get_logger().warning(
-                f"⚠️ Speaker '{name}' (id={sid[:8]}) — голос похож на уже "
-                f"известного '{outcome.conflict_name}' "
-                f"(id={outcome.conflict_speaker_id[:8]}, "
-                f"score={outcome.conflict_score:.3f} >= порога слияния), но имя "
-                f"другое: завожу ОТДЕЛЬНЫЙ профиль и НЕ переименовываю чужой "
-                f"(ADR-0127). Если это один человек — склеить вручную через "
-                f"/voice/speaker/merge {{\"src_speaker_id\": \"{sid}\", "
-                f"\"dst_speaker_id\": \"{outcome.conflict_speaker_id}\"}}"
-            )
+            # #5019: строка обязана уйти в ROS-лог. ``logging`` модуля БД в docker logs не попадает
+            # (комментарий выше, run 35667281570), а паттерн 2 акта 2c читает именно эту строку.
+            self.get_logger().warning(_conflict_log_line(name, outcome))
         else:
             self.get_logger().info(f"✅ Speaker '{name}' registered (id={sid[:8]})")
         # Issue #1787 — новый профиль сразу получает внутреннюю кличку.
