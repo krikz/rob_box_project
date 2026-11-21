@@ -54,6 +54,16 @@ from .utils.audio_utils import find_respeaker_device_sounddevice
 VOICE_SILENCE_TIMEOUT = 0.3
 
 
+def abort_chimera(node, data: str) -> None:
+    """JSON ``{"abort": request_id}`` рвёт только клип с этой меткой (Химера), не рацию и не режим."""
+    try:
+        body = json.loads(data)
+    except ValueError:
+        return
+    if isinstance(body, dict):
+        node.abort_request(str(body.get("abort") or ""))
+
+
 def drop_queued_answer_clips(node) -> None:
     """Снять из очереди клип режима. Обычный эффект в очереди «стоп» не трогает.
 
@@ -66,6 +76,25 @@ def drop_queued_answer_clips(node) -> None:
             return
         node._queued = None
     node._skip(queued[2], queued[1], "stopped")
+
+
+def dispatch_sound_stop(node, data: str) -> None:
+    """Голый ``STOP`` — рация и клип режима. JSON — обрыв Химеры. Чужое тело не трогает никого.
+
+    ``sd.stop()`` зовётся, только если сейчас играет клип режима: конец PTT публикует тот же STOP,
+    и глушить им обычный эффект или Химеру нельзя. Очередь снимается только у клипов режима.
+    """
+    body = data.strip()
+    if body.upper() == "STOP":
+        node._close_voice_stream()
+        node._answer_stop.set()
+        drop_queued_answer_clips(node)
+        if node.current_sound in node._answer_ids:
+            node.playback_manager.stop_playback(node_name="sound_node")
+        return
+    if body.startswith("{"):
+        abort_chimera(node, body)
+
 
 
 class SoundNode(SoundRequestsMixin, Node):
@@ -285,31 +314,8 @@ class SoundNode(SoundRequestsMixin, Node):
         self.start_sound(trigger, request_id, queue=True)
 
     def sound_stop_callback(self, msg: String):
-        """``STOP`` закрывает голосовой стрим рации и рвёт клип режима. JSON — обрыв Химеры.
-
-        Голый ``STOP`` — рация (``_close_voice_stream``) и клип режима: ``sd.stop()`` зовётся, только если
-        сейчас играет клип режима, очередь клипов режима снимается. Конец PTT публикует тот же STOP, и
-        глушить им обычный эффект или Химеру нельзя. JSON ``{"abort": request_id}`` — обрыв эффекта Химеры,
-        не рации и не режима: голый ``STOP`` его не шлёт.
-        """
-        data = msg.data.strip()
-        if data.upper() == "STOP":
-            self._close_voice_stream()
-            self._answer_stop.set()
-            drop_queued_answer_clips(self)
-            if self.current_sound in self._answer_ids:
-                self.playback_manager.stop_playback(node_name="sound_node")
-            return
-        if data.startswith("{"):
-            self._abort_chimera(data)
-
-    def _abort_chimera(self, data: str) -> None:
-        try:
-            body = json.loads(data)
-        except ValueError:
-            return
-        if isinstance(body, dict):
-            self.abort_request(str(body.get("abort") or ""))
+        """``/voice/sound/stop``: голый ``STOP`` — рация и клип режима, JSON — обрыв Химеры."""
+        dispatch_sound_stop(self, msg.data)
 
     def voice_in_callback(self, msg):
         """Голос оператора (/avatar/voice_in, AudioData int16 PCM 16 kHz).
