@@ -1890,15 +1890,13 @@ check_cycle() {  # $1=before_rfc3339
 
 # Проверка ожидаемых паттернов (для фич, напр. speaker_analysis)
 # $1=before, $2..=паттерны (grep -E). Печатает найденные, rc=0 если все найдены.
-check_patterns() {  # $1=before [$last=until, #5002] $2..=паттерны
+# Верхняя граница окна (#5002) — не позиционный аргумент: контракт
+# test_e2e_voice_patterns_with_spaces.sh считает каждый аргумент после shift
+# паттерном. Границу несёт E2E_PATTERN_UNTIL на месте вызова (env-префикс),
+# чтобы она не протекла в _stt_step_executed и single-path (те без until).
+check_patterns() {  # $1=before $2..=паттерны; until = $E2E_PATTERN_UNTIL
     local before="$1"; shift
-    local until="" logs pat rc=0
-    # Последний аргумент-граница (#5002): RFC3339 с наносекундами. Вызовы без
-    # неё (диагностика «исход шага уже в окне») остаются с --since, как раньше.
-    if [ "$#" -gt 0 ] && [[ "${!#}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
-        until="${!#}"
-        set -- "${@:1:$#-1}"
-    fi
+    local until="${E2E_PATTERN_UNTIL:-}" logs pat rc=0
     logs="$(fetch_step_window_logs "$before" "$until")"
     # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
     logs="$(printf '%s
@@ -3856,8 +3854,11 @@ for p in json.load(sys.stdin):
                 log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
                 pat_checked=1
                 # #5002: верхняя граница окна паттернов -- момент проверки (наносекунды).
+                # Env-префикс, не позиционный аргумент: гард patterns_with_spaces
+                # считает каждый аргумент после shift паттерном (лишний until
+                # давал COUNT=N+1 и пустой PAT[]).
                 _pat_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
-                check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}" "$_pat_until"
+                E2E_PATTERN_UNTIL="$_pat_until" check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="patterns"
