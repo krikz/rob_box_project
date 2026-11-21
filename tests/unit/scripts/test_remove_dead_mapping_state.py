@@ -1,15 +1,18 @@
-"""Фолбэк удаления мёртвого mapping_state.json от root через docker (#5045).
+"""Фолбэк удаления мёртвого mapping_state.json (#5045).
 
 На Main Pi файл root:root, sudo -n просит пароль, обычный rm получает
-Permission denied (run 44948634286, job 136981418751, step 30). Скрипт
-``scripts/deploy/remove_dead_mapping_state.sh`` после неудачного rm удаляет
-файл от root через контейнер, который уже монтирует этот каталог rw, без
-sudo и без pull.
+Permission denied (run 44948634286, job 136981418751, step 30) — и шаг
+валил деплой. Приказ Шифу 22.11: мёртвый файл не критичен, шаг не должен
+падать, но и молча съедать отказ нельзя. Скрипт
+``scripts/deploy/remove_dead_mapping_state.sh`` пробует rm, затем
+``sudo -n rm`` (пароль не спрашивает), затем docker (exec rtabmap, если
+inspect показывает /maps на этот каталог, иначе docker run из локального
+кэша, без pull). exit 0 во всех ветках; если файл остался — строка
+«файл остался».
 
-Docker здесь не нужен: ``rm`` и ``docker`` — фейки в PATH. Сырой разбор
-всех веток (симлинк, workflow, идемпотентность) — bash-регресс
-``scripts/deploy/tests/test_remove_dead_mapping_state.sh``, его гоняет
-``test_bash_regression_passes``.
+Docker и sudo здесь не настоящие: фейки в PATH. Полный разбор веток —
+bash-регресс ``scripts/deploy/tests/test_remove_dead_mapping_state.sh``,
+его гоняет ``test_bash_regression_passes``.
 """
 
 from __future__ import annotations
@@ -19,8 +22,6 @@ import stat
 import subprocess
 import textwrap
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "scripts" / "deploy" / "remove_dead_mapping_state.sh"
@@ -43,6 +44,35 @@ FAKE_RM = textwrap.dedent(
     dir="$(dirname "$target")"
     if [ -n "$target" ] && [ -f "$dir/.rm-deny" ]; then
         echo "rm: cannot remove '$target': Permission denied" >&2
+        exit 1
+    fi
+    if [ -n "$target" ]; then
+        /bin/rm -f -- "$target"
+    fi
+    exit 0
+    """
+)
+
+FAKE_SUDO = textwrap.dedent(
+    """\
+    #!/usr/bin/env bash
+    # Фейк sudo -n rm. Файл .sudo-deny рядом — «a password is required».
+    set -u
+    if [ "${1:-}" != "-n" ]; then
+        echo "sudo: a password is required" >&2
+        exit 1
+    fi
+    shift
+    target=""
+    for arg in "$@"; do
+        case "$arg" in
+            -*) ;;
+            *) target="$arg" ;;
+        esac
+    done
+    dir="$(dirname "$target")"
+    if [ -n "$target" ] && [ -f "$dir/.sudo-deny" ]; then
+        echo "sudo: a password is required" >&2
         exit 1
     fi
     if [ -n "$target" ]; then
@@ -146,6 +176,7 @@ def _run(
     fake = tmp_path / "bin"
     fake.mkdir()
     _write_exe(fake / "rm", FAKE_RM)
+    _write_exe(fake / "sudo", FAKE_SUDO)
     _write_exe(fake / "docker", FAKE_DOCKER)
     env = os.environ.copy()
     env["PATH"] = f"{fake}{os.pathsep}{env.get('PATH', '')}"
@@ -162,18 +193,20 @@ def _run(
     )
 
 
-def _plant(maps: Path, deny: bool) -> Path:
+def _plant(maps: Path, deny_rm: bool, deny_sudo: bool) -> Path:
     maps.mkdir()
     target = maps / "mapping_state.json"
     target.write_text('{"map_name":"квартира"}\n')
     (maps / "rtabmap.db").write_text("rtabmap-db-sentinel\n")
-    if deny:
+    if deny_rm:
         (maps / ".rm-deny").write_text("1\n")
+    if deny_sudo:
+        (maps / ".sudo-deny").write_text("1\n")
     return target
 
 
 def test_bash_regression_passes():
-    """Полный bash-регресс #5045, включая фолбэк docker, зелёный."""
+    """Полный bash-регресс #5045, включая фолбэк docker и exit 0, зелёный."""
     proc = subprocess.run(
         ["bash", str(BASH_REGRESSION)],
         capture_output=True,
@@ -188,7 +221,7 @@ def test_bash_regression_passes():
 
 
 def test_missing_file_exits_zero(tmp_path: Path):
-    """(а) файла нет — тихий exit 0, docker не нужен."""
+    """(а) файла нет — ℹ️ и exit 0, docker не нужен."""
     maps = tmp_path / "maps"
     maps.mkdir()
     log = tmp_path / "docker.log"
@@ -200,9 +233,9 @@ def test_missing_file_exits_zero(tmp_path: Path):
 
 
 def test_rm_removes_file_exits_zero(tmp_path: Path):
-    """(б) обычный rm удалил — exit 0, docker не зван, соседний db жив."""
+    """(б) обычный rm удалил — exit 0, sudo и docker не званы, соседний db жив."""
     maps = tmp_path / "maps"
-    target = _plant(maps, deny=False)
+    target = _plant(maps, deny_rm=False, deny_sudo=False)
     log = tmp_path / "docker.log"
     log.write_text("")
     proc = _run(tmp_path, maps, tmp_path / "unused.scenario", log)
@@ -211,16 +244,17 @@ def test_rm_removes_file_exits_zero(tmp_path: Path):
     assert "удалён" in proc.stdout
     assert (maps / "rtabmap.db").read_text() == "rtabmap-db-sentinel\n"
     assert log.read_text() == ""
+    assert "sudo" not in proc.stderr
 
 
 def test_rm_denied_docker_exec_removes(tmp_path: Path):
-    """(в) rm Permission denied, docker exec с mount на этот каталог — exit 0.
+    """(в) rm и sudo -n отказали, docker exec с mount на этот каталог — exit 0.
 
     Вызов узкий: ``exec rtabmap rm -f /maps/mapping_state.json``. docker run
     не зовём, раз exec уже убрал файл.
     """
     maps = tmp_path / "maps"
-    target = _plant(maps, deny=True)
+    target = _plant(maps, deny_rm=True, deny_sudo=True)
     scenario = tmp_path / "scenario"
     log = tmp_path / "docker.log"
     log.write_text("")
@@ -241,13 +275,18 @@ def test_rm_denied_docker_exec_removes(tmp_path: Path):
     assert not target.exists()
     assert "exec rtabmap rm -f /maps/mapping_state.json" in calls
     assert not any(line.startswith("run ") for line in calls)
+    assert "a password is required" in proc.stderr
     assert (maps / "rtabmap.db").read_text() == "rtabmap-db-sentinel\n"
 
 
-def test_rm_and_docker_fail_exits_one(tmp_path: Path):
-    """(г) rm и docker не смогли — exit 1, файл на месте, ::error в stderr."""
+def test_rm_and_docker_fail_still_exits_zero(tmp_path: Path):
+    """(г) rm, sudo -n и docker не смогли — exit 0, файл на месте, «файл остался».
+
+    Проверка отсутствия выполнена: строка печатается только если файл жив.
+    Отказ rm не съеден молча (Permission denied в stderr).
+    """
     maps = tmp_path / "maps"
-    target = _plant(maps, deny=True)
+    target = _plant(maps, deny_rm=True, deny_sudo=True)
     scenario = tmp_path / "scenario"
     log = tmp_path / "docker.log"
     log.write_text("")
@@ -263,11 +302,8 @@ def test_rm_and_docker_fail_exits_one(tmp_path: Path):
         host_target=str(target),
     )
     proc = _run(tmp_path, maps, scenario, log)
-    assert proc.returncode == 1, proc.stdout
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert target.is_file()
-    assert "::error" in proc.stderr
+    assert "файл остался" in proc.stderr
     assert "Permission denied" in proc.stderr
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))
+    assert "удалён" not in proc.stdout

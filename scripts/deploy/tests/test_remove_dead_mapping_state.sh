@@ -2,22 +2,23 @@
 # Регресс-тест issue #5045: деплой Main Pi убирает мёртвый mapping_state.json
 # из тома карт и пишет об этом в лог. rtabmap.db не трогает.
 #
-# 1. scripts/deploy/remove_dead_mapping_state.sh:
-#    - файла нет / каталога нет ⇒ exit 0, строка «нет» в вывод;
-#    - файл есть ⇒ exit 0, файл исчез, строка «удалён» в вывод, соседний
-#      rtabmap.db на месте;
-#    - повторный запуск ⇒ exit 0 (идемпотентно);
-#    - цель — симлинк или каталог ⇒ exit 1, ничего не удалено;
-#    - без аргумента ⇒ exit 1.
-#    - rm получает Permission denied, файл остаётся, docker exec rtabmap
-#      с mount /maps на этот каталог удаляет его ⇒ exit 0, docker вызван
-#      узко (exec rtabmap rm -f /maps/mapping_state.json), docker run не зван;
-#    - тот же rm, но контейнера нет, а локальный образ есть ⇒ exit 0 через
-#      docker run --pull never, без pull;
-#    - rm и docker не смогли ⇒ exit 1, файл на месте.
+# Контракт (приказ Шифу, 22.11): шаг чистки не валит деплой. exit 1 нет
+# ни в одной ветке. Отсутствие файла проверяется и печатается честно.
+#   - каталога нет / файла нет ⇒ exit 0, строка «нет» / «отсутствует»;
+#   - файл есть и rm его берёт ⇒ exit 0, файл исчез, строка «удалён»,
+#     соседний rtabmap.db на месте; повторный запуск ⇒ exit 0;
+#   - цель — симлинк или каталог ⇒ не удаляем, ⚠️, exit 0;
+#   - без аргумента ⇒ ⚠️, exit 0 (деплой не останавливаем);
+#   - rm Permission denied, sudo -n тоже не берёт, docker exec rtabmap
+#     с mount /maps на этот каталог удаляет ⇒ exit 0, docker вызван узко
+#     (exec rtabmap rm -f /maps/mapping_state.json), docker run не зван;
+#   - тот же отказ rm/sudo, контейнера нет, локальный образ есть ⇒ exit 0
+#     через docker run --pull never, без pull;
+#   - rm, sudo -n и docker не смогли ⇒ exit 0, строка «файл остался»,
+#     файл на месте (проверка отсутствия выполнена, ошибка не съедена молча).
 # 2. ".github/workflows/L-Deploy and Verify.yml": шаг чистки стоит на Main Pi
-#    ДО «[Main Pi] Stop Containers», зовёт этот скрипт и не маскируется
-#    `|| echo` / continue-on-error.
+#    ДО «[Main Pi] Stop Containers» и ПОСЛЕ Update Code, зовёт этот скрипт
+#    и не маскируется `|| echo` / continue-on-error (скрипт сам не падает).
 #
 # Запуск: bash scripts/deploy/tests/test_remove_dead_mapping_state.sh
 
@@ -78,12 +79,12 @@ else
     ko "повторный запуск: rc=$rc out=$out"
 fi
 
-# --- не обычный файл: не трогаем --------------------------------------------
+# --- не обычный файл: не трогаем, но деплой не валим ------------------------
 ln -s rtabmap.db "$WORK/maps/mapping_state.json"
 out=$(bash "$SCRIPT" "$WORK/maps" 2>&1)
 rc=$?
-if [ "$rc" -eq 1 ] && [ -L "$WORK/maps/mapping_state.json" ]; then
-    ok "симлинк — exit 1, ссылка на месте"
+if [ "$rc" -eq 0 ] && [ -L "$WORK/maps/mapping_state.json" ] && grep -q 'не обычный файл' <<<"$out"; then
+    ok "симлинк — exit 0, ссылка на месте, предупреждение"
 else
     ko "симлинк: rc=$rc out=$out"
 fi
@@ -92,21 +93,30 @@ rm -f "$WORK/maps/mapping_state.json"
 mkdir "$WORK/maps/mapping_state.json"
 out=$(bash "$SCRIPT" "$WORK/maps" 2>&1)
 rc=$?
-if [ "$rc" -eq 1 ] && [ -d "$WORK/maps/mapping_state.json" ]; then
-    ok "каталог с тем же именем — exit 1, на месте"
+if [ "$rc" -eq 0 ] && [ -d "$WORK/maps/mapping_state.json" ] && grep -q 'не обычный файл' <<<"$out"; then
+    ok "каталог с тем же именем — exit 0, на месте, предупреждение"
 else
     ko "каталог-цель: rc=$rc out=$out"
 fi
 rmdir "$WORK/maps/mapping_state.json"
 
-# --- rm Permission denied: фолбэк через docker (фейки в PATH, без демона) ---
-# Фейковый rm удаляет, только если рядом нет файла .rm-deny. Фейковый docker
-# пишет argv в docker.log и удаляет файл на хосте, только если сценарий
-# положил .docker-exec-ok / .docker-run-ok.
+# --- без аргумента: не валим деплой -----------------------------------------
+out=$(bash "$SCRIPT" 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'не задан каталог' <<<"$out"; then
+    ok "без аргумента — exit 0 и предупреждение"
+else
+    ko "без аргумента: rc=$rc out=$out"
+fi
+
+# --- rm/sudo Permission denied: фолбэк через docker (фейки, без демона) ----
+# Фейковый rm удаляет, только если рядом нет .rm-deny.
+# Фейковый sudo -n: .sudo-deny → «a password is required», файл не трогает;
+# иначе (NOPASSWD) удаляет. Фейковый docker пишет argv в docker.log и удаляет
+# файл на хосте, только если сценарий разрешил exec_removes / run_removes.
 FAKE="$(mktemp -d)"
-cat > "$FAKE/rm" << 'EOF'
+cat > "$FAKE/rm" << 'FAKE_RM'
 #!/usr/bin/env bash
-# Фейк rm: -f <путь>. Если рядом .rm-deny — Permission denied, файл не трогаем.
 set -u
 target=""
 for arg in "$@"; do
@@ -124,17 +134,41 @@ if [ -n "$target" ]; then
     /bin/rm -f -- "$target"
 fi
 exit 0
-EOF
-cat > "$FAKE/docker" << 'EOF'
+FAKE_RM
+cat > "$FAKE/sudo" << 'FAKE_SUDO'
 #!/usr/bin/env bash
-# Фейк docker. Сценарий лежит в $FAKE_SCENARIO:
-#   running=true|false
-#   source=<путь Source для Destination=/maps, пусто — mount нет>
-#   image=<Config.Image или пусто>
-#   image_present=yes|no
-#   images_line=<строка docker images или пусто>
-#   exec_removes=yes|no
-#   run_removes=yes|no
+# Фейк sudo. Ждём «sudo -n rm -f -- <путь>». .sudo-deny → пароль требуется.
+set -u
+if [ "${1:-}" != "-n" ]; then
+    echo "sudo: fake refuses interactive sudo (no -n)" >&2
+    exit 1
+fi
+shift
+if [ "${1:-}" != "rm" ]; then
+    echo "sudo: fake only implements rm" >&2
+    exit 1
+fi
+shift
+target=""
+for arg in "$@"; do
+    case "$arg" in
+        -*) ;;
+        *) target="$arg" ;;
+    esac
+done
+dir="$(dirname "$target")"
+if [ -n "$target" ] && [ -f "$dir/.sudo-deny" ]; then
+    echo "sudo: a password is required" >&2
+    exit 1
+fi
+if [ -n "$target" ]; then
+    /bin/rm -f -- "$target"
+fi
+exit 0
+FAKE_SUDO
+cat > "$FAKE/docker" << 'FAKE_DOCKER'
+#!/usr/bin/env bash
+# Фейк docker. Сценарий — $FAKE_SCENARIO (key=value), argv — в $FAKE_DOCKER_LOG.
 set -u
 log="${FAKE_DOCKER_LOG:?}"
 printf '%s\n' "$*" >> "$log"
@@ -152,11 +186,8 @@ case "$cmd" in
                 *) shift ;;
             esac
         done
-        name="${1:-}"
         case "$fmt" in
-            *State.Running*)
-                printf '%s\n' "$(val running)"
-                ;;
+            *State.Running*) printf '%s\n' "$(val running)" ;;
             *Destination*)
                 src="$(val source)"
                 if [ -n "$src" ]; then
@@ -169,13 +200,11 @@ case "$cmd" in
                     printf '%s\n' "$img"
                 fi
                 ;;
-            *)
-                exit 1
-                ;;
+            *) exit 1 ;;
         esac
         exit 0
         ;;
-    "image")
+    image)
         sub="${1:-}"
         shift || true
         if [ "$sub" = "inspect" ]; then
@@ -195,17 +224,14 @@ case "$cmd" in
         exit 0
         ;;
     exec)
-        # Ждём узкий вызов: exec rtabmap rm -f /maps/mapping_state.json
         if [ "$(val exec_removes)" = "yes" ]; then
-            host="$(val host_target)"
-            /bin/rm -f -- "$host"
+            /bin/rm -f -- "$(val host_target)"
         fi
         exit 0
         ;;
     run)
         if [ "$(val run_removes)" = "yes" ]; then
-            host="$(val host_target)"
-            /bin/rm -f -- "$host"
+            /bin/rm -f -- "$(val host_target)"
         fi
         exit 0
         ;;
@@ -214,13 +240,14 @@ case "$cmd" in
         exit 1
         ;;
 esac
-EOF
-chmod +x "$FAKE/rm" "$FAKE/docker"
+FAKE_DOCKER
+chmod +x "$FAKE/rm" "$FAKE/sudo" "$FAKE/docker"
 
 write_scenario() {
     local file="$1"
     shift
     : > "$file"
+    local kv
     for kv in "$@"; do
         printf '%s\n' "$kv" >> "$file"
     done
@@ -233,12 +260,13 @@ run_with_fakes() {
         PATH="$FAKE:$PATH" bash "$SCRIPT" "$maps"
 }
 
-# (в) rm Permission denied + docker exec с mount на этот каталог
+# (в) rm denied + sudo denied + docker exec с mount на этот каталог
 exec_maps="$WORK/exec-maps"
 mkdir -p "$exec_maps"
 printf '%s\n' '{"map_name":"квартира"}' > "$exec_maps/mapping_state.json"
 printf '%s\n' 'rtabmap-db-sentinel' > "$exec_maps/rtabmap.db"
 : > "$exec_maps/.rm-deny"
+: > "$exec_maps/.sudo-deny"
 canon_exec="$(cd "$exec_maps" && pwd -P)"
 : > "$FAKE/docker.log"
 write_scenario "$FAKE/scenario" \
@@ -253,7 +281,7 @@ write_scenario "$FAKE/scenario" \
 out=$(run_with_fakes "$FAKE/scenario" "$exec_maps" 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && [ ! -e "$exec_maps/mapping_state.json" ] && grep -q 'удалён' <<<"$out"; then
-    ok "rm denied + docker exec — exit 0, файл исчез"
+    ok "rm denied + sudo denied + docker exec — exit 0, файл исчез"
 else
     ko "rm denied + docker exec: rc=$rc exists=$([ -e "$exec_maps/mapping_state.json" ] && echo yes || echo no) out=$out"
 fi
@@ -272,12 +300,46 @@ if grep -q '^run ' "$FAKE/docker.log"; then
 else
     ok "docker run не вызван, когда exec справился"
 fi
+if grep -q 'a password is required' <<<"$out"; then
+    ok "sudo -n отказал паролем — это напечатано, не съедено"
+else
+    ko "отказ sudo -n не виден в выводе: $out"
+fi
+
+# sudo -n (NOPASSWD) удалил — docker не зовём
+sudo_maps="$WORK/sudo-maps"
+mkdir -p "$sudo_maps"
+printf '%s\n' '{"map_name":"квартира"}' > "$sudo_maps/mapping_state.json"
+: > "$sudo_maps/.rm-deny"
+: > "$FAKE/docker.log"
+write_scenario "$FAKE/scenario" \
+    "running=true" \
+    "source=$(cd "$sudo_maps" && pwd -P)" \
+    "image=ghcr.io/krikz/rob_box:rtabmap-humble-local" \
+    "image_present=yes" \
+    "images_line=" \
+    "exec_removes=yes" \
+    "run_removes=yes" \
+    "host_target=$sudo_maps/mapping_state.json"
+out=$(run_with_fakes "$FAKE/scenario" "$sudo_maps" 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$sudo_maps/mapping_state.json" ] && grep -q 'удалён' <<<"$out"; then
+    ok "sudo -n rm (NOPASSWD) удалил — exit 0"
+else
+    ko "sudo -n fallback: rc=$rc out=$out"
+fi
+if [ -s "$FAKE/docker.log" ]; then
+    ko "docker вызван, хотя sudo -n уже убрал файл: $(cat "$FAKE/docker.log")"
+else
+    ok "docker не вызван, когда sudo -n справился"
+fi
 
 # mount /maps указывает на другой каталог — exec не зовём, идём в docker run
 other_maps="$WORK/other-maps"
 mkdir -p "$other_maps"
 printf '%s\n' '{"map_name":"квартира"}' > "$other_maps/mapping_state.json"
 : > "$other_maps/.rm-deny"
+: > "$other_maps/.sudo-deny"
 : > "$FAKE/docker.log"
 write_scenario "$FAKE/scenario" \
     "running=true" \
@@ -311,6 +373,7 @@ images_maps="$WORK/images-maps"
 mkdir -p "$images_maps"
 printf '%s\n' '{"map_name":"квартира"}' > "$images_maps/mapping_state.json"
 : > "$images_maps/.rm-deny"
+: > "$images_maps/.sudo-deny"
 : > "$FAKE/docker.log"
 write_scenario "$FAKE/scenario" \
     "running=false" \
@@ -330,11 +393,12 @@ else
     ko "docker images fallback: rc=$rc out=$out log=$(cat "$FAKE/docker.log")"
 fi
 
-# (г) rm и docker провалились — exit 1, файл на месте
+# (г) rm, sudo и docker провалились — exit 0, но честная строка «файл остался»
 fail_maps="$WORK/fail-maps"
 mkdir -p "$fail_maps"
 printf '%s\n' '{"map_name":"квартира"}' > "$fail_maps/mapping_state.json"
 : > "$fail_maps/.rm-deny"
+: > "$fail_maps/.sudo-deny"
 : > "$FAKE/docker.log"
 write_scenario "$FAKE/scenario" \
     "running=false" \
@@ -347,17 +411,23 @@ write_scenario "$FAKE/scenario" \
     "host_target=$fail_maps/mapping_state.json"
 out=$(run_with_fakes "$FAKE/scenario" "$fail_maps" 2>&1)
 rc=$?
-if [ "$rc" -eq 1 ] && [ -f "$fail_maps/mapping_state.json" ] && grep -q '::error' <<<"$out"; then
-    ok "rm и docker провалились — exit 1, файл на месте, ::error"
+if [ "$rc" -eq 0 ] && [ -f "$fail_maps/mapping_state.json" ] && grep -q 'файл остался' <<<"$out"; then
+    ok "rm, sudo и docker провалились — exit 0, файл на месте, строка «файл остался»"
 else
     ko "двойной провал: rc=$rc exists=$([ -f "$fail_maps/mapping_state.json" ] && echo yes || echo no) out=$out"
 fi
+if grep -q 'Permission denied' <<<"$out"; then
+    ok "отказ rm не съеден молча: Permission denied в выводе"
+else
+    ko "Permission denied не напечатан: $out"
+fi
 
-# docker exec вызван, но файл не исчез, образа нет — тоже exit 1
+# docker exec вызван, но файл не исчез, образа нет — тоже exit 0 и «файл остался»
 stuck_maps="$WORK/stuck-maps"
 mkdir -p "$stuck_maps"
 printf '%s\n' '{"map_name":"квартира"}' > "$stuck_maps/mapping_state.json"
 : > "$stuck_maps/.rm-deny"
+: > "$stuck_maps/.sudo-deny"
 canon_stuck="$(cd "$stuck_maps" && pwd -P)"
 : > "$FAKE/docker.log"
 write_scenario "$FAKE/scenario" \
@@ -371,31 +441,29 @@ write_scenario "$FAKE/scenario" \
     "host_target=$stuck_maps/mapping_state.json"
 out=$(run_with_fakes "$FAKE/scenario" "$stuck_maps" 2>&1)
 rc=$?
-if [ "$rc" -eq 1 ] && [ -f "$stuck_maps/mapping_state.json" ] \
+if [ "$rc" -eq 0 ] && [ -f "$stuck_maps/mapping_state.json" ] \
+    && grep -q 'файл остался' <<<"$out" \
     && grep -qx 'exec rtabmap rm -f /maps/mapping_state.json' "$FAKE/docker.log"; then
-    ok "exec не убрал файл и образа нет — exit 1, файл на месте"
+    ok "exec не убрал файл и образа нет — exit 0, файл на месте, «файл остался»"
 else
     ko "exec-не-убрал: rc=$rc out=$out log=$(cat "$FAKE/docker.log")"
 fi
 
 rm -rf "$FAKE"
 
-# --- без аргумента -----------------------------------------------------------
-out=$(bash "$SCRIPT" 2>&1)
-rc=$?
-if [ "$rc" -eq 1 ]; then
-    ok "без аргумента — exit 1"
-else
-    ko "без аргумента: rc=$rc out=$out"
-fi
-
 # --- шаг в workflow ----------------------------------------------------------
 step_line=$(grep -n 'Remove dead mapping_state.json (#5045)' "$WORKFLOW" | head -1 | cut -d: -f1)
 stop_line=$(grep -n '\[Main Pi\] Stop Containers' "$WORKFLOW" | head -1 | cut -d: -f1)
+update_line=$(grep -n '\[Main Pi\] Update Code' "$WORKFLOW" | head -1 | cut -d: -f1)
 if [ -n "$step_line" ] && [ -n "$stop_line" ] && [ "$step_line" -lt "$stop_line" ]; then
     ok "шаг чистки (#5045) стоит до [Main Pi] Stop Containers ($step_line < $stop_line)"
 else
     ko "порядок шагов: cleanup=$step_line stop=$stop_line"
+fi
+if [ -n "$update_line" ] && [ -n "$step_line" ] && [ "$update_line" -lt "$step_line" ]; then
+    ok "шаг чистки стоит после [Main Pi] Update Code ($update_line < $step_line)"
+else
+    ko "порядок шагов: update=$update_line cleanup=$step_line"
 fi
 
 if grep -q 'scripts/deploy/remove_dead_mapping_state.sh' "$WORKFLOW"; then
