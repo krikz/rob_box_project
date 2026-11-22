@@ -425,13 +425,21 @@ def test_layer_one_repair_needs_no_retry() -> None:
 
 def test_telegram_agent_may_write_text_beside_actions_personality_may_not() -> None:
     """PR-12a (#3706): мост проверяет команду для своего агента — у телеграма ``speech`` при действиях — текст в чат
-    (законно), у Личности — нарушение ``speech_with_actions`` (§4.1). Цепочка телеграма — ``wrapper_for(agent=)``."""
-    reply = LLMResponse(tool_calls=(_command_call(speech="Включаю.", actions=SOUND),))
-    assert cb.judge(reply, ["play_sound"]).reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
-    chat = cb.judge(reply, ["play_sound"], agent=kn.TEXT_CHANNEL_AGENT)
-    assert chat.speech == "Включаю." and [a.tool for a in chat.actions] == ["play_sound"]
+    (законно), у Личности — нарушение ``speech_with_actions`` (§4.1). Цепочка телеграма — ``wrapper_for(agent=)``.
+
+    Громкое действие — ``stop_music``: с #5020 ``play_sound`` тихий, речь Личности рядом с ним законна
+    (звук слышен сам, звукоподражание успеха больше не затирает слова).
+    """
+    loud = [{"tool": "stop_music", "args": {}}]
+    reply = LLMResponse(tool_calls=(_command_call(speech="Включаю.", actions=loud),))
+    assert cb.judge(reply, ["stop_music"]).reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
+    chat = cb.judge(reply, ["stop_music"], agent=kn.TEXT_CHANNEL_AGENT)
+    assert chat.speech == "Включаю." and [a.tool for a in chat.actions] == ["stop_music"]
     wrapped = cb.wrapper_for(agent=kn.TEXT_CHANNEL_AGENT)(_Inner(DEEPSEEK_CAPS, [reply]))
-    assert wrapped._judged(reply, ["play_sound"]).speech == "Включаю."
+    assert wrapped._judged(reply, ["stop_music"]).speech == "Включаю."
+    quiet = LLMResponse(tool_calls=(_command_call(speech="Включаю.", actions=SOUND),))
+    personality = cb.judge(quiet, ["play_sound"])
+    assert isinstance(personality, Command) and personality.speech == "Включаю."
 
 
 def test_quiet_action_beside_speech_is_valid_for_personality_3953() -> None:
@@ -442,12 +450,16 @@ def test_quiet_action_beside_speech_is_valid_for_personality_3953() -> None:
 
 
 def test_invalid_command_carries_its_valid_actions_to_the_turn_3953() -> None:
-    """Невалидная после повтора команда отдаёт ходу свои допустимые действия: speech при громком + кривое второе."""
-    bad = [*SOUND, {"tool": "memory_save", "args": {}}]
-    res = cb.judge(LLMResponse(tool_calls=(_command_call(speech="Вот!", actions=bad),)), ["play_sound", "memory_save"])
-    assert isinstance(res, Invalid) and [a.tool for a in res.salvage] == ["play_sound"]
+    """Невалидная после повтора команда отдаёт ходу свои допустимые действия: speech при громком + кривое второе.
+
+    Громкое — ``stop_music`` (#5020: ``play_sound`` рядом с речью больше не нарушение).
+    """
+    loud = [{"tool": "stop_music", "args": {}}]
+    bad = [*loud, {"tool": "memory_save", "args": {}}]
+    res = cb.judge(LLMResponse(tool_calls=(_command_call(speech="Вот!", actions=bad),)), ["stop_music", "memory_save"])
+    assert isinstance(res, Invalid) and [a.tool for a in res.salvage] == ["stop_music"]
     assert cb.verdict(res).startswith("invalid:") and cb.for_turn(res) is res
-    assert cb.model_call(res).arguments == {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]}
+    assert cb.model_call(res).arguments == {"actions": [{"tool": "stop_music", "args": {}}]}
 
 
 # ── тул вне среза хода (#3897, ADR-0148) ───────────────────────────────────────────────────────────────────
