@@ -190,8 +190,10 @@ class Form:
     до ``SPEECH_PUSHES_MAX`` повторов хода за словами, затем страховка - код говорит по данным,
     ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с
     ``VIOLATION_SPEECH_WITH_ACTIONS`` - слышимое действие (звук, музыка) после запроса законно без слов, а со словами -
-    нарушение. Ставит его ход (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим
-    команд v1, тесты)."""
+    нарушение. Ставит его ход (``turn.answer_form``). ``library`` — реплика просит найти в библиотеке
+    (``tools_view.library_asked``, #5093): ``memory_save`` вне среза и вне команды. Запись памяти таким ходом не
+    исполняет поиск, и нарушение своё (``VIOLATION_LIBRARY_REQUEST``), не ``tool_not_available``: мост по тому срез
+    расширяет. По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
@@ -199,6 +201,7 @@ class Form:
     sing_over: bool = False
     backing: bool = True
     speech_required: bool = False
+    library: bool = False
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
@@ -210,9 +213,11 @@ class Form:
         return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over))
 
     def closed_tools(self) -> Tuple[str, ...]:
-        """Тулы, которых в этом ходе нет по пути пения (вне среза и вне команды)."""
+        """Тулы, которых в этом ходе нет: путь пения и библиотечная просьба (вне среза и вне команды)."""
         form = self.sing_form
-        return form.closed_tools if form is not None else ()
+        sing = form.closed_tools if form is not None else ()
+        library = kn.LIBRARY_REQUEST_CLOSED_TOOLS if self.library else ()
+        return sing + tuple(name for name in library if name not in sing)
 
 
 #: Форма хода, в котором идёт вызов LLM: ставит ход (:func:`turn_form`), читают мост (схема) и :func:`validate`. Вызов
@@ -643,6 +648,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
+        lambda: _check_library(cmd, form),
         lambda: _check_when(cmd.when, busy),
         lambda: _drop_bad_expression(cmd),
     )
@@ -890,6 +896,17 @@ def _check_sing(cmd: Command, form: Form) -> None:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: perform.kind={cmd.perform.kind}", kinds)
     if sing.needs_tool and sing.needs_tool not in {a.tool for a in cmd.actions}:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: нужен {sing.needs_tool}", (sing.needs_tool,))
+
+
+def _check_library(cmd: Command, form: Form) -> None:
+    """Библиотечная просьба (``Form.library``): закрытый тул — своё нарушение, не «тула нет в срезе». Мост по
+    ``tool_not_available`` открывает группу обратно (``tools_view.widen_for``); ``memory_save`` этим ходом поиск не
+    исполняет. Правка идущего выступления — не новая просьба, форма её не судит."""
+    if not form.library or cmd.edit_pending:
+        return
+    closed = [a.tool for a in cmd.actions if a.tool in kn.LIBRARY_REQUEST_CLOSED_TOOLS]
+    if closed:
+        raise _Bad(kn.VIOLATION_LIBRARY_REQUEST, "библиотека: " + ", ".join(closed) + " закрыт", (kn.LIBRARY_TOOL,))
 
 
 def is_empty(cmd: Command) -> bool:
@@ -1404,6 +1421,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
                              "генерацию и трек не зови; generate — позови generate_music, песню выступлением не пой; "
                              "edit — музыка играет и её правят: позови edit_music, новый трек, сет и генерацию не "
                              "заказывай",
+    kn.VIOLATION_LIBRARY_REQUEST: kn.LIBRARY_REQUEST_HINT,
 })
 
 

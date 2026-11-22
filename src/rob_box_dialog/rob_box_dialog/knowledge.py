@@ -3940,6 +3940,30 @@ def sing_family(route: str, over_music: bool = False) -> str:
     return "generate" if head else ""
 
 
+#: Просьба найти в библиотеке (марафон #3 акт 7 n705, #5093): глагол поиска словом целиком и основа «библиотек».
+#: «запомни, что…» глагола поиска не содержит — ``memory_save`` остаётся открыт. Распознаёт
+#: ``tools_view.library_asked``.
+LIBRARY_REQUEST_VERBS: Tuple[str, ...] = (
+    "найди",
+    "найдите",
+    "найти",
+    "поищи",
+    "поищите",
+    "поискать",
+    "отыщи",
+    "отыщите",
+)
+#: Тулы, которых в таком ходе нет: запись памяти не исполняет поиск по библиотеке (ADR-0148 п.2).
+LIBRARY_REQUEST_CLOSED_TOOLS: Tuple[str, ...] = ("memory_save",)
+#: Нарушение формы библиотечной просьбы: модель позвала закрытый тул. Мост по ``tool_not_available`` срез расширяет —
+#: это нарушение своё, срез не растёт.
+VIOLATION_LIBRARY_REQUEST = "library_request"
+LIBRARY_REQUEST_HINT = (
+    "эта реплика — поиск в библиотеке: позови music_library, память (memory_save) в этом ходе "
+    "закрыта и фактом прошлого хода поиск не исполняется"
+)
+
+
 def sing_kinds(route: str) -> Tuple[str, ...]:
     """Допустимые ``perform.kind`` пути пения: ``live:<вид>`` — этот вид (вид вне ``SING_PERFORM_KINDS`` — оба),
     иначе — из :data:`SING_FORMS`; не пение — пусто (как в схеме)."""

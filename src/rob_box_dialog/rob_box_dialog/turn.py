@@ -120,8 +120,8 @@ from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_register
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import (asks_own_memory_condition, asks_question, asks_to_listen, has_form, has_word,
                                   music_stop_claimed, same_stop_rest)
-from rob_box_dialog.tools_view import (available_tools, catalogs_asked, music_asked, needs_words, robot_asked,
-                                       show_asked, voice_asked, voice_named)
+from rob_box_dialog.tools_view import (available_tools, catalogs_asked, library_asked, music_asked, needs_words,
+                                       robot_asked, show_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
                                      speaker_label)
 
@@ -441,10 +441,18 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
     по каждому, а не по склейке); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
     живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810);
     подложка сказки, анекдота и стиха — только когда человек в этой реплике назвал музыку
-    (``tools_view.music_asked``); песня и рэп ставят её по смыслу (``knowledge.PERFORM_BACKING_BY_KIND``)."""
+    (``tools_view.music_asked``); песня и рэп ставят её по смыслу (``knowledge.PERFORM_BACKING_BY_KIND``).
+    ``library`` — реплика просит найти в библиотеке (``tools_view.library_asked``): ``memory_save`` в этом ходе
+    закрыт."""
     names = tuple(name for entry in voices for name in entry if name)
-    return Form(passed=turn.pickup, voice=voice_asked(snapshot, turn.text, names), sing=sing,
-                sing_over=bool(sing) and snapshot.music_playing, backing=music_asked(turn.text))
+    return Form(
+        passed=turn.pickup,
+        voice=voice_asked(snapshot, turn.text, names),
+        sing=sing,
+        sing_over=bool(sing) and snapshot.music_playing,
+        backing=music_asked(turn.text),
+        library=library_asked(turn.text),
+    )
 
 
 #: Путь пения хода от хоста: ``(реплика, прошлые реплики человека в окне, играет ли музыка) -> id кандидата``
@@ -489,13 +497,12 @@ async def sing_route(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
 
 
 def form_tools(tools: Sequence[Any], form: Form, agent: str, owners: Optional[Sequence[str]] = None) -> Tuple[Any, ...]:
-    """Тулы хода в форме пути пения: закрытые путём убраны, тул, который путь требует (``generate_music``), добавлен,
-    если его срезала обрезка по ``TOOLS_VISIBLE_MAX`` (а агенту он доступен при владельцах продукта ``owners``)."""
+    """Тулы хода в форме: закрытые формой (путь пения, библиотечная просьба) убраны, тул, который путь пения требует
+    (``generate_music``), добавлен, если его срезала обрезка по ``TOOLS_VISIBLE_MAX`` (а агенту он доступен при
+    владельцах продукта ``owners``)."""
+    kept = [t for t in tools if t.name not in form.closed_tools()]
     sing = form.sing_form
-    if sing is None:
-        return tuple(tools)
-    kept = [t for t in tools if t.name not in sing.closed_tools]
-    need = sing.needs_tool
+    need = sing.needs_tool if sing is not None else ""
     if need and need not in {t.name for t in kept} and need in tools_for(agent_spec(agent), owners):
         kept.append(get_tool(need))
     return tuple(kept)
@@ -897,8 +904,11 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     form = command_form(turn, snap, engine._voices(), await sing_route(engine, turn, snap))
     over = " поверх играющего" if form.sing_over else ""
     kinds = "" if form.backing else " подложка=песня,рэп"  # сказка, анекдот, стих - без бита, музыку не просили
-    engine._log.info(f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over}"
-                     f"{kinds} turn={turn.turn_id}")
+    tools = list(form.closed_tools()) or "-"
+    engine._log.info(
+        f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over}"
+        f"{kinds} тулы={tools} turn={turn.turn_id}"
+    )
     with turn_form(form):
         await engine._understand(turn, snap)
 

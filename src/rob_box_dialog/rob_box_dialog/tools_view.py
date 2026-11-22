@@ -186,6 +186,14 @@ def music_asked(text: str) -> bool:
     return has_word(text or "", music.stems) or has_form(text or "", music.forms)
 
 
+def library_asked(text: str) -> bool:
+    """Просил ли человек в ЭТОЙ реплике найти что-то в библиотеке (#5093, n705): основа «библиотек» и глагол поиска
+    словом целиком (``knowledge.LIBRARY_REQUEST_VERBS``: «найди», «поищи», «отыщи»). «запомни, что…» глагола поиска не
+    содержит — запись памяти остаётся открытой. Решает по тексту ЧЕЛОВЕКА, не по ответу модели. Читает
+    ``command_form``: такой ход закрывает ``memory_save`` (``Form.library``)."""
+    return has_word(text or "", ("библиотек",)) and has_form(text or "", kn.LIBRARY_REQUEST_VERBS)
+
+
 def voice_named(text: str, voices: Sequence[str] = ()) -> bool:
     """Назван ли в ЭТОЙ реплике голос реестра по имени (``voices`` — id, название, алиасы, каждое целым словом): «спой
     голосом Алисы». Такой голос звучит только речью робота (TTS): путь пения с ним — живое выступление, а не генерация
@@ -292,6 +300,23 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["asked_groups", "available_tools", "catalogs_asked", "command_groups", "face_asked", "groups_for",
-           "motion_named", "motion_refusal", "music_asked", "needs_words", "requested_groups", "robot_asked",
-           "show_asked", "silent_asked", "voice_asked", "voice_named", "widen_for"]
+__all__ = [
+    "asked_groups",
+    "available_tools",
+    "catalogs_asked",
+    "command_groups",
+    "face_asked",
+    "groups_for",
+    "library_asked",
+    "motion_named",
+    "motion_refusal",
+    "music_asked",
+    "needs_words",
+    "requested_groups",
+    "robot_asked",
+    "show_asked",
+    "silent_asked",
+    "voice_asked",
+    "voice_named",
+    "widen_for",
+]
