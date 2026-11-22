@@ -9,8 +9,13 @@ check_container_status.sh.
 
 Что делает (поведение прежнего шага сохранено):
   * `docker compose ps --format json` на Pi → имена контейнеров;
-  * для каждого — первые 50 строк из `--tail 10000` (инициализация) и последние
+  * граница текущего запуска: `docker inspect` → StartedAt и RestartCount
+    (issue #5135). Логи читаются окном `--since StartedAt`: ошибка прежнего
+    запуска, уже отработанная рестартом, не красит деплой;
+  * внутри окна — первые 50 строк из `--tail 10000` (инициализация) и последние
     150 строк; склейка через разделитель;
+  * строки старше StartedAt при RestartCount > 0 не прячутся: отдельный блок
+    отчёта RECOVERED BEFORE START, без поднятия счётчиков;
   * `deployment_issue_dedup.extract_relevant_log_line` (тот же модуль, что
     раньше вызывался как `python3 deployment_issue_dedup.py extract-log`) —
     critical и warning с исключениями по scope;
@@ -43,6 +48,9 @@ from typing import Callable
 
 SEPARATOR = "---[...SKIPPED MIDDLE LOGS...]---"
 SSH_CALL_TIMEOUT_SEC = 120
+# Сколько отработанных рестартом строк показать в сводке. Больше — шум
+# карточки; сам факт рестарта в заголовке блока виден и без списка.
+RECOVERED_LINES_LIMIT = 5
 # Строка «Initial conf: {...» zenohd — весь JSON-конфиг роутера в одну строку
 # (десятки КБ). Она попадает в первые 50 строк и целиком уезжает в комментарий
 # карточки деплоя как INITIALIZATION CONTEXT (issue #5124). В отчёте режем;
@@ -96,13 +104,51 @@ def list_containers(run: RemoteRunner, compose_dir: str) -> list[str]:
     return names
 
 
-def fetch_logs(run: RemoteRunner, container: str) -> tuple[str, str]:
-    """(начало: первые 50 строк из tail 10000, хвост: последние 150)."""
-    rc_start, start = run(f"docker logs --tail 10000 {container} 2>&1 | head -50")
-    rc_end, end = run(f"docker logs --tail 150 {container} 2>&1")
+def inspect_start(run: RemoteRunner, container: str) -> tuple[str, int] | None:
+    """(StartedAt, RestartCount) текущего запуска. None — inspect не сработал.
+
+    Не молчим: без границы окна честный красный лучше тихого пропуска
+    (issue #5135, ADR-0018).
+    """
+    rc, out = run(f"docker inspect -f '{{{{.State.StartedAt}}}} {{{{.RestartCount}}}}' {container}")
+    parts = out.split()
+    if rc != 0 or len(parts) != 2 or not parts[1].isdigit():
+        detail = out.strip() or f"код {rc}"
+        print(f"::warning title=Logs window unavailable::{container}: {detail}")
+        return None
+    return parts[0], int(parts[1])
+
+
+def fetch_logs(run: RemoteRunner, container: str, *, since: str | None = None) -> tuple[str, str]:
+    """(начало: первые 50 строк из tail 10000, хвост: последние 150).
+
+    ``since`` — граница текущего запуска (StartedAt). Окно режет строки
+    прежнего запуска того же контейнера (issue #5135). Без границы читаем
+    полный лог — прежнее поведение.
+    """
+    window = f"--since {shlex.quote(since)} " if since else ""
+    rc_start, start = run(f"docker logs {window}--tail 10000 {container} 2>&1 | head -50")
+    rc_end, end = run(f"docker logs {window}--tail 150 {container} 2>&1")
     if rc_start not in (0, 141) or rc_end != 0:  # 141 = SIGPIPE от head
         print(f"::warning title=Logs unavailable::{container}: чтение логов вернуло коды {rc_start}/{rc_end}")
     return start.rstrip("\n"), end.rstrip("\n")
+
+
+def recovered_lines(full_text: str, window_text: str, *, scope: str) -> list[str]:
+    """Critical-строки полного лога, которых нет в окне текущего запуска.
+
+    Дедуп ищет первую подходящую строку, поэтому обходим по одной: так в
+    сводку попадают все отработанные рестартом, а не только первая.
+    """
+    seen = {line.strip() for line in window_text.splitlines()}
+    found: list[str] = []
+    for line in full_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped in seen or stripped in found:
+            continue
+        if dedup.extract_relevant_log_line(stripped, scope=scope, severity="critical"):
+            found.append(stripped)
+    return found
 
 
 def _clip_report_line(line: str) -> str:
@@ -137,7 +183,9 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
 
     for container in list_containers(run, compose_dir):
         print(f"Checking logs for: {container}")
-        logs_start, logs_end = fetch_logs(run, container)
+        start = inspect_start(run, container)
+        since = start[0] if start else None
+        logs_start, logs_end = fetch_logs(run, container, since=since)
         logs = f"{logs_start}\n{SEPARATOR}\n{logs_end}"
 
         critical = dedup.extract_relevant_log_line(logs, scope=scope, severity="critical")
@@ -146,7 +194,9 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
             print(f"  ❌ CRITICAL errors found in {container}")
             report += [f"=== {container} CRITICAL ERRORS ===", critical, ""]
             findings.append(
-                finding(environment, scope, container, "critical_log", "critical", "Critical log pattern detected", critical)
+                finding(
+                    environment, scope, container, "critical_log", "critical", "Critical log pattern detected", critical
+                )
             )
 
         warning = dedup.extract_relevant_log_line(logs, scope=scope, severity="warning")
@@ -155,13 +205,30 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
             print(f"  ⚠️  Warnings found in {container}")
             report += [f"=== {container} WARNINGS ===", warning, ""]
             findings.append(
-                finding(environment, scope, container, "warning_log", "warning", "Warning log pattern detected", warning)
+                finding(
+                    environment, scope, container, "warning_log", "warning", "Warning log pattern detected", warning
+                )
             )
 
         if critical:
             report.append(f"=== {container} INITIALIZATION CONTEXT ===")
             report.extend(logs_start.splitlines())
             report.append("")
+
+        # Отработанный рестарт виден в сводке, но не красит деплой: счётчики
+        # выше считаются только по окну текущего запуска (issue #5135).
+        if start and start[1] > 0:
+            full_start, full_end = fetch_logs(run, container)
+            before = recovered_lines(f"{full_start}\n{full_end}", logs, scope=scope)
+            shown, rest = before[:RECOVERED_LINES_LIMIT], before[RECOVERED_LINES_LIMIT:]
+            if shown:
+                report.append(
+                    f"=== {container} RECOVERED BEFORE START (RestartCount={start[1]}, StartedAt={start[0]}) ==="
+                )
+                report.extend(shown)
+                if rest:
+                    report.append(f"... ещё {len(rest)} строк старше StartedAt")
+                report.append("")
 
     return {
         "critical": critical_count,
