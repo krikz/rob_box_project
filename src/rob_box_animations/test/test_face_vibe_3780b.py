@@ -142,6 +142,9 @@ def test_music_and_praise_push_once_and_hold_one_style():
     _, ctx_b = d.choose(AWAKE + 3.04)
     assert d.choose(AWAKE + 3.0)[0].startswith("music_")
     assert ctx_a.tint == ctx_b.tint and ctx_a.tint is not None
+    # #5143: слот оттенка едет в контексте (лог берёт его, не пересчитывает).
+    # Похвала после музыки — fire, слот warm; кадр к кадру слот тот же.
+    assert ctx_a.tint_slot == ctx_b.tint_slot == "warm"
 
 
 def test_same_events_give_the_same_frames():

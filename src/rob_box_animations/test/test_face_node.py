@@ -221,6 +221,43 @@ def test_session_speaker_azimuth_holds_the_gaze_over_raw_doa():
     assert node.director.gaze._speaker == looked
 
 
+def test_tint_is_logged_on_a_key_change_and_not_repeated_while_it_holds():
+    """#5143: оттенок вайба — в строке смены ключа, и только когда слот сам изменился.
+
+    Источник — ``FaceContext.tint_slot`` из ``choose()`` (директор уже посчитал).
+    Повтор того же слота на следующей смене ключа строку с оттенком не плодит.
+    """
+    import time
+
+    node = _face_node()
+    logged = []
+    node.get_logger = lambda: types.SimpleNamespace(info=logged.append, warn=lambda *a, **k: None)
+    now = time.time()
+    node.director.voice_seen(now)
+    node.director._wake_until = now
+    node.director._asleep = False
+    node._on_frame()                                   # первый ключ: старт, оттенка ещё нет
+    assert logged == ['лицо: — -> idle_stare']
+    logged.clear()
+
+    def paint(key, slot):
+        node.director.choose = lambda now, key=key, slot=slot: (
+            key, FaceContext(tint_slot=slot, tint=(1.0, 0.8, 0.5) if slot else None))
+
+    paint('music_shades', 'warm')
+    node._on_frame()
+    assert logged == ['лицо: idle_stare -> music_shades, оттенок: warm']
+    logged.clear()
+    node._on_frame()                                   # ключ тот же — строки нет вообще
+    assert logged == []
+    paint('music_vibe', 'warm')                               # сцена сменилась, оттенок нет
+    node._on_frame()
+    assert logged == ['лицо: music_shades -> music_vibe']
+    paint('music_groove', None)                               # оттенок ушёл
+    node._on_frame()
+    assert logged == ['лицо: music_shades -> music_vibe', 'лицо: music_vibe -> music_groove']
+
+
 def test_silence_scene_of_the_session_holds_the_taped_mouth_and_reflexes_are_answered_skipped():
     """#3984: сцена Silence в /dialog/session -> рот заклеен; рефлекс стадии (listening) лицо не меняет; снятие - покой."""
     node = _face_node()

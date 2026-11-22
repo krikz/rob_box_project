@@ -461,7 +461,7 @@ class FaceDirector:
         tint = worn(self.vibe.at(now)).get('tint')
         if not tint:
             return ctx
-        return replace(ctx, tint=tint_of(tint, now))
+        return replace(ctx, tint=tint_of(tint, now), tint_slot=tint)
 
     def _vibe_fact(self, kind: str, style: str, now: float) -> None:
         """Один толчок на приход факта. Повтор того же факта шар не дёргает (кадр музыки — не новое событие)."""
@@ -486,8 +486,9 @@ class FaceDirector:
 
     def _dsl_context(self, slots: Mapping[str, str], gaze: Optional[float], rear: str, now: float) -> FaceContext:
         level, vowel = self.mouth.level(now) if self.speaking(now) else (None, 'A')
-        return FaceContext(gaze_deg=gaze, mouth_level=level, vowel=vowel, tint=tint_of(slots.get('tint'), now),
-                           rear_theme=rear, face=slots)
+        slot = slots.get('tint')
+        return FaceContext(gaze_deg=gaze, mouth_level=level, vowel=vowel, tint=tint_of(slot, now),
+                           tint_slot=slot, rear_theme=rear, face=slots)
 
     def _idle(self, now: float) -> str:
         if not self.key.startswith('idle_'):
