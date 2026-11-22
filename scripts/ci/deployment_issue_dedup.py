@@ -1161,26 +1161,33 @@ def _zenoh_router_startup_transient(line: str, log_text: str, container: str) ->
         return False
     if not ZENOH_ROUTER_PROPAGATION_RE.search(line):
         return False
-    # Старт привязан к ошибке, а не к дампу целиком: берётся последний старт,
-    # который идёт РАНЬШЕ строки ошибки. Старт после ошибки окно не открывает
-    # (дельта была бы отрицательной), повторный старт позже в дампе — тоже.
+    start_before_error, error_at = _zenoh_router_start_and_error(line, log_text)
+    if start_before_error is None or error_at is None:
+        return False
+    delta = (error_at - start_before_error).total_seconds()
+    return 0.0 <= delta <= ZENOH_ROUTER_STARTUP_WINDOW_SEC
+
+
+def _zenoh_router_start_and_error(line: str, log_text: str):
+    """(старт раньше ошибки, метка ошибки) или (None, None).
+
+    Старт привязан к ошибке, а не к дампу целиком: последний ``zenohd v`` /
+    ``Zenoh can be reached at:`` РАНЬШЕ этой строки. Старт после ошибки окно
+    не открывает, повторный старт позже в дампе — тоже. Строки без метки
+    ISO-8601 Z окно не двигают.
+    """
     start_before_error = None
-    error_at = None
     target = _strip_ansi(line).strip()
     for row in log_text.splitlines():
         stamp = _iso_z_timestamp(row)
         if stamp is None:
             continue
         plain = _strip_ansi(row)
-        if error_at is None and plain.strip() == target and ZENOH_ROUTER_PROPAGATION_RE.search(plain):
-            error_at = stamp
-            break
+        if plain.strip() == target and ZENOH_ROUTER_PROPAGATION_RE.search(plain):
+            return start_before_error, stamp
         if ZENOH_ROUTER_START_RE.search(plain):
             start_before_error = stamp
-    if start_before_error is None or error_at is None:
-        return False
-    delta = (error_at - start_before_error).total_seconds()
-    return 0.0 <= delta <= ZENOH_ROUTER_STARTUP_WINDOW_SEC
+    return None, None
 
 
 def _strip_ansi(text: str) -> str:
