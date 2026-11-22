@@ -877,13 +877,15 @@ jobs:
   # Test Summary
   # ============================================================================
   # #5116: сводка не выдаёт skipped Integration Tests за пройденные.
-  # Интеграция воротами PR не становится (решение Шифу 22.11.2026): её нет в
-  # needs, условие джобы по ref не трогаем, skipped не красит прогон. Текст
-  # строит scripts/ci/test_summary.py — на pull_request строка «не запускались».
+  # Интеграция воротами PR не становится (решение Шифу 22.11.2026): условие
+  # джобы по ref не трогаем. На PR она skipped, и skipped не красит прогон.
+  # В needs она есть, чтобы на push (develop/main) сводка видела реальный
+  # result, а не писала «не запускались» про уже прогнанную джобу.
+  # Текст строит scripts/ci/test_summary.py.
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards, urdf-sim-arg]
+    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards, urdf-sim-arg, integration-tests]
     if: always()
 
     steps:
@@ -900,5 +902,5 @@ jobs:
             --suite "Unit Tests (rob_box_mcp_tools)=${{ needs.mcp-tools-unit-tests.result }}" \
             --suite "E2E Contract Guards=${{ needs.e2e-contract-guards.result }}" \
             --suite "URDF sim-arg=${{ needs.urdf-sim-arg.result }}" \
-            --integration-result "" \
+            --integration-result "${{ needs.integration-tests.result }}" \
             | tee -a "$GITHUB_STEP_SUMMARY"

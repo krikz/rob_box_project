@@ -9,6 +9,10 @@ develop/main (карточка #5116). Раньше Test Summary не знала
 меняет код выхода. Меняется только текст: строка про Integration Tests
 и итог, который не выдаёт непрогнанное за пройденное.
 
+На push result джобы интеграции приходит из needs. Пустая строка там —
+«результат не передан», не «не запускались»: так сводка не врёт в обратную
+сторону про уже прогнанную джобу (run 45041513102).
+
 CLI (из шага workflow, результаты джоб уже подставлены):
 
     python3 scripts/ci/test_summary.py \\
@@ -37,20 +41,32 @@ ALL_RAN_FOOTER = "Все запущенные сюиты прошли, вклю�
 FAILED_FOOTER = "Tests failed! Check logs above for details."
 
 
+# Пустой --integration-result на push: шаг сводки не передал needs.*.result.
+# Это не «не запускались» (так пишем только про skipped на PR) и не success.
+RESULT_NOT_PASSED = "результат не передан"
+
+
 def integration_status_line(event_name: str, result: str) -> str:
     """Строка таблицы для Integration Tests.
 
     На pull_request джоба skipped по условию ref, а не потому что тесты
-    прошли. Пишем это явно, каким бы ни пришёл result (в том числе пустой:
-    джобы нет в needs, GitHub её result не отдаёт).
+    прошли. Пишем это явно, каким бы ни пришёл result.
+
+    На push (develop/main) джоба в needs, и сюда приходит её result.
+    Пустая строка — шаг не передал результат: это не «не запускались».
     """
     if event_name == "pull_request":
-        return f"| {INTEGRATION_SUITE} | не запускались " "(skipped на PR, только develop/main) |"
-    shown = result.strip() or "не запускались"
+        return (
+            f"| {INTEGRATION_SUITE} | не запускались "
+            "(skipped на PR, только develop/main) |"
+        )
+    shown = result.strip() or RESULT_NOT_PASSED
     return f"| {INTEGRATION_SUITE} | {shown} |"
 
 
-def render_summary(event_name: str, suites: list[tuple[str, str]], integration_result: str) -> tuple[str, int]:
+def render_summary(
+    event_name: str, suites: list[tuple[str, str]], integration_result: str
+) -> tuple[str, int]:
     """Текст сводки и код выхода.
 
     Код 1 — только если обязательная сюита не success. skipped интеграции
@@ -82,15 +98,20 @@ def render_summary(event_name: str, suites: list[tuple[str, str]], integration_r
     elif integration_result.strip() == "success":
         lines.append(ALL_RAN_FOOTER)
     else:
-        shown = integration_result.strip() or "не запускались"
-        lines.append("Обязательные сюиты прошли. " f"Integration Tests: {shown} — это не «интеграция прошла».")
+        shown = integration_result.strip() or RESULT_NOT_PASSED
+        lines.append(
+            "Обязательные сюиты прошли. "
+            f"Integration Tests: {shown} — это не «интеграция прошла»."
+        )
     return "\n".join(lines) + "\n", 0
 
 
 def _parse_suite(raw: str) -> tuple[str, str]:
     name, sep, result = raw.partition("=")
     if not sep or not name.strip():
-        raise argparse.ArgumentTypeError(f"--suite ждёт 'Имя=result', получено: {raw!r}")
+        raise argparse.ArgumentTypeError(
+            f"--suite ждёт 'Имя=result', получено: {raw!r}"
+        )
     return name.strip(), result.strip()
 
 
@@ -107,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--integration-result",
         default="",
-        help="result джобы integration-tests; пусто, если её нет в needs",
+        help="result джобы integration-tests; пусто — результат не передан",
     )
     args = parser.parse_args(argv)
     text, code = render_summary(args.event, args.suite, args.integration_result)
