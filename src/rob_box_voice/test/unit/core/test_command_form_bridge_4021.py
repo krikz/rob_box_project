@@ -18,8 +18,15 @@ from rob_box_dialog.address import VOICE, Addressed  # noqa: E402
 from rob_box_dialog.command import Form  # noqa: E402
 from rob_box_dialog.session import Session  # noqa: E402
 from rob_box_dialog.turn import TurnEngine  # noqa: E402
-from rob_box_llm.provider import (LLMChunk, LLMMessage, LLMResponse, LLMSettings, ProviderCapabilities,  # noqa: E402
-                                  ToolCall, ToolResult)
+from rob_box_llm.provider import (  # noqa: E402
+    LLMChunk,
+    LLMMessage,
+    LLMResponse,
+    LLMSettings,
+    ProviderCapabilities,
+    ToolCall,
+    ToolResult,
+)
 from rob_box_llm.providers.deepseek import DeepSeekProvider  # noqa: E402
 from rob_box_dialog_host import command_bridge as cb  # noqa: E402
 from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, counted_wrapper  # noqa: E402
@@ -34,8 +41,10 @@ def _call(**fields: Any) -> ToolCall:
 
 
 def _tool(name: str) -> Mapping[str, Any]:
-    return {"type": "function", "function": {"name": name, "description": name,
-                                             "parameters": {"type": "object", "properties": {}}}}
+    return {
+        "type": "function",
+        "function": {"name": name, "description": name, "parameters": {"type": "object", "properties": {}}},
+    }
 
 
 class _Inner:
@@ -51,13 +60,23 @@ class _Inner:
     def capabilities_for(self, model: Optional[str]) -> ProviderCapabilities:
         return DEEPSEEK_CAPS
 
-    async def complete(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
-                       settings: Optional[LLMSettings] = None) -> LLMResponse:
+    async def complete(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+        settings: Optional[LLMSettings] = None,
+    ) -> LLMResponse:
         self.requests.append({"messages": list(messages), "tools": list(tools)})
         return self._replies.pop(0)
 
-    async def stream(self, messages: Iterable[LLMMessage], *, tools: Iterable[Mapping[str, Any]] = (),
-                     settings: Optional[LLMSettings] = None) -> AsyncIterator[LLMChunk]:  # pragma: no cover
+    async def stream(
+        self,
+        messages: Iterable[LLMMessage],
+        *,
+        tools: Iterable[Mapping[str, Any]] = (),
+        settings: Optional[LLMSettings] = None,
+    ) -> AsyncIterator[LLMChunk]:  # pragma: no cover
         raise NotImplementedError
 
     async def aclose(self) -> None:
@@ -84,8 +103,12 @@ def test_addressed_turn_request_has_no_passed_and_no_voice_in_schema_or_prompt()
 
 
 def test_n813_passed_on_addressed_turn_is_retried_with_the_violation_and_the_answer_is_spoken():
-    inner = _Inner([LLMResponse(tool_calls=(_call(passed="not_addressed"),)),
-                    LLMResponse(tool_calls=(_call(speech="Тишина так тишина — молчу."),))])
+    inner = _Inner(
+        [
+            LLMResponse(tool_calls=(_call(passed="not_addressed"),)),
+            LLMResponse(tool_calls=(_call(speech="Тишина так тишина — молчу."),)),
+        ]
+    )
     lines: List[str] = []
     bridge = cb.CommandModeLLM(inner, log=lines.append)
 
@@ -164,12 +187,16 @@ def _v2(replies: List[LLMResponse]) -> tuple:
 
 
 def test_n813_whole_v2_turn_answers_in_words_not_with_the_mumble():
-    """«Робот, тишина?»: модель первым ответом «промолчать» — мост вернул ей нарушение, второй ответ — слова; робот
-    говорит их, а не «Хм, я задумался…»."""
-    ports, node, inner = _v2([LLMResponse(tool_calls=(_call(passed="not_addressed"),)),
-                              LLMResponse(tool_calls=(_call(speech="Тихо так тихо."),))])
+    """«какой сегодня день»: модель первым ответом «промолчать» — мост вернул ей нарушение, второй ответ — слова;
+    робот говорит их, а не «Хм, я задумался…». Голая «тишина» с #5115 — Tier-1, до этого хода не доходит."""
+    ports, node, inner = _v2(
+        [
+            LLMResponse(tool_calls=(_call(passed="not_addressed"),)),
+            LLMResponse(tool_calls=(_call(speech="Тихо так тихо."),)),
+        ]
+    )
     engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
-    asyncio.run(engine.run(Addressed("тишина", VOICE)))
+    asyncio.run(engine.run(Addressed("какой сегодня день", VOICE)))
     said = [s.text for s in node.pubs["/voice/speech/request"].sent]
     assert said == ["Тихо так тихо."]
     assert not any(v in said[0] for v in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE])
