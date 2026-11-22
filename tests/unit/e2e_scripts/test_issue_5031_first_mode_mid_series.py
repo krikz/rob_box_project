@@ -101,8 +101,8 @@ def _run_harness(tmp_path: Path, *args: str, env_extra=None, scenario: bool = Tr
             # Гард уже решил. Дальше часы робота и сценарий — к числу профилей
             # они отношения не имеют, а фейк на docker logs честно падает.
             text = text.replace(
-                'refuse_first_mid_series\n',
-                'refuse_first_mid_series\necho GUARD_DONE\nexit 0\n',
+                '\nrefuse_first_mid_series\n',
+                '\nrefuse_first_mid_series\necho GUARD_DONE\nexit 0\n',
                 1,
             )
         cut = text.replace(
@@ -187,19 +187,28 @@ def test_first_on_part_above_one_refuses(tmp_path):
 
 @bash_required
 def test_first_with_profiles_already_in_db_refuses(tmp_path):
-    """Перезапуск части без --prior-steps, но каст прошлой части уже в БД."""
+    """Каст в БД без признаков продолжения — остаток оборванной серии (#5077).
+
+    До #5077 гард отказывал и здесь: профилей > 0 хватало. Инцидент 22.11
+    (run 44973642247) показал, что именно эта ветка роняет следующий марафон
+    после оборванного: таймер владельца снял режим, файлы остались, а
+    признаков продолжения (--prior-steps, часть > 1) у нового прогона нет.
+    Теперь остаток убирает маркер серии ДО гарда, и гард видит чистый старт.
+    Живой каст гард по-прежнему защищает — но по признакам продолжения,
+    не по числу профилей (см. два теста выше)."""
     speakers = tmp_path / "speakers.e2e.db"
     _seed_db(speakers, 2)
-    before = _md5(speakers)
 
     proc = _run_harness(
         tmp_path, "--e2e-marathon-phase", "first",
+        robot="stub", stop_after_guard=True,
         env_extra={"E2E_SPEAKERS_DB": str(speakers)},
     )
 
-    assert proc.returncode == 2
-    assert "профил" in proc.stderr and "стирает каст" in proc.stderr
-    assert _md5(speakers) == before
+    assert "E2E_SERIES delete" in proc.stdout, proc.stderr
+    assert not speakers.exists(), "остаток оборванной серии остался в e2e-БД (issue #5077)"
+    assert "GUARD_DONE" in proc.stdout, proc.stderr
+    assert proc.returncode == 0, proc.stderr
 
 
 @bash_required
@@ -209,6 +218,11 @@ def test_profiles_are_counted_inside_the_container_read_only(tmp_path):
     21.11 каст жил в /data/speakers.e2e.db контейнера voice-assistant. Файл на
     хосте харнесса гард видеть не должен — и читать обязан только на чтение:
     фейк на OFF->ON удалил бы FAKE_E2E_DBS, если бы SELECT превратился в wipe.
+
+    С #5077 ветка «только профили» закрыта маркером серии: first без признаков
+    продолжения и без живого маркера удаляет e2e-БД ДО гарда, и гард видит
+    чистый старт. Поэтому здесь серия живая (маркер свежий) — иначе удаление
+    #5077 унесло бы файл раньше, чем гард его прочитает.
     """
     speakers = tmp_path / "speakers.e2e.db"
     _seed_db(speakers, 3)
@@ -220,10 +234,16 @@ def test_profiles_are_counted_inside_the_container_read_only(tmp_path):
     container_db = data / "speakers.e2e.db"
     container_db.write_bytes(speakers.read_bytes())
 
+    marker = tmp_path / "series.id"
+    marker.write_text("night_live\n", encoding="utf-8")
     proc = _run_harness(
         tmp_path, "--e2e-marathon-phase", "first",
         robot="fake", container_db=container_db, stop_after_guard=True,
-        env_extra={"FAKE_E2E_DBS": str(speakers)},
+        env_extra={
+            "FAKE_E2E_DBS": str(speakers),
+            "E2E_SERIES_MARKER": str(marker),
+            "E2E_SERIES_ID": "night_live",
+        },
     )
 
     assert proc.returncode == 2, proc.stderr

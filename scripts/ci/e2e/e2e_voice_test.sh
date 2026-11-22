@@ -307,6 +307,17 @@ PATTERNS=""
 CHECK_TG_ECHO=0
 E2E_MARATHON_PHASE="${E2E_MARATHON_PHASE:-}"
 E2E_PRIOR_STEPS="${E2E_PRIOR_STEPS:-}"
+# #5077 — признак серии. Маркер пишет раннер ($REPORT/series.id), id приходит
+# сюда env. Пустой id — прогон без серии: e2e-БД удаляется при снятии режима.
+E2E_SERIES_ID="${E2E_SERIES_ID:-}"
+# Маркер по умолчанию — на машине прогона (249), не в репо: раннер и харнесс
+# исполняются на разных машинах, а решение читает файл там, где он лежит.
+E2E_SERIES_MARKER="${E2E_SERIES_MARKER:-/tmp/e2e_series.id}"
+# Запас на обрыв, секунд. Живая серия обновляет mtime на каждом акте, поэтому
+# посреди серии маркер не протухает. Дольше TTL — серия мертва (SIGKILL раннера),
+# и e2e-БД можно удалить. Равен скользящему таймеру владельца (10800 с): режим
+# и каст умирают вместе, а не порознь.
+E2E_SERIES_TTL_S="${E2E_SERIES_TTL_S:-10800}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
@@ -336,6 +347,13 @@ case "$E2E_MARATHON_PHASE" in
     ""|first|middle|last) ;;
     *) echo "E2E_FATAL: --e2e-marathon-phase='$E2E_MARATHON_PHASE' — ожидается first|middle|last (issue #3972)" >&2; exit 2 ;;
 esac
+
+# #5077: решение «удалять ли e2e-БД при снятии режима» — функция, не текст.
+# Source здесь, а не рядом с либами (строка ~942): refuse_first_mid_series
+# зовётся ниже, на строке до тех source, и тест гоняет функцию напрямую.
+# shellcheck disable=SC1091
+SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR_E2E/e2e_series_marker.sh"
 
 # --- issue #5031: first посреди серии стирает каст -------------------------
 # enter_e2e_mode (ниже) на переходе OFF->ON стирает обе e2e-БД — это #2890,
@@ -401,6 +419,95 @@ refuse_first_mid_series() {  # rc 0 — first честный (серия с ну
     echo "E2E_FATAL: часть ${part} серии запущена режимом first, а серия не с нуля (${why}). Часть ${part} запускается режимом middle; first стирает каст — если нужен чистый старт, удалите e2e-БД осознанно (issue #5031)" >&2
     exit 2
 }
+# #5077: удалить e2e-БД, когда серия не активна. Определение стоит ДО вызова:
+# bash резолвит функцию в момент вызова, и вызов выше определения — command not found.
+#
+# Таймер владельца (e2e_release_after_s) снимает только флаг режима — он внутри
+# контейнера и маркера серии не видит. Файлы остаются, и следующий first падает
+# на гарде refuse_first_mid_series (run 44973642247: «уже 1 профил(ей)»).
+# Удалять на каждом снятии нельзя: middle/last держат каст между актами (#3972).
+#
+# Поэтому удаляет харнесс, и только по решению e2e_series_should_delete:
+# маркер отсутствует/пуст/битый/протух по TTL — delete, свежий — keep.
+# Одиночный прогон (E2E_SERIES_ID пуст) маркера не пишет, для него это delete.
+# SIGKILL раннера маркер не обновляет: mtime застывает, через TTL следующий
+# прогон видит мёртвую серию и удаляет.
+#
+# Где вызывается. До гарда — только из maybe_delete_stale_series_before_guard,
+# и только когда гард #5031 каст не защищает: фаза first или пустая, нет
+# --prior-steps и часть не больше 1. Признаки продолжения (итоги прошлых
+# актов, часть > 1) значат, что оператор продолжает серию: гард обязан
+# отказать, а базы остаться нетронутыми, чтобы перезапуск режимом middle
+# подхватил каст. middle/last здесь не трогаются никогда (#3972).
+# Второй вызов — в leave_e2e_mode, но туда прогон марафона не доходит:
+# E2E_MODE_HELD=0 у всех актов, кроме последнего, а trap последнего акта
+# снимает режим уже после того, как каст отработал.
+#
+# log к этому месту ещё не определена (она ниже по файлу). declare -F, а не
+# вызов: вызов дал бы «log: command not found» в stderr и потерял бы строку.
+#
+# Боевые /data/speakers.db и /data/voice_memory.db здесь не упоминаются:
+# удаляются только e2e-файлы, и только внутри контейнера voice-assistant.
+_series_log() {  # log определена ниже по файлу; до неё — обычный echo
+    if declare -F log >/dev/null 2>&1; then
+        log "$@"
+    else
+        echo ">>> $*"
+    fi
+}
+delete_e2e_db_unless_series_active() {
+    local decision
+    decision="$(e2e_series_should_delete "$E2E_SERIES_MARKER" "$E2E_SERIES_TTL_S")"
+    case "$decision" in
+        keep)
+            _series_log "🔗 серия ${E2E_SERIES_ID:-?} активна (маркер свежее ${E2E_SERIES_TTL_S} с) — e2e-БД не тронуты, каст остаётся следующему акту (issue #5077)"
+            echo "E2E_SERIES keep marker=$(basename "$E2E_SERIES_MARKER")"
+            return 0
+            ;;
+        delete) ;;
+        *)
+            # Неизвестное решение — не удалять: потеря каста живой серии хуже
+            # повторного прогона. Гард first поймает остаток и скажет прямо.
+            _series_log "⚠️ решение по серии не распознано ('$decision') — e2e-БД не тронуты (issue #5077)"
+            return 0
+            ;;
+    esac
+    _series_log "🧹 серия не активна (маркер отсутствует или старше ${E2E_SERIES_TTL_S} с) — удаляю e2e-БД, чтобы следующий first стартовал с нуля (issue #5077)"
+    # E2E_SPEAKERS_DB — офлайн-тест: файл на машине харнесса, робота нет.
+    # Без него файл в контейнере voice-assistant, как у _e2e_speaker_profiles.
+    if [ -n "${E2E_SPEAKERS_DB:-}" ]; then
+        rm -f -- "$E2E_SPEAKERS_DB" "${E2E_SPEAKERS_DB}-wal" "${E2E_SPEAKERS_DB}-shm" \
+            "${E2E_VOICE_MEMORY_DB:-}" 2>/dev/null || true
+    else
+        # Имена файлов зашиты: боевые /data/speakers.db и /data/voice_memory.db
+        # в команду не попадают. -wal/-shm — журнал sqlite, без него файл
+        # «вернётся» при следующем открытии.
+        ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'rm -f -- /data/speakers.e2e.db /data/speakers.e2e.db-wal /data/speakers.e2e.db-shm /data/voice_memory.e2e.db /data/voice_memory.e2e.db-wal /data/voice_memory.e2e.db-shm'" \
+            >/dev/null 2>&1 || log "⚠️ e2e-БД не удалились (контейнер недоступен) — следующий first честно упадёт на гарде, а не сотрёт чужой каст молча (issue #5077)"
+    fi
+    echo "E2E_SERIES delete"
+}
+# До гарда — только когда гард #5031 каст не защищает. Признаки продолжения
+# (итоги прошлых актов, часть > 1) и фазы middle/last значат, что каст нужен
+# следующему акту: базы не трогаем, решение остаётся за гардом и за #3972.
+# first без этих признаков и одиночный прогон каст не держат — остаток
+# оборванной серии (маркер протух по TTL) убираем здесь, до гарда, иначе
+# гард увидит профили мёртвой серии и честно уронит чистый старт
+# (run 44973642247). Живой маркер здесь даёт keep, и базы остаются.
+maybe_delete_stale_series_before_guard() {
+    case "$E2E_MARATHON_PHASE" in
+        first|"") ;;
+        *) return 0 ;;
+    esac
+    [ -z "$E2E_PRIOR_STEPS" ] || return 0
+    local part="${E2E_MARATHON_PART:-}"
+    case "$part" in
+        ""|*[!0-9]*) ;;
+        *) [ "$part" -le 1 ] || return 0 ;;
+    esac
+    delete_e2e_db_unless_series_active
+}
+maybe_delete_stale_series_before_guard
 refuse_first_mid_series
 # Часы робота — первое обращение, которое ничего не пишет. Стоит после гарда:
 # first посреди серии выходит здесь, не дойдя ни до даты, ни до enter_e2e_mode.
@@ -657,6 +764,14 @@ adopt_e2e_mode() {
     log "🔗 e2e-режим подхвачен от прошлого акта: таймер снятия отменён, e2e-БД не стёрты — каст прошлого акта на месте"
 }
 marathon_e2e_mode() {  # $1 = first|middle|last — режим держит раннер марафона (#3972)
+    # #5077: живая серия обновляет mtime маркера на каждом акте. Без этого TTL
+    # истёк бы посреди длинного марафона и снятие режима унесло бы каст (#3972).
+    # Пустой E2E_SERIES_ID — прогон без серии, маркера нет, и это правильно:
+    # одиночный прогон каст не держит, снятие режима e2e-БД удалит.
+    if [ -n "$E2E_SERIES_ID" ]; then
+        e2e_series_marker_touch "$E2E_SERIES_MARKER" "$E2E_SERIES_ID" \
+            || { echo "E2E_FATAL: маркер серии не записан ($E2E_SERIES_MARKER) — без него снятие режима не отличит живую серию от оборванной (issue #5077)" >&2; exit 2; }
+    fi
     # Одно включение на марафон: first стирает e2e-БД (свежий каст), остальные акты каст не трогают —
     # иначе акты 2b/2c стирали Сашу и Бориса из акта 2, и в акте 3 диктор был unknown (разбор 23.10, §1.B).
     local phase="$1"
@@ -711,6 +826,9 @@ leave_e2e_mode() {
     stuck="$(_wait_e2e_followers False)" \
         || log "❌ ВНИМАНИЕ: $stuck не вернулся на боевую БД (e2e_mode_applied≠False) — долгосрочная память пишется в e2e-базу!"
     echo "E2E_MODE off"
+    # #5077: режим снят — e2e-БД больше некому держать, если серия мертва.
+    # Живая серия (маркер свежий) каст не трогает: его подхватит следующий акт.
+    delete_e2e_db_unless_series_active
 }
 
 # --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
