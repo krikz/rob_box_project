@@ -1335,22 +1335,30 @@ async def _ask_iteration(engine: "TurnEngine", turn: _Turn, messages: Sequence[A
 
 
 def _push_for_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[str]:
-    """Модель без слов, а слова должны быть (:func:`knowledge.speech_push_owed`): ещё один вызов с подсказкой
-    ЭТОГО нарушения, не больше ``SPEECH_PUSHES_MAX`` на ход и только если до потолка хода осталось
-    ``SPEECH_PUSH_MIN_LEFT_S``. Просьба говорить толкает и без запроса, и когда рядом просили лицо (#5094:
-    «расскажи и покажи» не закрывается одной мигалкой). Повторов нет — ``None``: тогда говорит код
-    (фраза по данным запроса или :data:`knowledge.SPEECH_ASKED_PHRASE`)."""
+    """Модель без слов, а слова должны быть (:func:`knowledge.speech_push_owed`): ещё один вызов с подсказкой,
+    не больше ``SPEECH_PUSHES_MAX`` на ход и только если до потолка хода осталось ``SPEECH_PUSH_MIN_LEFT_S``.
+
+    Просьба говорить (``VIOLATION_SPEECH_ASKED``, #5094) толкает и без запроса, и когда рядом просили лицо:
+    подсказка — этого нарушения. Голый ответ после своего повтора (``silent_answer`` / ``sound_answer``) и
+    последняя итерация после запроса толкают по-старому: подсказка всегда ``VIOLATION_SPEECH_REQUIRED``
+    («коротко», «данные запроса уже получены», #4157). Свой повтор ``silent_answer`` этот толчок не заменяет
+    и не добавляет третий вызов (#4021). Повторов нет — ``None``: тогда говорит код (фраза по данным запроса
+    или :data:`knowledge.SPEECH_ASKED_PHRASE`)."""
     form = current_form()
     snap = engine.session.snapshot
+    asked = reason == kn.VIOLATION_SPEECH_ASKED
     owed = kn.speech_push_owed(form.needs_speech, bool(turn.queried), show_asked(turn.text, turn.wake_words),
-                               bool(form.sing) or not speaks_aloud(snap))
+                               bool(form.sing) or not speaks_aloud(snap), asked)
     if not owed or turn.pushed >= kn.SPEECH_PUSHES_MAX or turn.deadline.left() < kn.SPEECH_PUSH_MIN_LEFT_S:
         return None
     turn.pushed += 1
-    engine._log.warning(f"{LOG_MARK} {reason}: без слов → повтор за словами "
+    hint = reason if asked else kn.VIOLATION_SPEECH_REQUIRED
+    engine._log.warning(f"{LOG_MARK} {hint}: без слов → повтор за словами "
                         f"{turn.pushed}/{kn.SPEECH_PUSHES_MAX} (осталось {turn.deadline.left():.1f} с) "
                         f"turn={turn.turn_id}")
-    return explain(Invalid(reason), after_query=bool(turn.queried))
+    # speech_asked после запроса (n707) — шапка «данные уже получены»: иначе модель читает «ничего не сделано»
+    # и снова не говорит. Без запроса (n906) шапки нет. silent_answer после запроса (#4157) — как раньше.
+    return explain(Invalid(hint), after_query=bool(turn.queried))
 
 
 #: Нарушения последней итерации «ответа нет, слов нет»: за словами ход повторяет вызов (:func:`_push_for_words`) -
@@ -1396,6 +1404,13 @@ def _close_unread(turn: _Turn, results: Sequence[ActionResult]) -> Tuple[str, Op
     unvoiced, turn.unvoiced = turn.unvoiced, ()
     said = join(unvoiced)
     return (said.text, said.emotion) if said is not None else ("", None)
+
+
+def query_close_status(why: str) -> str:
+    """Статус хода, закрытого фразой кода после запроса. ``speech_asked`` после повторов за словами (#5094, n707)
+    — обычный ``finished``: сценарий шага запрещает ``stage=done status=done`` (TURN_FALLBACK), даже когда слова
+    сказал код. Прочие нарушения после запроса — по-прежнему ``done``."""
+    return "finished" if why == kn.VIOLATION_SPEECH_ASKED else "done"
 
 
 def data_close(turn: _Turn, emotion: Optional[str]) -> Tuple[str, Optional[str]]:
@@ -1673,7 +1688,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
         return pushed
     if turn.queried:
         log.warning(f"{LOG_MARK} невалидная команда {why} после query → фраза кода по данным запроса")
-        turn.stage, turn.status, turn.reason = "done", "done", f"query_fallback:{why}"[:60]
+        turn.stage, turn.status, turn.reason = "done", query_close_status(why), f"query_fallback:{why}"[:60]
         said, emotion = data_close(turn, invalid_emotion(invalid, ()))
         engine._say(turn, said, None, emotion)
         return None
