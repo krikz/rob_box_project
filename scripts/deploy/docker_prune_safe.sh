@@ -61,9 +61,10 @@ fi
 
 # --- in-use: ID образов, на которые ссылается любой контейнер -------------
 # Источник — `docker inspect -f '{{.Image}}'` по каждому контейнеру из
-# `docker ps -aq` (running и stopped). `.Image` — ID образа контейнера,
-# тот же, что `docker image inspect` вернёт для тега из Config.Image.
-# Пустой/битый ответ не считаем «никто не использует» молча: предупреждаем.
+# `docker ps -aq` (running и stopped). `.Image` — sha256: + 64 hex, тот же
+# вид, что `docker images -aq --no-trunc`. Короткий `images -q` (12 hex)
+# с ним не сравнивается. Пустой/битый ответ не считаем «никто не
+# использует» молча: предупреждаем.
 in_use_file="$(mktemp)"
 ps_rc=0
 container_ids="$(docker ps -aq 2>/dev/null)" || ps_rc=$?
@@ -91,15 +92,19 @@ done < <(printf '%s\n' "$container_ids")
 in_use() { grep -qxF -- "$1" "$in_use_file"; }
 
 # --- удаление: только образы, на которые не ссылается ни один контейнер ---
-# `docker images -aq` даёт ID, включая dangling (<none>). Один ID может
-# встречаться несколько раз (по тегу) — удаляем один раз. `docker rmi` по
-# ID снимает ВСЕ теги образа; раз ни один контейнер на него не ссылается,
+# `docker images -aq` без --no-trunc печатает 12 hex. `inspect .Image` —
+# sha256: + 64 hex (замерено, docker 29.8.2). Точное сравнение этих строк
+# никогда не сходится, и in-use уходит в rmi (демон без -f отказывает,
+# но защита — не скрипт, а отказ демона, плюс лживый WARN).
+# --no-trunc даёт тот же sha256:+64hex, что и .Image. Один ID встречается
+# несколько раз (по тегу) — удаляем один раз. `docker rmi` по полному ID
+# снимает ВСЕ теги образа; раз ни один контейнер на него не ссылается,
 # терять нечего. In-use ID не передаём в rmi вообще.
 unused_file="$(mktemp)"
 images_rc=0
-all_ids="$(docker images -aq 2>/dev/null)" || images_rc=$?
+all_ids="$(docker images -aq --no-trunc 2>/dev/null)" || images_rc=$?
 if [ "$images_rc" -ne 0 ]; then
-    warn "docker images -aq не удался (rc=$images_rc) — удаление пропущено"
+    warn "docker images -aq --no-trunc не удался (rc=$images_rc) — удаление пропущено"
 else
     while IFS= read -r iid; do
         [ -n "$iid" ] || continue

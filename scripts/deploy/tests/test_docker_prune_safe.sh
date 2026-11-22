@@ -69,11 +69,15 @@ WRAP
 chmod +x "$WORK/bin/docker"
 
 NAV2_REF="ghcr.io/krikz/rob_box/nav2-humble-dev-acd5a8d"
-NAV2_ID="sha256:f635eb037d87"
+# Формат живого docker 29.8.2: inspect .Image и images --no-trunc — sha256:+64 hex.
+# images -q без --no-trunc — первые 12 hex. Скрипт, сравнивающий их в лоб,
+# не защищает in-use (тест a обязан это поймать).
+NAV2_ID="sha256:f635eb037d87e968ffeabc57dee2688bd9f17aa2e263c409b6cb96d02b10b076"
+NAV2_SHORT="f635eb037d87"
 OLD_REF="ghcr.io/krikz/rob_box/nav2-humble-dev-faa402e"
-OLD_ID="sha256:aaaaaaaaaaaa"
-UNUSED_ID="sha256:bbbbbbbbbbbb"
-DANGLING_ID="sha256:cccccccccccc"
+OLD_ID="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+UNUSED_ID="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+DANGLING_ID="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 run_script() {
     export FAKE_STATE="$WORK"
@@ -96,6 +100,9 @@ check "a: in-use tag kept" has_ref "$NAV2_REF"
 check "a: second tag of in-use image kept" has_ref "$OLD_REF"
 check "a: in-use id kept" has_id "$NAV2_ID"
 refute "a: in-use id not passed to rmi" rmi_logged "$NAV2_ID"
+refute "a: in-use short id not passed to rmi" rmi_logged "$NAV2_SHORT"
+refute "a: no failed-rmi WARN for in-use id" grep -q "не удалил неиспользуемый образ $NAV2_ID" "$WORK/out.txt"
+refute "a: no failed-rmi WARN for in-use short id" grep -q "не удалил неиспользуемый образ $NAV2_SHORT" "$WORK/out.txt"
 check "a: unused image removed" rmi_logged "$UNUSED_ID"
 refute "a: unused image gone from state" has_id "$UNUSED_ID"
 check "a: dangling image removed" rmi_logged "$DANGLING_ID"
@@ -110,6 +117,7 @@ export FAKE_COMPOSE_RC=1 FAKE_COMPOSE_IMAGES=""
 check "a-stopped: exits 0" run_script
 check "a-stopped: stopped container keeps tag" has_ref "$NAV2_REF"
 refute "a-stopped: in-use id not removed" rmi_logged "$NAV2_ID"
+refute "a-stopped: in-use short id not passed to rmi" rmi_logged "$NAV2_SHORT"
 check "a-stopped: unused still removed" rmi_logged "$UNUSED_ID"
 
 # --- (б) неиспользуемый образ удаляется, даже если тегов несколько ---------
@@ -120,7 +128,7 @@ export FAKE_COMPOSE_RC=1 FAKE_COMPOSE_IMAGES=""
 check "b: exits 0 with only garbage" run_script
 check "b: unused id removed once" rmi_logged "$UNUSED_ID"
 refute "b: both tags of unused image gone" has_id "$UNUSED_ID"
-check "b: rmi called once for the id" test "$(grep -cF "$UNUSED_ID" "$WORK/rmi.log")" -eq 1
+check "b: rmi called once for the id" test "$(grep -cxF "$UNUSED_ID" "$WORK/rmi.log")" -eq 1
 
 # --- (в) --dry-run ничего не удаляет и не тегирует -------------------------
 reset_state
@@ -186,6 +194,33 @@ check "e: ps failure removed nothing" test ! -s "$WORK/rmi.log"
 check "e: ps failure keeps unused image" has_id "$UNUSED_ID"
 check "e: ps failure warns" grep -q "уборка пропущена" "$WORK/out.txt"
 export FAKE_PS_RC=0
+
+# --- формат ID: короткий images -q не равен inspect .Image ------------------
+# Живой docker 29.8.2: images -aq → 12 hex, images -aq --no-trunc и
+# inspect .Image → sha256:+64 hex. Скрипт обязан звать --no-trunc: иначе
+# grep -qxF не сходится, in-use уходит в rmi, демон без -f отказывает и
+# скрипт пишет лживый WARN «не удалил». Фейк врёт теми же форматами.
+reset_state
+add_image "$NAV2_ID" "$NAV2_REF"
+add_image "$NAV2_ID" "$OLD_REF"
+add_image "$UNUSED_ID" "ghcr.io/krikz/rob_box/old-humble-dev-7777777"
+add_container "c_nav2" "$NAV2_ID" "$NAV2_REF" "nav2"
+export FAKE_COMPOSE_RC=1 FAKE_COMPOSE_IMAGES=""
+short_seen="$(env FAKE_STATE="$WORK" PATH="$WORK/bin:$PATH" docker images -aq | head -1)"
+full_seen="$(env FAKE_STATE="$WORK" PATH="$WORK/bin:$PATH" docker images -aq --no-trunc | head -1)"
+inspected="$(env FAKE_STATE="$WORK" PATH="$WORK/bin:$PATH" docker inspect -f "{{.Image}}" c_nav2)"
+check "fmt: images -q is 12 hex" test "$short_seen" = "$NAV2_SHORT"
+check "fmt: images --no-trunc is sha256+64" test "$full_seen" = "$NAV2_ID"
+check "fmt: inspect .Image is sha256+64" test "$inspected" = "$NAV2_ID"
+refute "fmt: short id differs from inspect .Image" test "$short_seen" = "$inspected"
+check "fmt: exits 0" run_script
+refute "fmt: full in-use id not passed to rmi" rmi_logged "$NAV2_ID"
+refute "fmt: short in-use id not passed to rmi" rmi_logged "$NAV2_SHORT"
+refute "fmt: no failed-rmi WARN for in-use" grep -q "не удалил неиспользуемый образ" "$WORK/out.txt"
+check "fmt: unused full id removed" rmi_logged "$UNUSED_ID"
+check "fmt: both tags of in-use image kept" has_ref "$OLD_REF"
+# Два тега одного ID: rmi по нему — один раз (dedupe не ломается на полном ID).
+check "fmt: unused id removed once" test "$(grep -cxF "$UNUSED_ID" "$WORK/rmi.log")" -eq 1
 
 # --- workflow: три борта зовут скрипт, prune -af образов больше нет --------
 CLEANUP_STEP="[Vision Pi + Sound Pi + Main Pi] Cleanup Docker Artifacts (parallel)"

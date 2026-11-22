@@ -39,9 +39,34 @@ if [ "${1:-}" = "inspect" ]; then
 fi
 
 if [ "${1:-}" = "images" ]; then
-    awk -F '\t' '{ print $1 }' "$images"
+    # Живой docker 29.8.2 (замерено, только чтение):
+    #   docker images -aq            → 12 hex без префикса
+    #   docker images -aq --no-trunc → sha256: + 64 hex
+    # inspect .Image печатает тот же sha256:+64hex. Точное сравнение
+    # короткого с полным никогда не сходится — фейк обязан врать так же,
+    # иначе тест (а) зелёный на скрипте, который зовёт rmi на in-use.
+    no_trunc=0
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-trunc) no_trunc=1 ;;
+        esac
+        shift
+    done
+    if [ "$no_trunc" -eq 1 ]; then
+        awk -F '\t' '{ print $1 }' "$images"
+    else
+        awk -F '\t' '{ id=$1; sub(/^sha256:/, "", id); print substr(id, 1, 12) }' "$images"
+    fi
     exit 0
 fi
+
+# Канонический ID: sha256: + 64 hex. Короткий (12 hex) и полный — один образ.
+canonical_id() {
+    local id="$1"
+    id="${id#sha256:}"
+    printf 'sha256:%s' "$id"
+}
 
 if [ "${1:-}" = "image" ] && [ "${2:-}" = "inspect" ]; then
     ref="${3:-}"
@@ -54,28 +79,35 @@ fi
 
 if [ "${1:-}" = "rmi" ]; then
     id="${2:-}"
-    if ! awk -F '\t' -v id="$id" '$1 == id { found=1 } END { exit !found }' "$images"; then
+    full="$(canonical_id "$id")"
+    # Лог — до отказа демона, ровно переданный аргумент. Короткий вызов
+    # (images -q без --no-trunc) на in-use виден как 12 hex и не прячется
+    # за «демон отказал, тег жив».
+    printf '%s\n' "$id" >> "$state/rmi.log"
+    if ! awk -F '\t' -v id="$full" '$1 == id { found=1 } END { exit !found }' "$images"; then
         echo "Error: No such image: $id" >&2
         exit 1
     fi
-    # Контейнер держит образ — как живой daemon, rmi отказывает.
-    if awk -F '\t' -v id="$id" '$2 == id { found=1 } END { exit !found }' "$containers"; then
+    # Контейнер держит образ — как живой daemon без -f, rmi отказывает.
+    # Сравнение по каноническому ID: короткий аргумент тоже отказ.
+    if awk -F '\t' -v id="$full" '$2 == id { found=1 } END { exit !found }' "$containers"; then
         echo "Error: image is being used by a container" >&2
         exit 1
     fi
-    awk -F '\t' -v id="$id" '$1 != id' "$images" > "$images.tmp"
+    awk -F '\t' -v id="$full" '$1 != id' "$images" > "$images.tmp"
     mv "$images.tmp" "$images"
-    printf '%s\n' "$id" >> "$state/rmi.log"
     exit 0
 fi
 
 if [ "${1:-}" = "tag" ]; then
     id="${2:-}"
     ref="${3:-}"
-    if ! awk -F '\t' -v id="$id" '$1 == id { found=1 } END { exit !found }' "$images"; then
+    full="$(canonical_id "$id")"
+    if ! awk -F '\t' -v id="$full" '$1 == id { found=1 } END { exit !found }' "$images"; then
         echo "Error: No such image: $id" >&2
         exit 1
     fi
+    id="$full"
     # Тег уже есть на другом ID — снимаем его оттуда (как живой daemon) и
     # вешаем на id контейнера.
     awk -F '\t' -v ref="$ref" '$2 != ref' "$images" > "$images.tmp"
