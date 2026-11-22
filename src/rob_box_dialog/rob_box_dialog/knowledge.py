@@ -3988,6 +3988,9 @@ SPEECH_ASK_NEGATION: Tuple[str, ...] = ("не", "без")
 #: Нарушение формы просьбы говорить: ход закрыт только тем, чего не слышно (``SILENT_DONE_TOOLS``,
 #: ``INAUDIBLE_TOOLS``, одно лицо). Мост по ``tool_not_available`` срез расширяет — это нарушение своё.
 VIOLATION_SPEECH_ASKED = "speech_asked"
+#: Ответ без слов, повтор за которым даёт ход, а не мост (:func:`command.words_only`): последняя итерация после
+#: запроса и просьба говорить. Мост по ним срез не расширяет и свой повтор не тратит — вызовы считает ход.
+WORDS_ONLY_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SPEECH_REQUIRED, VIOLATION_SPEECH_ASKED)
 SPEECH_ASKED_HINT = (
     "просили рассказать — нужен текст или звук, одна мигалка не ответ: ответь словами в speech "
     "(анимацию положи в actions рядом) или скажи выступлением в perform; play_animation и expression "

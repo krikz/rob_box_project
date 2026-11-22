@@ -201,10 +201,11 @@ def test_backlog_pickup_turn_keeps_passed_in_the_form():
 def test_n109_voice_is_open_only_when_the_voice_is_asked_in_this_reply():
     asked = _FormPorts([Answer(Command(speech="Хорошо."), "deepseek")])
     _turn(asked, Addressed("скажи это голосом алёны", VOICE))
-    assert asked.forms == [Form(passed=False, voice=True, backing=False)]
+    # «скажи» — просьба говорить (#5094): голос открыт и речь обязательна
+    assert asked.forms == [Form(passed=False, voice=True, backing=False, needs_speech=True)]
     named = _FormPorts([Answer(Command(speech="Хорошо."), "deepseek")])
     _turn(named, Addressed("скажи как шаонв", VOICE), voices=lambda: (("female-shaonv", "шаонв"),))
-    assert named.forms == [Form(passed=False, voice=True, backing=False)]
+    assert named.forms == [Form(passed=False, voice=True, backing=False, needs_speech=True)]
     # список звуков по памяти без ``get_sound_info`` - нарушение ``sound_catalog`` (М11 n109): второй ответ модели -
     # встречный вопрос; форма у обоих вызовов одна
     plain = _FormPorts([Answer(Command(speech="Сирену, звонок."), "deepseek"),
@@ -232,7 +233,7 @@ def test_command_form_sees_the_display_name_and_every_alias_of_a_voice_separatel
     snap = Session("personality").snapshot
     registry = (JOVIALMAN, ("Russian_ReliableMan", "Надёжный мужчина"))
     assert command_form(_Turn("t1", 0, text, VOICE, deadline=None), snap, registry) == Form(
-        passed=False, voice=True, backing=False)
+        passed=False, voice=True, backing=False, needs_speech=True)
 
 
 def test_command_form_keeps_the_voice_closed_when_no_name_of_the_registry_is_said():
@@ -241,7 +242,8 @@ def test_command_form_keeps_the_voice_closed_when_no_name_of_the_registry_is_sai
     snap = Session("personality").snapshot
     registry = (JOVIALMAN, ("Russian_ReliableMan", "Надёжный мужчина"))
     form = command_form(_Turn("t1", 0, "Робот, скажи как диктор", VOICE, deadline=None), snap, registry)
-    assert form == ADDRESSED_TURN
+    # имени реестра нет — голос закрыт; «скажи» всё равно просьба говорить (#5094)
+    assert form == Form(passed=False, voice=False, backing=False, needs_speech=True)
 
 
 def test_form_of_a_turn_is_a_pure_function_of_the_turn():

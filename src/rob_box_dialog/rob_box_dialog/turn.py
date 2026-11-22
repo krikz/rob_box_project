@@ -1331,7 +1331,8 @@ def _push_for_words(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
 
 #: Нарушения последней итерации «ответа нет, слов нет»: за словами ход повторяет вызов (:func:`_push_for_words`) -
 #: от валидатора моста (форма итерации) и от хода (голый ответ, когда мост команду не судит).
-_WORDS_MISSED = (kn.VIOLATION_SPEECH_REQUIRED, kn.VIOLATION_SILENT_ANSWER, kn.VIOLATION_SOUND_ANSWER)
+_WORDS_MISSED = (kn.VIOLATION_SPEECH_REQUIRED, kn.VIOLATION_SPEECH_ASKED, kn.VIOLATION_SILENT_ANSWER,
+                 kn.VIOLATION_SOUND_ANSWER)
 
 
 def _missed_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[str]:

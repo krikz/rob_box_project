@@ -995,10 +995,11 @@ def overlong_only(result: Result) -> bool:
 
 
 def words_only(result: Result) -> bool:
-    """Команда отвергнута только за ответ без слов на последней итерации (все нарушения —
-    ``VIOLATION_SPEECH_REQUIRED``): повтор за словами даёт ход (``turn._push_for_words``: он знает потолок
-    хода), мост такую команду отдаёт ходу сразу, без своего повтора."""
-    return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_REQUIRED for v in result.all)
+    """Команда отвергнута только за ответ без слов (все нарушения — из :data:`knowledge.WORDS_ONLY_VIOLATIONS`:
+    последняя итерация после запроса, ``VIOLATION_SPEECH_REQUIRED``, и просьба говорить, ``VIOLATION_SPEECH_ASKED``,
+    #5094). Повтор за словами даёт ход (``turn._push_for_words``: он знает потолок хода), мост такую команду отдаёт
+    ходу сразу, без своего повтора: свой повтор съел бы вызов, который ход считает повтором за словами."""
+    return isinstance(result, Invalid) and all(v.reason in kn.WORDS_ONLY_VIOLATIONS for v in result.all)
 
 
 def fit_speech(cmd: Command) -> Command:
