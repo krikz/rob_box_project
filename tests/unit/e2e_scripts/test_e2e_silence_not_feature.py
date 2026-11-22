@@ -192,7 +192,11 @@ def test_confirmed_cycle_is_counted_where_both_judges_agree():
 
 
 def test_marathon_guard_still_stops_on_no_reaction():
-    """Гард марафона по-прежнему останавливает акт 1-2 по E2E_NO_REACTION -- фикс на это и опирается."""
+    """Гард марафона по-прежнему останавливает акт 1-2 по E2E_NO_REACTION -- фикс на это и опирается.
+
+    С #5076 решение принимает ``marathon_foundation_decision``: стоп на всё,
+    кроме настоящего ``E2E_FEATURE_FAIL``. ``E2E_NO_REACTION`` туда входит.
+    """
     marathon = MARATHON.read_text(encoding="utf-8")
-    assert "E2E_NO_REACTION|E2E_INFRA_FAIL|E2E_STAND_FAIL" in marathon
+    assert 'marathon_foundation_decision "$act_log"' in marathon
     assert "останавливаю марафон" in marathon
