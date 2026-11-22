@@ -43,6 +43,7 @@ import os
 import shlex
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -134,21 +135,59 @@ def fetch_logs(run: RemoteRunner, container: str, *, since: str | None = None) -
     return start.rstrip("\n"), end.rstrip("\n")
 
 
-def recovered_lines(full_text: str, window_text: str, *, scope: str) -> list[str]:
+def recovered_lines(
+    full_text: str, window_text: str, *, scope: str, container: str = "", since: str | None = None
+) -> list[str]:
     """Critical-строки полного лога, которых нет в окне текущего запуска.
 
     Дедуп ищет первую подходящую строку, поэтому обходим по одной: так в
     сводку попадают все отработанные рестартом, а не только первая.
+    ``container`` нужен окну старта роутера (issue #5124): без имени та же
+    строка транзиента осталась бы critical. Транзиент текущего запуска (его
+    старт не раньше ``since``) в RECOVERED не кладём — его уже видит warning.
     """
     seen = {line.strip() for line in window_text.splitlines()}
+    since_at = _parse_started_at(since) if since else None
     found: list[str] = []
     for line in full_text.splitlines():
         stripped = line.strip()
         if not stripped or stripped in seen or stripped in found:
             continue
-        if dedup.extract_relevant_log_line(stripped, scope=scope, severity="critical"):
-            found.append(stripped)
+        if not dedup.extract_relevant_log_line(stripped, scope=scope, severity="critical", container=container):
+            continue
+        if _router_transient_of_this_start(stripped, full_text, container, since_at):
+            continue
+        found.append(stripped)
     return found
+
+
+def _parse_started_at(started_at: str):
+    """Метка ``docker inspect`` StartedAt. Наносекунды режем: fromisoformat их не ест.
+
+    Не ``_iso_z_timestamp``: тот ищет метку в строке лога и берёт только то, что
+    уже прошло TIMESTAMP_RE. Здесь метка голая, с долями до 9 знаков.
+    """
+    text = started_at.strip().replace("Z", "+00:00").replace("z", "+00:00")
+    if "." in text:
+        head, rest = text.split(".", 1)
+        digits = []
+        for ch in rest:
+            if not ch.isdigit():
+                break
+            digits.append(ch)
+        text = f"{head}.{''.join(digits[:6])}{rest[len(digits):]}"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _router_transient_of_this_start(line: str, log_text: str, container: str, since_at) -> bool:
+    """Транзиент роутера, чей старт не старше границы текущего запуска."""
+    if since_at is None or not dedup._zenoh_router_startup_transient(line, log_text, container):
+        return False
+    start_at, _error_at = dedup._zenoh_router_start_and_error(line, log_text)
+    return start_at is not None and start_at >= since_at
 
 
 def _clip_report_line(line: str) -> str:
@@ -188,7 +227,7 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
         logs_start, logs_end = fetch_logs(run, container, since=since)
         logs = f"{logs_start}\n{SEPARATOR}\n{logs_end}"
 
-        critical = dedup.extract_relevant_log_line(logs, scope=scope, severity="critical")
+        critical = dedup.extract_relevant_log_line(logs, scope=scope, severity="critical", container=container)
         if critical:
             critical_count += 1
             print(f"  ❌ CRITICAL errors found in {container}")
@@ -199,16 +238,18 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
                 )
             )
 
-        warning = dedup.extract_relevant_log_line(logs, scope=scope, severity="warning")
+        warning = dedup.extract_relevant_log_line(logs, scope=scope, severity="warning", container=container)
         if warning:
             warning_count += 1
             print(f"  ⚠️  Warnings found in {container}")
+            # Стартовый транзиент роутера не молчит: в сводке видно, что это окно
+            # старта, а не глухая ошибка (issue #5124). Прочие warning без пометки.
+            summary = "Warning log pattern detected"
+            if dedup.is_zenoh_router_container(container) and dedup.ZENOH_ROUTER_PROPAGATION_RE.search(warning):
+                summary = dedup.ZENOH_ROUTER_STARTUP_SUMMARY
+                report.append(f"=== {container} {summary} ===")
             report += [f"=== {container} WARNINGS ===", warning, ""]
-            findings.append(
-                finding(
-                    environment, scope, container, "warning_log", "warning", "Warning log pattern detected", warning
-                )
-            )
+            findings.append(finding(environment, scope, container, "warning_log", "warning", summary, warning))
 
         if critical:
             report.append(f"=== {container} INITIALIZATION CONTEXT ===")
@@ -219,7 +260,7 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
         # выше считаются только по окну текущего запуска (issue #5135).
         if start and start[1] > 0:
             full_start, full_end = fetch_logs(run, container)
-            before = recovered_lines(f"{full_start}\n{full_end}", logs, scope=scope)
+            before = recovered_lines(f"{full_start}\n{full_end}", logs, scope=scope, container=container, since=since)
             shown, rest = before[:RECOVERED_LINES_LIMIT], before[RECOVERED_LINES_LIMIT:]
             if shown:
                 report.append(
