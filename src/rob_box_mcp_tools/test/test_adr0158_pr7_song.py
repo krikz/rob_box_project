@@ -393,7 +393,8 @@ def test_sing_ask_starts_the_song_and_a_cache_bridge_with_a_code_phrase(cache):
     assert result.success and result.data["pending"] == "song" and len(played) == 1  # мост играет
     assert result.data["source_message"].startswith("Пишу песню, пою голосом ")
     assert result.data["source_message"].endswith("минуты полторы. Пока играет своё.")
-    assert studio.requests == [sg.SongRequest(PHRASE, "grunge", "", PHRASE)]  # текст заказа — в words (#4973)
+    # тема, не слова (#5092): фраза короче 6 строк / 120 символов, «этими словами» в ней нет
+    assert studio.requests == [sg.SongRequest(PHRASE, "grunge", "", "")]
 
 
 @pytest.fixture
@@ -609,18 +610,23 @@ def test_words_after_these_words_beat_the_ask_left_in_text():
     assert order == sg.SongRequest(given, "rock", "calm", given)
     no_tail = song_request(("track", given, None, "rock", "t2", "спой этими словами"), "rock")
     assert no_tail.lyrics == given
+    # «Своими словами» в таблице нет, а «про осень» короче порога песни — это тема, не готовый текст (#5092):
+    # раньше короткая тема шла в lyrics и падала check_song за 14 мс, не позвав LLM.
     own = song_request(("track", "про осень", None, "rock", "t3", "сгенерируй трек своими словами про осень"), "rock")
-    assert own.lyrics == "про осень"
+    assert own.theme == "про осень" and own.lyrics == ""
 
 
 def test_explicit_theme_beats_heard_text_and_empty_theme_falls_back(empty):
-    """Оба порядка аргументов: непустой theme важнее heard_text; пустой theme берёт heard_text (#4973)."""
+    """Длинный явный text — готовые слова, и heard_text их не вытесняет (#4973).
+
+    Короткий heard_text при пустом text — тема, не готовый текст (#5092): раньше он шёл в lyrics
+    целиком и падал check_song, не дойдя до LLM."""
     from rob_box_mcp_tools.engine.song_order import song_request
 
     args = ("track", ZH_LYRICS, None, "rock", "t9", "а где слова")
     assert song_request(args, "grunge") == sg.SongRequest(ZH_LYRICS, "grunge", "", ZH_LYRICS)
     fallback = song_request(("track", "", None, "rock", "t9", PHRASE), "grunge")
-    assert fallback == sg.SongRequest(PHRASE, "grunge", "", PHRASE)
+    assert fallback == sg.SongRequest(PHRASE, "grunge", "", "")
     # сквозь тул: реплика просит песню, явный text доезжает до студии и heard_text его не вытесняет
     studio = FakeStudio()
     result = _request(_rig(), studio, empty, []).execute(

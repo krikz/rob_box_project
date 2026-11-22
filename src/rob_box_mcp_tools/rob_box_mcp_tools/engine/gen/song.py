@@ -134,9 +134,11 @@ def check_song(title: str, lyrics: str, language: str) -> str:
     """Что не так с текстом, или «» (ADR-0158 §3.4). Проверяем то, что код проверить может; «свой, не перевод»
     проверить нечем (§9) — это правило скилла."""
     lines = [ln for ln in lyrics.splitlines() if ln.strip()]
+    # Два отказа — два сообщения (#5092): одно на оба врало диагностике. Строки важнее.
     problems = ((not title.strip() or len(title) > TITLE_MAX, f"название от 1 до {TITLE_MAX} символов"),
                 (len(lyrics) > SONG_MAX_CHARS, f"текст длиннее {SONG_MAX_CHARS} символов"),
-                (len(lyrics) < MIN_CHARS or len(lines) < MIN_LINES, f"текст короче: нужно от {MIN_LINES} строк"),
+                (len(lines) < MIN_LINES, f"строк мало: нужно от {MIN_LINES}, есть {len(lines)}"),
+                (len(lyrics) < MIN_CHARS, f"символов мало: нужно от {MIN_CHARS}, есть {len(lyrics)}"),
                 (_script_share(lyrics, language) < SCRIPT_SHARE, f"текст должен быть на языке «{language}»"))
     return next((why for bad, why in problems if bad), "")
 
@@ -163,6 +165,8 @@ def write_lyrics(ask: LyricsAsk, request: SongRequest, language: str, rules: str
         problem = check_song(title, lyrics, language)
         if not problem:
             return Song(title, lyrics)
+        # Отклонённый текст LLM — в лог (#5092): в следующий раз причина видна, не гадается.
+        _LOG.warning(f"🎤 [song] отклонённый текст: {lyrics!r}")
     raise SongFailed("lyrics", problem)
 
 
@@ -271,6 +275,14 @@ def voice_sings(provider: str, voice_language: str, language: str) -> bool:
     if provider in UNBOUND_LANGUAGE_PROVIDERS:
         return True
     return voice_language.lower().startswith(language.lower())
+
+
+def is_given_lyrics(text: str) -> bool:
+    """Текст сам дотягивает до песни: от ``MIN_LINES`` строк и от ``MIN_CHARS`` символов.
+
+    Короче — тема, не слова (#5092). Пороги те же, что у :func:`check_song`, не ниже."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return len(lines) >= MIN_LINES and len(text) >= MIN_CHARS
 
 
 def given_song(request: SongRequest) -> Song:
@@ -460,6 +472,9 @@ class SongStudio:
             if reason == "provider_down":
                 self._dead_until = self._clock() + DEAD_FOR_S
             self._log().warning(f"🎤 [song] не вышло: {exc}")
+            if reason == "lyrics" and request.lyrics.strip():
+                # Отклонённый текст песни — в лог (#5092): в следующий раз причина видна, не гадается.
+                self._log().warning(f"🎤 [song] отклонённый текст: {request.lyrics!r}")
             self._say(on_failed(reason))
         except Exception as exc:  # noqa: BLE001 — поток не должен молчать
             self._log().error(f"🎤 [song] сбой: {type(exc).__name__}: {exc}")
@@ -484,6 +499,7 @@ class SongStudio:
 
 
 __all__ = ["BUSY_TEXT", "DEFAULT_GENRE", "STARTED_WAIT_S", "LYRICS_SCHEMA", "LyricsAsk", "Song", "SongFailed", "SongRequest",
-           "SongResult", "SongStudio", "check_song", "order_language", "song_language", "text_language",
+           "SongResult", "SongStudio", "check_song", "is_given_lyrics", "order_language", "song_language",
+           "text_language",
            "current_voice", "done_text", "failed_words", "given_song", "harness_lyrics_ask", "lyrics_prompt",
            "rules_text", "song_tags", "sung_by", "verbatim_refusal", "voice_sings", "wait_text", "write_lyrics"]
