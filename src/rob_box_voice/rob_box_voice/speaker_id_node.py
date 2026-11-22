@@ -565,6 +565,17 @@ def _register_failure_reason(exc: BaseException) -> str:
     )
 
 
+def _watch_pool_task(future, logger) -> None:
+    """Повесить лог необработанной ошибки, если ``submit`` вернул настоящий ``Future`` (#5019).
+
+    Синхронная заглушка пула возвращает ``None`` — колбэка нет, и это не ошибка.
+    Функция модуля: ``getattr`` в методе класса поднял бы WMC (ADR-0145).
+    """
+    add = getattr(future, "add_done_callback", None)
+    if add is not None:
+        add(lambda done: _log_pool_task_error(logger, done))
+
+
 def _log_pool_task_error(logger, future) -> None:
     """Необработанное исключение задачи пула — в ROS-лог, не в молчаливый ``Future``.
 
@@ -588,9 +599,12 @@ def _submit_logged(executor, logger, fn, *args):
     Форма та же, что у ``ThreadPoolExecutor.submit``: ``fn`` или ``fn, *args``. Ноль аргументов
     нужен ``echo_window.listen`` (он передаёт ``submit`` как одноаргументный вызываемый). Успешная
     задача колбэк не логирует — см. :func:`_log_pool_task_error`.
+
+    Синхронная заглушка пула в тестах вызывает ``fn`` сразу и возвращает ``None`` — колбэка у неё
+    нет, и вешать его не на что. Настоящий ``Future`` колбэк получает.
     """
     future = executor.submit(fn, *args)
-    future.add_done_callback(lambda done: _log_pool_task_error(logger, done))
+    _watch_pool_task(future, logger)
     return future
 
 
@@ -1273,7 +1287,9 @@ class SpeakerIdNode(Node):
         # параллельных первых вызова загрузили бы модель дважды.
         # Опт-аут (#2609, ленивый режим) — resemblyzer_warmup_on_start: false.
         if bool(self.get_parameter("resemblyzer_warmup_on_start").value):
-            _pool_submit(self, self._warmup)
+            # Форма ``self._executor.submit(self._warmup)`` обязательна: приёмка #2609 ищет её
+            # в AST ``__init__``. Колбэк — тот же лог необработанной ошибки, что у ``_submit`` (#5019).
+            _watch_pool_task(self._executor.submit(self._warmup), self.get_logger())
             self.get_logger().info(
                 "🔥 resemblyzer warmup started in background (issue #2885)"
             )
