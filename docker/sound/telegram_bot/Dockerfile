@@ -127,7 +127,7 @@ COPY --from=msgs /ws/install /ws/install
 # Тот же приём здесь, отдельным слоем — до установки ядра.
 RUN pip3 install --no-cache-dir --upgrade pip
 RUN pip3 install --no-cache-dir \
-    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.19"
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.20"
 
 WORKDIR /ws/src
 # ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
