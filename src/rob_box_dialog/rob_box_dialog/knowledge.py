@@ -1248,6 +1248,9 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 #: (запомнить «никому» нельзя: раньше такой факт становился общим для всех). Имя не нужно: у ``person_ref``
 #: может быть лишь кличка.
 PERSON_SCOPED_TOOLS: Tuple[str, ...] = ("memory_save", "memory_search", "memory_context")
+#: Тул записи факта (#5128): диктовку кладёт в команду код, исполняет тот же тул, что зовёт модель.
+#: Хардкодить строку во втором месте нельзя.
+MEMORY_SAVE_TOOL = PERSON_SCOPED_TOOLS[0]
 #: Раздел снимка ``speaker_memory``: факты собеседника - не больше стольких (столько же брал v1,
 #: ``format_speaker_context``), каждый обрезан до ``SPEAKER_FACT_MAX_CHARS`` знаков; свежие первыми.
 SPEAKER_FACTS_MAX = 20
