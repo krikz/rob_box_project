@@ -121,7 +121,7 @@ from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
 from rob_box_dialog.words import (asks_own_memory_condition, asks_question, asks_to_listen, has_form, has_word,
                                   music_stop_claimed, same_stop_rest)
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, library_asked, music_asked, needs_words,
-                                       robot_asked, show_asked, voice_asked, voice_named)
+                                       robot_asked, show_asked, speech_asked, voice_asked, voice_named)
 from rob_box_dialog.turn_log import (PERFORM_STARTED, TOOL, USER, TurnAggregate, TurnLog, phrase_label, results_of,
                                      speaker_label)
 
@@ -443,7 +443,7 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
     подложка сказки, анекдота и стиха — только когда человек в этой реплике назвал музыку
     (``tools_view.music_asked``); песня и рэп ставят её по смыслу (``knowledge.PERFORM_BACKING_BY_KIND``).
     ``library`` — реплика просит найти в библиотеке (``tools_view.library_asked``): ``memory_save`` в этом ходе
-    закрыт."""
+    закрыт. ``needs_speech`` — реплика просит говорить (``tools_view.speech_asked``): одну мигалку ход не принимает."""
     names = tuple(name for entry in voices for name in entry if name)
     return Form(
         passed=turn.pickup,
@@ -452,6 +452,7 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
         sing_over=bool(sing) and snapshot.music_playing,
         backing=music_asked(turn.text),
         library=library_asked(turn.text),
+        needs_speech=speech_asked(turn.text),
     )
 
 
@@ -905,9 +906,10 @@ async def understand(engine: "TurnEngine", turn: "_Turn", snap: SessionSnapshot)
     over = " поверх играющего" if form.sing_over else ""
     kinds = "" if form.backing else " подложка=песня,рэп"  # сказка, анекдот, стих - без бита, музыку не просили
     tools = list(form.closed_tools()) or "-"
+    speech = " речь=нужна" if form.needs_speech else ""
     engine._log.info(
         f"{LOG_MARK} форма команды: закрыты={list(form.closed()) or '-'} пение={form.sing or '-'}{over}"
-        f"{kinds} тулы={tools} turn={turn.turn_id}"
+        f"{kinds} тулы={tools}{speech} turn={turn.turn_id}"
     )
     with turn_form(form):
         await engine._understand(turn, snap)

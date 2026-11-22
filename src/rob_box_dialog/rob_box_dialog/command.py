@@ -193,7 +193,10 @@ class Form:
     нарушение. Ставит его ход (``turn.answer_form``). ``library`` — реплика просит найти в библиотеке
     (``tools_view.library_asked``, #5093): ``memory_save`` вне среза и вне команды. Запись памяти таким ходом не
     исполняет поиск, и нарушение своё (``VIOLATION_LIBRARY_REQUEST``), не ``tool_not_available``: мост по тому срез
-    расширяет. По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
+    расширяет. ``needs_speech`` — реплика просит говорить (``tools_view.speech_asked``, #5094): ход нельзя закрыть
+    только тем, чего не слышно (``SILENT_DONE_TOOLS``, ``INAUDIBLE_TOOLS``, одно лицо). Нарушение своё
+    (``VIOLATION_SPEECH_ASKED``). Поле не в ``FORM_FIELDS``: схему не закрывает, речь рядом с тихой анимацией законна.
+    По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
@@ -202,6 +205,7 @@ class Form:
     backing: bool = True
     speech_required: bool = False
     library: bool = False
+    needs_speech: bool = False
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
@@ -649,6 +653,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
         lambda: _check_library(cmd, form),
+        lambda: _check_speech_asked(cmd, form),
         lambda: _check_when(cmd.when, busy),
         lambda: _drop_bad_expression(cmd),
     )
@@ -896,6 +901,24 @@ def _check_sing(cmd: Command, form: Form) -> None:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: perform.kind={cmd.perform.kind}", kinds)
     if sing.needs_tool and sing.needs_tool not in {a.tool for a in cmd.actions}:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: нужен {sing.needs_tool}", (sing.needs_tool,))
+
+
+def _speechless(cmd: Command) -> bool:
+    """Ход нечем услышать: нет речи, вопроса и выступления, а действия — только тихие
+    (``knowledge.SILENT_DONE_TOOLS``: ``play_sound``, ``play_animation``) либо неслышимые
+    (``INAUDIBLE_TOOLS``). Звук, который слышно, и любой тул вне этих множеств просьбу говорить исполняют."""
+    if cmd.speech or cmd.ask is not None or cmd.perform is not None:
+        return False
+    heard = set(kn.SILENT_DONE_TOOLS) | set(kn.INAUDIBLE_TOOLS)
+    return all(a.tool in heard for a in cmd.actions)
+
+
+def _check_speech_asked(cmd: Command, form: Form) -> None:
+    """Просьба говорить (``Form.needs_speech``): одна мигалка, один звук или одно лицо — не ответ. Правка идущего
+    выступления — не новая просьба, форма её не судит. Слышимое действие вне тихих множеств и речь — законны."""
+    if not form.needs_speech or cmd.edit_pending or not _speechless(cmd):
+        return
+    raise _Bad(kn.VIOLATION_SPEECH_ASKED, "просили рассказать — нужен текст или звук, одна мигалка не ответ")
 
 
 def _check_library(cmd: Command, form: Form) -> None:
@@ -1422,6 +1445,7 @@ HINTS: Mapping[str, str] = MappingProxyType({
                              "edit — музыка играет и её правят: позови edit_music, новый трек, сет и генерацию не "
                              "заказывай",
     kn.VIOLATION_LIBRARY_REQUEST: kn.LIBRARY_REQUEST_HINT,
+    kn.VIOLATION_SPEECH_ASKED: kn.SPEECH_ASKED_HINT,
 })
 
 
