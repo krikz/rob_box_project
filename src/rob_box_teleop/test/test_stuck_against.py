@@ -77,9 +77,7 @@ def test_command_without_motion_against_wall_is_a_progress_failure():
 
     nose = BODY.x_max + BLOCK_GAP_M / 2
     wall = _cell(nose, 0.0)
-    assert course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({wall: LETHAL_COST}), vx=0.1
-    )
+    assert course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({wall: LETHAL_COST}), vx=0.1)
     assert checker.note_blocked(True)
 
 
@@ -99,9 +97,7 @@ def test_slide_along_wall_is_progress_not_a_failure():
 
     side = _cell(0.0, -(BODY.y_min - BLOCK_GAP_M / 2))
     # Стена слева по борту, не по курсу: курс вперёд пуст.
-    assert not course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({side: LETHAL_COST}), vx=0.1
-    )
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({side: LETHAL_COST}), vx=0.1)
 
 
 def test_no_command_against_wall_is_not_a_failure():
@@ -152,35 +148,23 @@ def test_window_shorter_than_allowance_does_not_refuse():
 
 def test_course_blocked_sees_wall_ahead_and_behind():
     ahead = _cell(BODY.x_max + 0.04, 0.0)
-    assert course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({ahead: INSCRIBED_COST}), vx=0.1
-    )
+    assert course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({ahead: INSCRIBED_COST}), vx=0.1)
     behind = _cell(BODY.x_min - 0.04, 0.0)
-    assert course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({behind: LETHAL_COST}), vx=-0.1
-    )
+    assert course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({behind: LETHAL_COST}), vx=-0.1)
     # Вперёд стена сзади не мешает, и наоборот.
-    assert not course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({behind: LETHAL_COST}), vx=0.1
-    )
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({behind: LETHAL_COST}), vx=0.1)
 
 
 def test_inflation_beyond_gap_is_not_a_block():
     """Клетка дальше порога касания — не упор, даже если lethal."""
     far = _cell(BODY.x_max + BLOCK_GAP_M + RES, 0.0)
-    assert not course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({far: LETHAL_COST}), vx=0.1
-    )
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({far: LETHAL_COST}), vx=0.1)
 
 
 def test_free_cell_and_zero_command_are_not_a_block():
     cell = _cell(BODY.x_max + 0.04, 0.0)
-    assert not course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({cell: 200}), vx=0.1
-    )
-    assert not course_blocked(
-        BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({cell: LETHAL_COST}), vx=0.0
-    )
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({cell: 200}), vx=0.1)
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({cell: LETHAL_COST}), vx=0.0)
 
 
 def test_command_is_motion_uses_guard_epsilon():
@@ -220,11 +204,7 @@ def test_dwb_stops_commanding_at_a_head_on_wall_and_still_refuses():
     refused = []
     for i in range(steps + 1):
         vx = 0.1 if i <= commanded_until else 0.0
-        refused.append(
-            controller_stuck(
-                i * 0.05, 0.0, 0.0, vx, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid
-            )
-        )
+        refused.append(controller_stuck(i * 0.05, 0.0, 0.0, vx, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid))
     assert refused[-1] is True
     assert not any(refused[: commanded_until + 1])
 
@@ -238,10 +218,7 @@ def test_zero_command_with_no_recent_motion_is_not_a_failure():
     grid = _grid({wall: LETHAL_COST})
     steps = int(round(STUCK_WINDOW_S / 0.05))
     refused = [
-        controller_stuck(
-            i * 0.05, 0.0, 0.0, 0.0, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid
-        )
-        for i in range(steps + 1)
+        controller_stuck(i * 0.05, 0.0, 0.0, 0.0, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid) for i in range(steps + 1)
     ]
     assert not any(refused)
 
@@ -260,10 +237,7 @@ def test_controller_tick_refuses_when_stuck_and_not_when_sliding():
     grid = _grid({wall: LETHAL_COST})
     steps = int(round(STUCK_WINDOW_S / 0.05))
     refused = [
-        controller_stuck(
-            i * 0.05, 0.0, 0.0, 0.1, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid
-        )
-        for i in range(steps + 1)
+        controller_stuck(i * 0.05, 0.0, 0.0, 0.1, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid) for i in range(steps + 1)
     ]
     assert refused[-1] is True
     assert not any(refused[:-1])
@@ -288,3 +262,108 @@ def test_controller_tick_refuses_when_stuck_and_not_when_sliding():
         for i in range(steps + 1)
     ]
     assert not any(refused)
+
+
+def _yaw(deg: float) -> float:
+    return math.radians(deg)
+
+
+def test_wall_ahead_in_odom_frame_is_a_block_world_lookup_is_not():
+    """Стена впереди корпуса в кадре odom — блок. Поиск у начала карты — нет.
+
+    Gate 2 21.11: local_costmap.global_frame = odom, корпус на метрах.
+    Старый поиск брал мировые координаты корпуса как координаты клетки и
+    полосу 0.08 м искал у начала карты. Стена впереди корпуса туда не
+    попадала, отказ не ставился, BackUp не тикался.
+    """
+    from rob_box_teleop.stuck_against import cells_ahead_in_map
+
+    robot = (1.20, -0.80, _yaw(90.0))
+    # Вперёд по курсу 90° — это +y мира. Стена на 0.04 м за носом.
+    ahead_x = robot[0]
+    ahead_y = robot[1] + BODY.x_max + 0.04
+    wall = _cell(ahead_x, ahead_y)
+    grid = _grid({wall: LETHAL_COST})
+    assert course_blocked(
+        BODY,
+        ORIGIN,
+        ORIGIN,
+        RES,
+        SIZE,
+        SIZE,
+        grid,
+        vx=0.1,
+        robot_x=robot[0],
+        robot_y=robot[1],
+        robot_yaw=robot[2],
+    )
+    # Тот же вызов без позы (старый смысл) стену на метрах не видит.
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid, vx=0.1)
+    cells = list(cells_ahead_in_map(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, 0.1, BLOCK_GAP_M, *robot))
+    assert wall in cells
+
+
+def test_controller_refuses_when_odom_wall_is_ahead_of_the_body():
+    """Команда есть, смещения нет, стена впереди корпуса в odom → отказ."""
+    from rob_box_teleop.stuck_against import controller_stuck, reset_controller_state
+
+    reset_controller_state()
+    robot = (1.20, -0.80, _yaw(90.0))
+    wall = _cell(robot[0], robot[1] + BODY.x_max + 0.04)
+    grid = _grid({wall: LETHAL_COST})
+    steps = int(round(STUCK_WINDOW_S / 0.05))
+    refused = [
+        controller_stuck(
+            i * 0.05,
+            robot[0],
+            robot[1],
+            0.1,
+            0.0,
+            ORIGIN,
+            ORIGIN,
+            RES,
+            SIZE,
+            SIZE,
+            grid,
+            yaw=robot[2],
+        )
+        for i in range(steps + 1)
+    ]
+    assert refused[-1] is True
+    assert not any(refused[:-1])
+
+
+def test_slide_along_wall_in_odom_is_not_a_failure():
+    """Команда есть, центр ушёл на 0.90 м вдоль стены в odom → прогресс есть.
+
+    Стена стоит сбоку от курса, не по нему. Ложного отказа быть не должно:
+    иначе ровный проезд вдоль перегородки тикал бы BackUp.
+    """
+    from rob_box_teleop.stuck_against import controller_stuck, reset_controller_state
+
+    reset_controller_state()
+    yaw = _yaw(90.0)
+    # Курс +y. Стена слева по борту: в мире это -x от корпуса.
+    base = (1.20, -0.80)
+    side = _cell(base[0] + BODY.y_min - BLOCK_GAP_M / 2, base[1])
+    grid = _grid({side: LETHAL_COST})
+    steps = int(round(STUCK_WINDOW_S / 0.05))
+    refused = [
+        controller_stuck(
+            i * 0.05,
+            base[0],
+            base[1] + WALL_SLIDE_M * i / steps,
+            0.1,
+            0.0,
+            ORIGIN,
+            ORIGIN,
+            RES,
+            SIZE,
+            SIZE,
+            grid,
+            yaw=yaw,
+        )
+        for i in range(steps + 1)
+    ]
+    assert not any(refused)
+    assert WALL_SLIDE_M > PROGRESS_RADIUS_M
