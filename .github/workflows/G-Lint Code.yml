@@ -823,6 +823,14 @@ jobs:
         run: |
           bash scripts/deploy/tests/test_remove_dead_mapping_state.sh
 
+      # Issue #5089: `docker image prune -af` на борту снял теги образов, на
+      # которые ссылались запущенные контейнеры (деплой №8, run 44991405421).
+      # Фейковый docker в PATH: in-use теги целы, мусор удалён, --dry-run
+      # ничего не меняет, пропавший тег восстановлен из Image контейнера.
+      - name: Deploy image cleanup keeps in-use tags (issue #5089)
+        run: |
+          bash scripts/deploy/tests/test_docker_prune_safe.sh
+
       # Эпик #4371: HIL. hil.sh не трогает боевые пути (./maps, /data), порядок
       # «замок → стоп моторов → sim time → сим», off гасит сим до возврата
       # ros2-control; деплой падает при замке /tmp/hil.lock. Фейковые ssh/docker.
@@ -833,7 +841,7 @@ jobs:
           bash scripts/hil/tests/test_depot_pathcalc.sh
           bash scripts/hil/tests/test_pathcalc_snapshot.sh
           bash scripts/hil/tests/test_pathcalc_producer.sh
-          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh scripts/deploy/remove_dead_mapping_state.sh scripts/deploy/tests/test_remove_dead_mapping_state.sh docker/sim/hil_run.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh scripts/deploy/remove_dead_mapping_state.sh scripts/deploy/tests/test_remove_dead_mapping_state.sh scripts/deploy/docker_prune_safe.sh scripts/deploy/tests/test_docker_prune_safe.sh scripts/deploy/tests/fake_docker_prune_safe.sh docker/sim/hil_run.sh
 
       # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
       # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы
