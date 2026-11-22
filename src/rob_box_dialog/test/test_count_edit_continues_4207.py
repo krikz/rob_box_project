@@ -146,7 +146,7 @@ def test_new_count_request_while_counting_is_not_an_edit():
 
 def test_count_beside_loud_action_is_not_an_edit():
     """Речь рядом с громким действием не звучит (§4.1) - и звучащий счёт не режет."""
-    sing = ToolCall("play_sound", {"sound": "robot_alert"})
+    sing = ToolCall("stop_music", {})
     engine, ports = _engine(Command(speech=COUNT), Command(speech=EDIT, actions=(sing,)))
     asyncio.run(engine.run(Addressed(N806, VOICE)))
     asyncio.run(engine.run(Addressed(N807, VOICE)))

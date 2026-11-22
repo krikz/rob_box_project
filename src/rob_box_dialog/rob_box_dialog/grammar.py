@@ -230,7 +230,8 @@ def _with(parse: _StepParse, step: Optional[Step]) -> _StepParse:
 
 
 def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
-    """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи») или ``stop_all``
+    """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи» —
+    или точная форма ``SILENCE_EXACT_FORMS`` — «молчи», «молчите», #5108) или ``stop_all``
     (остановить текущие звуки, режим тишины НЕ включается: «хватит», «стоп»; решение Шифу 22.10); после
     стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с
     ``disputed``.
@@ -245,7 +246,8 @@ def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tie
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
         return None
     scope = call.scope
-    silence = not call.rest and not scope.music and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
+    silence = not call.rest and not scope.music and any(
+        _starts(word, kn.SILENCE_WORDS) or word in kn.SILENCE_EXACT_FORMS for word in call.words)
     disputed = call.verdict == STOP_DISPUTED
     halt = has_form(text, kn.TIER1_POLICY["halt"].words)
     if not silence and scope.speech and not scope.music and not halt:

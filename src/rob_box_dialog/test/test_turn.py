@@ -757,10 +757,10 @@ def test_3995_invalid_command_with_only_animation_salvaged_still_speaks():
     _run(_engine(ports), N101)
     assert ports.executed == [[("play_animation", dict(HAPPY.args))]]
     assert ports.said == [(phrases.text(kn.INVALID_COMMAND_PHRASE), None, None)]
-    sound = ToolCall("play_sound", {"sound": "siren"})
+    sound = ToolCall("play_sound", {"sound": "robot_alert"})
     quiet = Ports(answers=[Answer(Invalid("bad_enum", "emotion=joy", salvage=(sound,)), "deepseek", calls=2)])
-    _run(_engine(quiet), "включи сирену")
-    assert quiet.executed == [[("play_sound", {"sound": "siren"})]] and quiet.said == []
+    _run(_engine(quiet), "какой сегодня день")
+    assert quiet.executed == [[("play_sound", {"sound": "robot_alert"})]] and quiet.said == []
 
 
 def test_query_data_goes_back_to_llm_once_then_answer():

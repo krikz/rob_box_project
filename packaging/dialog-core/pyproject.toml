@@ -59,6 +59,7 @@ py-modules = [
     "rob_box_mcp_tools.owner_event",
     "rob_box_mcp_tools.voice_request",
     "rob_box_mcp_tools.base",
+    "rob_box_mcp_tools.tool_outcome",
 ]
 
 [tool.setuptools.packages.find]

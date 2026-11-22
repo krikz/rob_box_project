@@ -8,10 +8,20 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from rob_box_mcp_tools.tool_outcome import PENDING_ORDERS, tool_outcome, tool_outcome_line  # noqa: F401
 from rob_box_music import knowledge as kn
 from rob_box_music.source import DECLINE, GENERATE, SONG_GEN_KINDS, Route, SourceAsk, decline_text, gen_kind
 
-from .gen.song import BUSY_TEXT, SongFailed, SongRequest, SongStudio, failed_words, verbatim_refusal, wait_text
+from .gen.song import (
+    BUSY_TEXT,
+    SongFailed,
+    SongRequest,
+    SongStudio,
+    failed_words,
+    is_given_lyrics,
+    verbatim_refusal,
+    wait_text,
+)
 
 #: Код отказа пути (``engine_tools.SOURCE_DECLINED``; равенство держит тест).
 DECLINED = "music_source"
@@ -42,14 +52,14 @@ def _given_after_phrase(heard: str) -> str:
     if hit is None:
         return ""
     end = _phrase_span(plain, hit)
-    return heard[words[end - 1][2]:].strip(" \t,.:;—–-") if end < len(words) else ""
+    return heard[words[end - 1][2] :].strip(" \t,.:;—–-") if end < len(words) else ""
 
 
 def _phrase_span(words: list, entry: str) -> int:
     """Позиция сразу за фразой таблицы в словах реплики, или 0 — фразы нет."""
     parts = entry.split()
     for i in range(len(words) - len(parts) + 1):
-        if words[i:i + len(parts)] == parts:
+        if words[i : i + len(parts)] == parts:
             return i + len(parts)
     return 0
 
@@ -57,14 +67,22 @@ def _phrase_span(words: list, entry: str) -> int:
 def song_request(args: Tuple[Any, ...], genre: str) -> SongRequest:
     """Заказ песни из аргументов тула ``(intent, text, mood, genre, turn_id, heard_text)``.
 
-    Слова после фразы «этими словами»/«этим текстом» в реплике хода важнее явного ``text``: LLM
-    кладёт в ``text`` саму просьбу, а данные человеком слова оставляет в ``heard_text`` (#4973,
-    ход 17:16). Затем — непустой явный ``text`` (ход 17:23: жалоба в ``heard_text`` не вытесняет
-    поданные слова). ``heard_text`` целиком — только когда аргумент пуст. Дословные слова идут и
-    темой, и текстом: тема нужна ``check_song`` (название), текст — чтобы LLM его не переписывала."""
-    given = _given_after_phrase(str(args[5] or ""))
-    lyrics = given or str(args[1] or "") or str(args[5] or "")
-    return SongRequest(lyrics, genre, str(args[2] or ""), lyrics)
+    Готовые слова (``SongRequest.lyrics``) — только когда человек их реально дал (#4973) или когда
+    аргумент сам дотягивает до песни (:func:`is_given_lyrics`). Тема («про енота-механика») готовым
+    текстом не становится: иначе ``SongStudio.make`` проверяет её как слова и падает за 14 мс,
+    не позвав LLM (#5092). Тема — первый непустой из ``text`` и ``heard_text``.
+
+    Порядок готовых слов: хвост после «этими словами»/«этим текстом» важнее явного ``text`` (ход
+    17:16: LLM кладёт просьбу в ``text``, слова оставляет в ``heard_text``). Затем — ``text``, если
+    он сам длиннее порога (ход 17:23: жалоба в ``heard_text`` не вытесняет поданные слова).
+    ``heard_text`` целиком — только когда он сам длиннее порога и ``text`` пуст. Дословные слова
+    идут и темой, и текстом: тема нужна ``check_song`` (название), текст — чтобы LLM его не
+    переписывала."""
+    text, heard = str(args[1] or ""), str(args[5] or "")
+    given = _given_after_phrase(heard)
+    lyrics = given or next((part for part in (text, heard) if is_given_lyrics(part)), "")
+    theme = given or text or heard
+    return SongRequest(theme, genre, str(args[2] or ""), lyrics)
 
 
 def voice_refusal(provider: str, voice: str, lyrics: str) -> str:
@@ -92,7 +110,9 @@ def held_play(hold: Any) -> Optional[Callable[[str], Any]]:
 
     def play(track_id: str) -> Any:
         ok = hold.deliver(track_id)
-        return MCPToolResult(success=ok, data={"track_id": hold.bridge_id}, error="" if ok else "мост снят другим заказом")
+        return MCPToolResult(
+            success=ok, data={"track_id": hold.bridge_id}, error="" if ok else "мост снят другим заказом"
+        )
 
     return play
 
@@ -136,11 +156,16 @@ class SongOrder:
         if refusal:
             return _declined(refusal)
         hold = bridge_hold(self._hold(), bridge)
-        if not studio.launch(request, lambda why: self.failed_text(ask, why, bridge.success, hold), args[4],
-                             play=held_play(hold)):
+        if not studio.launch(
+            request, lambda why: self.failed_text(ask, why, bridge.success, hold), args[4], play=held_play(hold)
+        ):
             return _declined(BUSY_TEXT)
-        return "data", {**(bridge.data or {}), "ok": True, "pending": "song",
-                        "source_message": wait_text(provider, voice, bridge.success)}
+        return "data", {
+            **(bridge.data or {}),
+            "ok": True,
+            "pending": "song",
+            "source_message": wait_text(provider, voice, bridge.success),
+        }
 
     def failed_text(self, ask: SourceAsk, reason: str, bridge: bool, hold: Any = None) -> str:
         """Фраза провала песни. Играет мост — он доиграет финалом (``BridgeHold.fail``); моста нет — выбор заново без

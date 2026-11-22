@@ -769,7 +769,9 @@ def test_stand_log_uses_the_formats_of_the_real_robot_lines():
         (f"{mcp}/llm_adapter.py", "📤 Отправлен запрос {request_id[:8]}: {tool_name}"),
         (f"{mcp}/mcp_server.py", "📥 Запрос выполнения: {tool_name} с параметрами {parameters}"),
         (f"{mcp}/mcp_server.py", "📤 Публикую результат для {tool_name} (request_id: {request_id[:8]})"),
-        (f"{mcp}/mcp_server.py", "✅ Инструмент {tool_name} выполнен успешно"),
+        # #5092: текст исхода строит tool_outcome.tool_outcome_line (без импортов: стенд ядра его видит),
+        # mcp_server только печатает строку.
+        (f"{mcp}/tool_outcome.py", 'return f"✅ Инструмент {tool_name} выполнен успешно"'),
         (f"{mcp}/tools/dialogue.py", "[set_voice] voice={(outcome.applied or voice_clean)!r}"),
     ]
     for rel, fragment in pairs:

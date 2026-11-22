@@ -1091,11 +1091,25 @@ jobs:
           # ADR-0159: третья независимая сессия (Sound Pi) идёт тем же параллельным
           # паттерном — время шага остаётся максимумом, а не суммой.
           # Объединение меняет только время выполнения (сумма → максимум),
-          # не поведение: обе ветки по-прежнему `|| warning`, шаг по-прежнему
+          # не поведение: ветки по-прежнему `|| warning`, шаг по-прежнему
           # никогда не проваливает деплой сам по себе.
+          #
+          # Issue #5089 (деплой №8, run 44991405421, job 137113050253,
+          # 2026-11-22T05:59:15–17Z): `docker image prune -af` на Main Pi снял
+          # локальные теги `*-dev-acd5a8d` у 8 сервисов, хотя их контейнеры
+          # были запущены и Config.Image ссылался на эти теги (reclaimed 0B).
+          # Следующий `compose up --pull never` упал «No such image». Почему
+          # prune счёл in-use тег unused, не установлено; уборку образов
+          # делает scripts/deploy/docker_prune_safe.sh — он сам считает
+          # in-use ID по контейнерам и не снимает их теги, а пропавший тег
+          # восстанавливает из Image контейнера. `docker builder prune -af`
+          # остаётся: кэш сборки тегов контейнеров не носит.
+          # Скрипт едет на борт шагом Update Code (scripts/ — не COPY, а
+          # checkout репозитория). Нет скрипта (старый checkout) — warning,
+          # как и любой другой сбой уборки.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker system df && \
-             docker image prune -af && \
+             bash ~/rob_box_project/scripts/deploy/docker_prune_safe.sh && \
              docker builder prune -af && \
              docker system df" \
             > "${RUNNER_TEMP}/cleanup_vision.log" 2>&1 \
@@ -1104,14 +1118,20 @@ jobs:
 
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker system df && \
-             docker image prune -af && \
+             bash ~/rob_box_project/scripts/deploy/docker_prune_safe.sh && \
              docker builder prune -af && \
              docker system df" \
             > "${RUNNER_TEMP}/cleanup_main.log" 2>&1 \
             || echo "⚠️  Warning: Docker cleanup failed on Main Pi" >> "${RUNNER_TEMP}/cleanup_main.log" &
           MAIN_CLEANUP_PID=$!
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }}             "docker system df &&              docker image prune -af &&              docker builder prune -af &&              docker system df"             > "${RUNNER_TEMP}/cleanup_sound.log" 2>&1             || echo "⚠️  Warning: Docker cleanup failed on Sound Pi" >> "${RUNNER_TEMP}/cleanup_sound.log" &
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "docker system df && \
+             bash ~/rob_box_project/scripts/deploy/docker_prune_safe.sh && \
+             docker builder prune -af && \
+             docker system df" \
+            > "${RUNNER_TEMP}/cleanup_sound.log" 2>&1 \
+            || echo "⚠️  Warning: Docker cleanup failed on Sound Pi" >> "${RUNNER_TEMP}/cleanup_sound.log" &
           SOUND_CLEANUP_PID=$!
 
           # wait на каждый PID отдельно и без учёта кода возврата — как и

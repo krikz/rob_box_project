@@ -82,6 +82,33 @@ def is_legacy_db_path(path: str) -> bool:
     return path == LEGACY_DB_PATH
 
 
+def is_place_db_path(path: object) -> bool:
+    """``True``, только если ``path`` — ровно ``/maps/<slug>/rtabmap.db``.
+
+    Не-строка, корень наследия, ``..``, чужой каталог и пустой сегмент — ``False``.
+    Файл не открывает. Slug проверяется тем же алфавитом, что строит
+    :func:`place_slug`: ``[a-z0-9_-]``, без точки.
+    """
+    if not isinstance(path, str) or not path:
+        return False
+    prefix = f"{MAPS_ROOT}/"
+    suffix = f"/{PLACE_DB_FILENAME}"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return False
+    slug = path[len(prefix) : -len(suffix)]
+    if not slug or "/" in slug or "\\" in slug or ".." in slug:
+        return False
+    return all(ch in _SLUG_ALPHABET for ch in slug)
+
+
+def same_place_path(name_a: object, name_b: object) -> bool:
+    """Оба имени дают один slug. :class:`PlacePathError` у любого — ``False``."""
+    try:
+        return place_slug(name_a) == place_slug(name_b)
+    except PlacePathError:
+        return False
+
+
 def place_slug(name: str) -> str:
     """Имя места → slug из ``[a-z0-9_-]``.
 

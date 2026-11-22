@@ -25,7 +25,8 @@ from rob_box_dialog.agents import agent_spec, tools_for
 from rob_box_dialog.command import Command, bare_answer
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
-from rob_box_dialog.words import asks_robot_to_act, has_form, has_speech_manner, has_word, introduces_self, without_forms
+from rob_box_dialog.words import (asks_robot_to_act, has_form, has_speech_manner, has_word, introduces_self,
+                                  name_tokens, strip_wake_word, without_forms)
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
@@ -111,27 +112,39 @@ def command_groups(text: str, called: Sequence[str]) -> Tuple[str, ...]:
     return tuple(g for g in requested_groups(text) if actions & set(kn.TOOL_GROUPS[g].tools))
 
 
-def needs_words(text: str, cmd: "Command") -> bool:
+def needs_words(text: str, cmd: "Command", wake_words: Optional[Sequence[str]] = None) -> bool:
     """Ответ модели не слышен, а человек ждёт слов: нет ни речи, ни вопроса, ни выступления, ни
     ``passed``, все действия команды - неслышимые (``knowledge.INAUDIBLE_TOOLS``), а ответ есть - действия или одна
     ``expression`` (``expression.shows``: «покажи, как тебе грустно» → ``{emotion: sad}``; или один earcon - короткий
     сигнал, не слова; это ``command.bare_answer``), и ни лицо человек словами не просил (группы
     ``FACE_ASK_GROUP`` нет в :func:`requested_groups`: «покажи анимацию радости», «улыбнись», «посмотри налево»), ни
     ответа без слов (:func:`silent_asked`: «покажи молча, что ты задумался» - лицом или анимацией одинаково,
-    без речи).
+    без речи; :func:`silence_asked`: «тишина» - просьба молчать, не упоминание; ``wake_words`` - таблица вейков
+    хода, ей снимают вейк перед разбором).
 
     Чистая функция: решает по реплике и команде, а не по тексту ответа модели. Кто ждёт слов (агент с речью в
     динамики, адресованная реплика, не тишина), решает ход (``turn.words_owed``)."""
-    return bare_answer(cmd) and not show_asked(text)
+    return bare_answer(cmd) and not show_asked(text, wake_words)
 
 
 def silent_asked(text: str) -> bool:
     """Просил ли человек ответить без слов: форма из ``knowledge.SILENT_ASK_FORMS`` («молча», «без слов», «не
     говори») или «тихо» рядом с «покажи» (``SILENT_SHOW_FORMS`` + ``FACE_SHOW_STEMS``: «тихо покажи радость»). Целыми
-    словами: «не молчи» и «помолчи» без слов не просят (тишину решает Tier-1). Таблица одна - ``knowledge``."""
+    словами: «не молчи» и «помолчи» без слов не просят («помолчи» решает Tier-1, «тишина» — :func:`silence_asked`). Таблица одна - ``knowledge``."""
     if has_form(text or "", kn.SILENT_ASK_FORMS):
         return True
     return has_form(text or "", kn.SILENT_SHOW_FORMS) and has_word(text or "", kn.FACE_SHOW_STEMS)
+
+
+def silence_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Попросил ли человек тишины существительным (#5105): после снятия вейка и пунктуации (``words.strip_wake_word``,
+    ``words.name_tokens``) во фразе есть форма из ``knowledge.SILENCE_NOUN_FORMS`` («тишина», «тишину», «полная
+    тишина»), а остальные слова - только служебные ``SILENCE_NOUN_FILLER`` («пожалуйста», «ну», «давай», «режим»).
+    Упоминание («расскажи стих про тишину», «что такое тишина») и «не молчи» - не тишина: там есть другие слова.
+    «Помолчи»/«замолчи» решает Tier-1 (``SILENCE_WORDS``), сюда они не входят. Таблица одна - ``knowledge``."""
+    rest = name_tokens(strip_wake_word(text or "", wake_words))
+    forms, filler = kn.SILENCE_NOUN_FORMS, kn.SILENCE_NOUN_FILLER
+    return any(word in forms for word in rest) and all(word in forms or word in filler for word in rest)
 
 
 def robot_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
@@ -143,11 +156,13 @@ def robot_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
     return asks_robot_to_act(text or "", wake_words)
 
 
-def show_asked(text: str) -> bool:
+def show_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
     """Просил ли человек показать лицо: словами о лице (группа ``FACE_ASK_GROUP``, :func:`face_asked`) или ответа без
-    слов (:func:`silent_asked`). Тогда ответ лицом без речи - норма (:func:`needs_words`), а лицо команды держится как
-    показ по просьбе (``turn.command_face``, ``expression.show_seconds``: не меньше ``FACE_SHOW_MIN_S``)."""
-    return kn.FACE_ASK_GROUP in requested_groups(text) or silent_asked(text)
+    слов (:func:`silent_asked`) или тишины существительным (:func:`silence_asked`: «тишина», не упоминание;
+    ``wake_words`` - таблица вейков хода, ей снимают вейк перед разбором). Тогда ответ лицом без речи - норма
+    (:func:`needs_words`), а лицо команды держится как показ по просьбе (``turn.command_face``,
+    ``expression.show_seconds``: не меньше ``FACE_SHOW_MIN_S``)."""
+    return kn.FACE_ASK_GROUP in requested_groups(text) or silent_asked(text) or silence_asked(text, wake_words)
 
 
 def catalogs_asked(text: str) -> Tuple[str, ...]:
@@ -184,6 +199,26 @@ def music_asked(text: str) -> bool:
     (``knowledge.PERFORM_BACKING_BY_KIND``)."""
     music = kn.TOOL_GROUPS["music"]
     return has_word(text or "", music.stems) or has_form(text or "", music.forms)
+
+
+def speech_asked(text: str) -> bool:
+    """Просил ли человек в ЭТОЙ реплике говорить (#5094, n906): глагол говорения словом целиком
+    (``knowledge.SPEECH_ASK_VERBS``: «расскажи», «скажи», «объясни», «ответь», «прочти», «перескажи»). «не
+    рассказывай» и «без слов» просьбой не являются. «покажи анимацию» глагола говорения не содержит. Решает по тексту
+    ЧЕЛОВЕКА, не по ответу модели. Читает ``command_form``: такой ход нельзя закрыть одной мигалкой
+    (``Form.needs_speech``)."""
+    tokens = name_tokens(text)
+    negation = set(kn.SPEECH_ASK_NEGATION)
+    return any(token in kn.SPEECH_ASK_VERBS and (i == 0 or tokens[i - 1] not in negation)
+               for i, token in enumerate(tokens))
+
+
+def library_asked(text: str) -> bool:
+    """Просил ли человек в ЭТОЙ реплике найти что-то в библиотеке (#5093, n705): основа «библиотек» и глагол поиска
+    словом целиком (``knowledge.LIBRARY_REQUEST_VERBS``: «найди», «поищи», «отыщи»). «запомни, что…» глагола поиска не
+    содержит — запись памяти остаётся открытой. Решает по тексту ЧЕЛОВЕКА, не по ответу модели. Читает
+    ``command_form``: такой ход закрывает ``memory_save`` (``Form.library``)."""
+    return has_word(text or "", ("библиотек",)) and has_form(text or "", kn.LIBRARY_REQUEST_VERBS)
 
 
 def voice_named(text: str, voices: Sequence[str] = ()) -> bool:
@@ -292,6 +327,25 @@ def available_tools(snapshot: SessionSnapshot, caps: Optional[Any] = None, agent
     return tuple(get_tool(name) for name in names)
 
 
-__all__ = ["asked_groups", "available_tools", "catalogs_asked", "command_groups", "face_asked", "groups_for",
-           "motion_named", "motion_refusal", "music_asked", "needs_words", "requested_groups", "robot_asked",
-           "show_asked", "silent_asked", "voice_asked", "voice_named", "widen_for"]
+__all__ = [
+    "asked_groups",
+    "available_tools",
+    "catalogs_asked",
+    "command_groups",
+    "face_asked",
+    "groups_for",
+    "library_asked",
+    "speech_asked",
+    "motion_named",
+    "motion_refusal",
+    "music_asked",
+    "needs_words",
+    "requested_groups",
+    "robot_asked",
+    "show_asked",
+    "silence_asked",
+    "silent_asked",
+    "voice_asked",
+    "voice_named",
+    "widen_for",
+]
