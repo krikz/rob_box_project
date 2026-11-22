@@ -28,7 +28,8 @@ import numpy as np
 from rob_box_core.speech_client import ANY_AGENT, SpeakingWatch, event_outcome
 from rob_box_dialog import expression as _expression
 from rob_box_dialog.knowledge import (FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S, MUSIC_DEFAULT_BPM,
-                                      MUSIC_SCENE_MIN_S, SOCIAL_SLEEP_AFTER_S, VIBE_HINT_STRENGTH)
+                                      MUSIC_SCENE_BPM, MUSIC_SCENE_MIN_S, SOCIAL_SLEEP_AFTER_S,
+                                      VIBE_HINT_STRENGTH)
 from rob_box_dialog.vibe import NEUTRAL, VibeBall
 
 from led_matrix_effects import lamps as R
@@ -180,10 +181,15 @@ def _num(v) -> Optional[float]:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+#: Стиль вайба по первым границам ``MUSIC_SCENE_BPM`` (последняя — ``inf``, не порог).
+_VIBE_STYLE = ('plasma', 'rainbow', 'fire')
+
+
 def _music_style(bpm: Optional[float]) -> str:
-    """Темп трека → стиль вайба. Медленно — спокойный, быстро — разогрев. Темпа нет — как у середины."""
+    """Темп → стиль вайба. Пороги — первые границы MUSIC_SCENE_BPM, не свои числа. Темпа нет — середина."""
     tempo = bpm if bpm and bpm > 0 else MUSIC_DEFAULT_BPM
-    return 'plasma' if tempo < 100.0 else 'fire' if tempo >= 125.0 else 'rainbow'
+    limits = [limit for limit, _ in MUSIC_SCENE_BPM[:-1]]
+    return next((style for limit, style in zip(limits, _VIBE_STYLE) if tempo < limit), _VIBE_STYLE[-1])
 
 
 class GazeTrack:
