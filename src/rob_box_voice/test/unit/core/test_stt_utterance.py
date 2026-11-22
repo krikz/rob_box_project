@@ -31,10 +31,33 @@ def test_fields_of_a_respeaker_phrase():
     assert (msg.started_at.sec, msg.started_at.nanosec) == (1_800_000_007, 750_000_000)
 
 
+def test_direction_goes_out_and_unmeasured_is_nan_not_zero():
+    """#3784: реплика несёт угол и уверенность; не измеряли — NaN, не «ноль уверенности»."""
+    import math
+
+    measured = fill_respeaker_utterance(
+        M.Utterance(),
+        text="робот",
+        utterance_id="u",
+        duration_s=1.0,
+        now_s=10.0,
+        doa_deg=90.0,
+        doa_conf=0.31,
+    )
+    assert measured.doa_deg == 90.0 and measured.doa_conf == 0.31
+    bare = fill_respeaker_utterance(M.Utterance(), text="а", utterance_id="u", duration_s=1.0, now_s=10.0)
+    assert math.isnan(bare.doa_deg) and math.isnan(bare.doa_conf)
+
+
 def test_missing_tag_and_provider_become_empty_strings():
     msg = fill_respeaker_utterance(
-        M.Utterance(), text="а", utterance_id="u", duration_s=-1.0, now_s=5.0,
-        speaker_tag=None, provider=None,
+        M.Utterance(),
+        text="а",
+        utterance_id="u",
+        duration_s=-1.0,
+        now_s=5.0,
+        speaker_tag=None,
+        provider=None,
     )
     assert (msg.speaker_tag, msg.provider) == ("", "")
     assert msg.started_at.sec == msg.ended_at.sec == 5  # отрицательная длительность не уводит назад

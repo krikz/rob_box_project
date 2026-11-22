@@ -4,7 +4,9 @@
 ``phrases/ru.yaml`` по ключу ``{класс}.{статус}[.{причина}]`` (или особому ключу тула, ``knowledge.TOOL_PHRASES``),
 :func:`join` собирает фразы нескольких действий хода в одну реплику. ``query`` с ``done`` фразы не даёт: данные
 уходят обратно LLM. Провал (:func:`failed`) грустит; отказ тула, который - вопрос человеку (:func:`asks`,
-``knowledge.TOOL_QUESTIONS``: «Удалить «X»?»), - не провал; эмоция фразы об исходах - :func:`outcome_emotion`.
+``knowledge.TOOL_QUESTIONS``: «Удалить «X»?»), - не провал; срок класса, на котором код ещё ждёт владельца
+(:func:`still_working`), говорит «ещё собираю», не отказ, и не грустит; эмоция фразы об исходах -
+:func:`outcome_emotion`.
 """
 
 from __future__ import annotations
@@ -45,14 +47,30 @@ def asks(result: ActionResult) -> bool:
 
 def failed(result: ActionResult) -> bool:
     """Исход - провал (``rejected``/``timeout``): фраза о нём грустит, лицо команды его не красит (§5.5.1). Вопрос
-    тула (:func:`asks`) - не провал: лицо нейтральное, а не ``sad``."""
-    return result.status in _FAILED and not asks(result)
+    тула (:func:`asks`) - не провал: лицо нейтральное, а не ``sad``. Срок класса, на котором код ещё ждёт владельца
+    (:func:`still_working`), - не провал: исход владелец не сказал."""
+    return result.status in _FAILED and not asks(result) and not still_working(result)
+
+
+def still_working(result: ActionResult) -> bool:
+    """Срок класса вышел, а владелец ещё не сказал исход (``LATE_SPOKEN_CLASSES``, #5006): ``timeout`` здесь «ещё
+    собираю», не отказ. Своя фраза тула (``play_sound`` → ``sound.timeout``) - честный «не знаю», её не подменяем."""
+    if result.cls not in kn.LATE_SPOKEN_CLASSES or result.status != "timeout":
+        return False
+    return phrase_key(result) == kn.ACTION_CLASSES[result.cls].phrases.get("timeout")
+
+
+def still_working_phrase(result: ActionResult) -> Optional[str]:
+    """Фраза «ещё собираю» вместо отказа класса или ``None`` (срок - не ожидание владельца)."""
+    if not still_working(result):
+        return None
+    return phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)
 
 
 def outcome_emotion(results: Sequence[ActionResult], default: Optional[str] = None) -> Optional[str]:
     """Эмоция фразы кода об исходах - одно правило для всех путей хода: провал - ``sad``; вопрос тула -
-    эмоция вопроса (``ToolQuestion.emotion``: не грусть провала и не настроение модели); иначе
-    ``default`` (лицо команды модели или ``None``)."""
+    эмоция вопроса (``ToolQuestion.emotion``: не грусть провала и не настроение модели); срок, на котором код ещё
+    ждёт владельца (:func:`still_working`), грусти не красит; иначе ``default`` (лицо команды модели или ``None``)."""
     if any(failed(r) for r in results):
         return "sad"
     question = next((r for r in results if asks(r)), None)
@@ -141,6 +159,10 @@ def _slots(result: ActionResult) -> Mapping[str, Any]:
     if result.tool == kn.LIBRARY_TOOL:
         title = str(slots.get("title") or "").strip()
         slots["name"] = f"«{title}»" if title else kn.LIBRARY_UNNAMED
+    if result.tool == "chimera_perform":
+        # «Спел{title}.»: шаблон ждёт ведущий пробел и кавычки, иначе склейка даёт «СпелЭтюд.»
+        name = str(slots.get("title") or slots.get("clip") or "").strip()
+        slots["title"] = f" «{name}»" if name else ""
     return slots
 
 
@@ -164,7 +186,8 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
     if key is None:
         return None
     whole, note = _owner_text(result)
-    outcome = phrases.text(key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
+    outcome = still_working_phrase(result) or phrases.text(
+        key, zlib.crc32(result.turn_id.encode("utf-8")), **_slots(result))
     text = whole or " ".join(filter(None, (note, outcome)))
     agent = getattr(snapshot, "agent", None) or result.agent
     return Utterance(text=text, sink=Sink.HEADSET if agent == "operator" else Sink.SPEAKERS,

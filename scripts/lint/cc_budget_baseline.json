@@ -79,9 +79,6 @@
     "src/rob_box_perception/rob_box_perception/vision_hailo_loader.py": {
       "_post_process_detections": 16
     },
-    "src/rob_box_telegram/rob_box_telegram/face_card.py": {
-      "load_detail": 18
-    },
     "src/rob_box_telegram/rob_box_telegram/handlers/callbacks.py": {
       "_handle_floor": 16,
       "_handle_quick": 16
@@ -262,12 +259,6 @@
       "path": "src/rob_box_perception/rob_box_perception/vision_hailo_loader.py",
       "method": "_post_process_detections",
       "cc": 16,
-      "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
-    },
-    {
-      "path": "src/rob_box_telegram/rob_box_telegram/face_card.py",
-      "method": "load_detail",
-      "cc": 18,
       "since": "scope extension 2026-09-29 (architecture audit, G run 36577898577); legacy grandfather"
     },
     {

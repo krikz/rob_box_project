@@ -244,6 +244,51 @@ def test_do_register_on_name_conflict_still_publishes_own_match(node):
     assert "voice_conflict" in ack
 
 
+def _warning_lines(node) -> str:
+    """Всё, что нода написала в ROS-лог уровня warning (это и читает харнесс марафона)."""
+    logger = node.get_logger.return_value
+    return "\n".join(str(call.args[0]) for call in logger.warning.call_args_list if call.args)
+
+
+def test_foreign_voice_below_merge_threshold_logs_conflict_on_the_node(node):
+    """#5019 / n721: cos 0.73 на чужой безымянный профиль — имя не пишется, и отказ виден в логе ноды.
+
+    Паттерн 2 акта 2c ищет «регистрируют как 'Нина' — конфликт имён…» в docker logs. ``logging`` модуля БД
+    туда не попадает (run 35667281570), поэтому строку обязан писать ``get_logger()``.
+    """
+    base = _embedding(710)
+    unnamed = node._db.unnamed.register(base, duration_sec=4.0).speaker_id
+    phrase = _at_cosine(base, 0.73, seed=711)
+
+    node._do_register("Нина", phrase, speaker_id=None, duration_sec=4.5)
+
+    names = {row["id"]: row["name"] for row in node._db.list_speakers()}
+    assert names[unnamed] == "", "безымянный остался без чужого имени"
+    nina = next(sid for sid, name in names.items() if name == "Нина")
+    assert nina != unnamed
+    line = _warning_lines(node)
+    assert "регистрируют как 'Нина'" in line
+    assert "конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in line
+    assert "безымянный профиль" in line
+    assert "0.730 < порога слияния" in line
+    ack = next(m for m in node._result_pub.messages if m.get("event") == "registered")
+    assert ack["speaker_id"] == nina and ack["voice_conflict"]["speaker_id"] == unnamed
+
+
+def test_named_conflict_log_still_names_the_known_profile(node):
+    """ADR-0127: конфликт с ИМЕНОВАННЫМ профилем в полосе сомнения пишет его имя и знак ``>=``."""
+    base = _embedding(720)
+    node._do_register("Борис", base, speaker_id=None, duration_sec=4.0)
+    node.get_logger.return_value.warning.reset_mock()
+
+    node._do_register("Нина", _at_cosine(base, 0.77, seed=721), speaker_id=None, duration_sec=4.0)
+
+    line = _warning_lines(node)
+    assert "известного 'Борис'" in line
+    assert "0.770 >= порога слияния" in line
+    assert "регистрируют как 'Нина' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in line
+
+
 # ---------------------------------------------------------------------------
 # 1b. issue #2769 — _do_register отклоняет реплику короче
 #     MIN_REGISTER_AUDIO_DURATION_SEC: профиль не создаётся, вместо

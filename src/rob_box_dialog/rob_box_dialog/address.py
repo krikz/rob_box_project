@@ -24,7 +24,9 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from rob_box_core.stt_hypotheses import NO_HYPOTHESES, SttHypotheses, hypotheses_from_msg
 from rob_box_dialog.backlog import Backlog, Heard
+from rob_box_dialog.doa import phrase_direction
 from rob_box_dialog.heard import repair
+from rob_box_dialog.knowledge import ADDRESS_FILLER_WORDS, COORDINATOR_NAMES
 from rob_box_dialog.reply_grammar import NO, YES, classify_reply
 from rob_box_dialog.session import SceneFrame
 from rob_box_dialog.speaker_adapter import (
@@ -33,10 +35,6 @@ from rob_box_dialog.speaker_adapter import (
     attributed_person,
     greeting_open,
     in_reply_window,
-)
-from rob_box_dialog.knowledge import (
-    ADDRESS_FILLER_WORDS,
-    COORDINATOR_NAMES,
 )
 from rob_box_dialog.words import has_wake_word, music_stop_unwoken, slipped_wake_rest, strip_wake_word, wake_command
 
@@ -270,16 +268,40 @@ def _seconds(stamp: Any) -> float:
     return float(getattr(stamp, "sec", 0) or 0) + float(getattr(stamp, "nanosec", 0) or 0) / 1e9
 
 
+def _direction(msg: Any, doa: Any, window: tuple, started: float):
+    """Чтение направления фразы: трек DOA, если он есть, иначе поля ``doa_deg``/``doa_conf`` сообщения.
+
+    NaN и отсутствие поля — не измеряли (Telegram, оператор). Порог применяет :func:`phrase_direction`.
+    """
+    if doa is not None and started:
+        return doa.during(*window)
+    angle, conf = getattr(msg, "doa_deg", None), getattr(msg, "doa_conf", None)
+    if conf is None:
+        return phrase_direction(None, 0.0)
+    try:
+        angle_f, conf_f = float(angle), float(conf)
+    except (TypeError, ValueError):
+        return phrase_direction(None, 0.0)
+    if angle_f != angle_f or conf_f != conf_f:  # NaN
+        return phrase_direction(None, 0.0)
+    return phrase_direction(angle_f, conf_f)
+
+
 def heard_from(msg: Any, *, now: float, doa: Any = None, person_ref: str = "", faces: Any = None) -> Heard:
     """``Utterance`` → :class:`Heard`: время — конец фразы; направление (DOA) и лица в кадре — по окну её звучания;
-    гипотезы распознавания — из полей ``confidence``/``alternatives`` (нет полей — неизвестны, #4017 шаг C1)."""
+    гипотезы распознавания — из полей ``confidence``/``alternatives`` (нет полей — неизвестны, #4017 шаг C1).
+
+    ``doa_deg`` фразы — применимый угол (``usable_deg``): ниже порога знания его нет, а ``doa_conf`` остаётся,
+    чтобы потребитель увидел «недостоверен», а не тишину (#3784).
+    """
     started, ended = _seconds(getattr(msg, "started_at", None)), _seconds(getattr(msg, "ended_at", None))
     t = ended or now
     window = (started - VAD_TAIL_S, t)
-    doa_deg = doa.during(*window) if (doa is not None and started) else None
+    reading = _direction(msg, doa, window, started)
     seen = faces.during(*window) if (faces is not None and started) else frozenset()
     return Heard(text=(getattr(msg, "text", "") or "").strip(), t=t, source=getattr(msg, "source", "") or "",
-                 doa_deg=doa_deg, person_ref=person_ref or "", voice_s=max(0.0, ended - started) if started else 0.0,
+                 doa_deg=reading.usable_deg, doa_conf=reading.doa_conf, person_ref=person_ref or "",
+                 voice_s=max(0.0, ended - started) if started else 0.0,
                  faces=seen, utterance_id=str(getattr(msg, "utterance_id", "") or ""),
                  hypotheses=hypotheses_from_msg(msg))
 

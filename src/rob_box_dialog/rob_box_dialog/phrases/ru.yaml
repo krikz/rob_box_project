@@ -235,6 +235,8 @@ pitch.higher.at_limit: ["Выше уже некуда — голос и так �
 media.done: &request_ok ["Включаю музыку."]
 media.rejected: &request_fail ["Не получилось включить музыку."]
 media.timeout: &not_started ["Музыка пока не заиграла."]
+# срок класса LATE_SPOKEN (#5006): владелец ещё не сказал исход — не отказ «не заиграла»
+media.timeout_pending: ["Ещё собираю."]
 # play_sound (knowledge.TOOL_PHRASES): исход - SoundEvent владельца звука (sound_node), причина - SoundEvent.reason.
 # Успех молчит (knowledge.SILENT_DONE_TOOLS): звук сам себе доказательство - кроме звукоподражания (ниже).
 sound.skipped: ["Звук {sound} не сыграл."]
@@ -252,6 +254,23 @@ sound.imitation.chime: ["Динь-дон!"]
 sound.imitation.bubbles: ["Буль-буль-буль!"]
 sound.imitation.whoosh: ["Вжух!"]
 sound.imitation.impact: ["Бабах!"]
+
+# Химера (ADR-0175 §2.1): фразу строит код из исхода. «Спел» — только chimera.sang, после конца проигрывания.
+chimera.sang: ["Спел{title}."]
+chimera.done: ["Химера сказала{title}."]
+chimera.rejected: ["Химерой не вышло."]
+chimera.rejected.unsupported_action: ["Это Химера сейчас не умеет."]
+chimera.rejected.unsupported_pairing: ["Такого вызова у этого существа нет."]
+chimera.rejected.unsupported_pronunciation: ["Эту фразу Химерой сказать не могу — нет подготовленного произношения."]
+chimera.rejected.unsupported_timbre: ["Такого тембра у Химеры нет."]
+chimera.rejected.unknown_title: ["Не нашёл такую мелодию."]
+chimera.rejected.ambiguous_title: ["Нашёл несколько мелодий с таким названием — уточни."]
+chimera.rejected.missing_file: ["Файла Химеры для этого нет."]
+chimera.rejected.offline: ["Сети нет — Химерой сейчас не выйдет."]
+chimera.cancelled: ["Отменил."]
+chimera.cancelled.cancelled_render: ["Отменил, пока считал — звука не было."]
+chimera.cancelled.cancelled_playback: ["Остановил проигрывание."]
+chimera.timeout: ["Не дождался Химеры — не знаю, сыграла ли."]
 
 motion.started: ["Еду к {target}."]
 motion.done: ["Приехал."]

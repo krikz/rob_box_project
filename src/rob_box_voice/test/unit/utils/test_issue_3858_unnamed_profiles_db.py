@@ -6,8 +6,9 @@
    до записи в БД.
 2. Лимит: сверх ``max_unnamed`` вытесняются самые старые безымянные (каскадом, сирот нет); именованных не трогаем;
    новый профиль не вытесняется.
-3. ``register_or_merge`` с именем отдаёт имя ТОМУ ЖЕ безымянному профилю (``claimed_unnamed``), если голос
-   опознаётся им (порог слияния 0.75 или обычный порог 0.72) — дубля нет; пороги не менялись.
+3. ``register_or_merge`` с именем отдаёт имя ТОМУ ЖЕ безымянному профилю (``claimed_unnamed``), только если
+   косинус дотянул до порога слияния 0.75 (#3858). Ниже (полоса обычного опознания 0.72) — конфликт
+   имён (ADR-0127, #5019): имя безымянному не пишется, заводится отдельный профиль. Пороги не менялись.
 4. Безымянный профиль не имя: тёзка/слияние его не видят, ``SpeakerMatch.named`` — False.
 """
 
@@ -122,21 +123,44 @@ def test_introduction_gives_the_name_to_the_same_profile(db):
     assert db.unnamed.count() == 0
 
 
-def test_introduction_between_identify_and_merge_threshold_still_claims(db):
-    """Голос опознан безымянным по 0.72, но до 0.75 не дотянул: представился — это тот же человек, не дубль."""
+def _phrase_at_cosine(base: np.ndarray, target: float) -> np.ndarray:
+    """Эмбеддинг с косинусом к ``base`` ровно ``target`` (плоскость base × ортогональный шум)."""
+    noise = _embedding(901)
+    ortho = noise - float(np.dot(noise, base)) * base
+    ortho = ortho / np.linalg.norm(ortho)
+    phrase = target * base + (1.0 - target**2) ** 0.5 * ortho
+    return (phrase / np.linalg.norm(phrase)).astype(np.float32)
+
+
+def test_foreign_voice_below_merge_threshold_does_not_claim_unnamed(db):
+    """#5019: безымянный + cos 0.73 + чужое имя → конфликт, имя не записано, отдельный профиль."""
     base = _embedding(5)
     sid = db.unnamed.register(base, duration_sec=4.0).speaker_id
-    phrase = next(
-        cand
-        for seed in range(200, 600)
-        if se.IDENTIFY_THRESHOLD + 0.005 <= _cos(base, cand := _degraded(base, 0.92, noise_seed=seed))
-        < se.REGISTER_MATCH_THRESHOLD - 0.005
-    )
+    phrase = _phrase_at_cosine(base, 0.73)
+    assert se.IDENTIFY_THRESHOLD < _cos(base, phrase) < se.REGISTER_MATCH_THRESHOLD
+
+    outcome = db.register_or_merge("Нина", phrase, duration_sec=4.5)
+
+    assert outcome.name_conflict and not outcome.claimed_unnamed and not outcome.reused
+    assert outcome.conflict_speaker_id == sid
+    assert outcome.speaker_id != sid, "чужому голосу заведён свой профиль"
+    names = {row["id"]: row["name"] for row in db.list_speakers()}
+    assert names[sid] == "", "безымянный остался без чужого имени"
+    assert names[outcome.speaker_id] == "Нина"
+
+
+def test_introduction_at_merge_threshold_claims_the_same_profile(db):
+    """Регрессия #3858: cos >= порога регистрации — имя тому же безымянному id, дубля нет."""
+    base = _embedding(51)
+    sid = db.unnamed.register(base, duration_sec=4.0).speaker_id
+    phrase = _phrase_at_cosine(base, se.REGISTER_MATCH_THRESHOLD)
+    assert _cos(base, phrase) >= se.REGISTER_MATCH_THRESHOLD
 
     outcome = db.register_or_merge("Гриша", phrase, duration_sec=4.5)
 
-    assert outcome.speaker_id == sid and outcome.claimed_unnamed
-    assert len(db.list_speakers()) == 1
+    assert outcome.speaker_id == sid and outcome.claimed_unnamed and outcome.reused
+    assert not outcome.name_conflict
+    assert [row["name"] for row in db.list_speakers()] == ["Гриша"]
 
 
 def test_introduction_of_a_different_voice_does_not_touch_nameless_profile(db):

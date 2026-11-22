@@ -1,11 +1,13 @@
-"""Fallback-каталог фактов, когда подстрока и реплики пусты (issue #4956).
+"""Поиск факта по форме слова и каталог, когда совпадения нет (issue #4956).
 
 Марафон #4950, шаг n1008: после сброса сессии запрос «еда» не находил
 «Совсем не ест лук, даже жареный» — «еда» не подстрока факта, окно реплик
-пустое, вектор на стенде мёртв (Ollama нет). Каталог отдаёт только
-``search(..., browse_when_empty=True)`` — его просит инструмент
-``memory_search``. Дефолт ``False`` сохраняет контракт #3890: запрос
-про то, чего нет, остаётся пустым.
+пустое, вектор на стенде мёртв (Ollama нет, ``vec=no``). Ту же дыру давал
+запрос «пить» по факту «Пьёт только зелёный чай без сахара». Семьи форм
+сводит ``same_inflection`` в коде поиска, без эмбеддингов (ADR-0148).
+Каталог (``browse_when_empty=True``) остаётся для запроса, которого нет
+ни в одном факте. Дефолт ``False`` сохраняет контракт #3890: запрос про
+то, чего нет, остаётся пустым.
 """
 
 from __future__ import annotations
@@ -26,24 +28,39 @@ def _memory(tmp_path, session_id: str = "issue_4956") -> VoiceMemory:
     )
 
 
-def test_general_query_returns_fact_catalog(tmp_path) -> None:
-    """«еда» не подстрока ни одного факта — оба возвращаются как каталог."""
+def test_eat_query_finds_onion_fact_not_tea(tmp_path) -> None:
+    """«еда» находит «не ест лук» формой слова, не каталогом и не чаем."""
     memory = _memory(tmp_path)
     try:
         memory.save_fact(ONION, category="preference", speaker_id=SASHA)
-        time.sleep(0.01)
         memory.save_fact(TEA, category="preference", speaker_id=SASHA)
 
         hits = memory.search("еда", limit=5, speaker_id=SASHA, browse_when_empty=True)
 
-        assert [h["content"] for h in hits] == [TEA, ONION]
-        assert all(h["source"] == "fact_browse" for h in hits)
-        assert all(h["kind"] == "fact" for h in hits)
-        assert all(h["score"] == 0.0 for h in hits)
-        assert all(h["role"] == "fact" for h in hits)
-        assert all(h["session_id"] is None for h in hits)
-        assert all(h["speaker_id"] == SASHA for h in hits)
-        assert all(h["category"] == "preference" for h in hits)
+        assert [h["content"] for h in hits] == [ONION]
+        assert hits[0]["source"] == "fact"
+        assert hits[0]["kind"] == "fact"
+        assert hits[0]["score"] == 1.0
+        assert hits[0]["role"] == "fact"
+        assert hits[0]["session_id"] is None
+        assert hits[0]["speaker_id"] == SASHA
+        assert hits[0]["category"] == "preference"
+    finally:
+        memory.close()
+
+
+def test_drink_query_finds_tea_fact(tmp_path) -> None:
+    """«пить» находит «Пьёт … чай»; лук в выдачу не попадает."""
+    memory = _memory(tmp_path)
+    try:
+        memory.save_fact(ONION, category="preference", speaker_id=SASHA)
+        memory.save_fact(TEA, category="preference", speaker_id=SASHA)
+
+        hits = memory.search("пить", limit=5, speaker_id=SASHA)
+
+        assert [h["content"] for h in hits] == [TEA]
+        assert hits[0]["source"] == "fact"
+        assert hits[0]["score"] == 1.0
     finally:
         memory.close()
 
@@ -94,8 +111,13 @@ def test_matching_turn_is_not_replaced_by_catalog(tmp_path) -> None:
         memory.close()
 
 
-def test_facts_survive_session_reset(tmp_path) -> None:
-    """new_session в API нет: новый VoiceMemory с тем же db_path — факты живы."""
+def test_facts_found_after_session_reset_with_empty_turn_window(tmp_path) -> None:
+    """После new_session окно текущей сессии пустое, а факт находится формой слова.
+
+    ``new_session`` сбрасывает эпоху диалога, не строки ``voice_turns``.
+    Пустое окно здесь — новая сессия без реплик: поиск не может опереться
+    на FTS и всё равно возвращает факт (``source="fact"``, не каталог).
+    """
     db_path = tmp_path / "voice_memory.db"
     first = VoiceMemory(db_path=str(db_path), session_id="before_reset")
     try:
@@ -106,15 +128,19 @@ def test_facts_survive_session_reset(tmp_path) -> None:
 
     reset = VoiceMemory(db_path=str(db_path), session_id="after_reset")
     try:
+        assert reset.load_recent_turns(speaker_id=SASHA) == []
         hits = reset.search("еда", limit=5, speaker_id=SASHA, browse_when_empty=True)
-        assert {h["content"] for h in hits} == {ONION, TEA}
-        assert all(h["source"] == "fact_browse" for h in hits)
+        assert [h["content"] for h in hits] == [ONION]
+        assert hits[0]["source"] == "fact"
+        drink = reset.search("пить", limit=5, speaker_id=SASHA)
+        assert [h["content"] for h in drink] == [TEA]
+        assert drink[0]["source"] == "fact"
     finally:
         reset.close()
 
 
-def test_browse_hides_other_speaker_keeps_legacy_null(tmp_path) -> None:
-    """Чужой speaker_id не отдаётся; legacy NULL виден, как в get_facts."""
+def test_inflection_hides_other_speaker_keeps_legacy_null(tmp_path) -> None:
+    """Форма «ест» чужого спикера не отдаётся; legacy NULL с «еда» виден."""
     memory = _memory(tmp_path)
     try:
         memory.save_fact(ONION, category="preference", speaker_id=SASHA)
@@ -127,7 +153,7 @@ def test_browse_hides_other_speaker_keeps_legacy_null(tmp_path) -> None:
         assert ONION in contents
         assert "глобальный факт про еду" in contents
         assert "Денчик ест всё подряд" not in contents
-        assert all(h["source"] == "fact_browse" for h in hits)
+        assert all(h["source"] == "fact" for h in hits)
     finally:
         memory.close()
 
@@ -151,15 +177,31 @@ def test_browse_respects_limit(tmp_path) -> None:
         memory.close()
 
 
-def test_default_search_on_miss_stays_empty(tmp_path) -> None:
-    """Дефолт browse_when_empty=False: несовпадение остаётся [], как #3890."""
+def test_unrelated_query_stays_empty_without_browse(tmp_path) -> None:
+    """Дефолт browse_when_empty=False: запрос не из семьи и не подстрока — [], как #3890."""
     memory = _memory(tmp_path)
     try:
         memory.save_fact(ONION, category="preference", speaker_id=SASHA)
         memory.save_fact(TEA, category="preference", speaker_id=SASHA)
 
+        assert memory.search("кофе", limit=5, speaker_id=SASHA) == []
+        assert (
+            memory.search("кофе", limit=5, speaker_id=SASHA, browse_when_empty=False)
+            == []
+        )
+    finally:
+        memory.close()
+
+
+def test_false_friend_is_not_an_inflection_hit(tmp_path) -> None:
+    """«если» не семья «есть», «письмо» не семья «пить» — подстрока их не спасает."""
+    memory = _memory(tmp_path)
+    try:
+        memory.save_fact("Если дождь — сидит дома", speaker_id=SASHA)
+        memory.save_fact("Ждёт письмо от брата", speaker_id=SASHA)
+
         assert memory.search("еда", limit=5, speaker_id=SASHA) == []
-        assert memory.search("еда", limit=5, speaker_id=SASHA, browse_when_empty=False) == []
+        assert memory.search("пить", limit=5, speaker_id=SASHA) == []
     finally:
         memory.close()
 
@@ -214,13 +256,15 @@ def test_memory_search_tool_requests_catalog(tmp_path) -> None:
     memory = _memory(tmp_path)
     try:
         memory.save_fact(ONION, category="preference", speaker_id=SASHA)
-        logger = types.SimpleNamespace(info=lambda *_a, **_k: None, error=lambda *_a, **_k: None)
+        logger = types.SimpleNamespace(
+            info=lambda *_a, **_k: None, error=lambda *_a, **_k: None
+        )
         node = types.SimpleNamespace(voice_memory=memory, get_logger=lambda: logger)
         result = MemorySearchTool(node=node).execute(query="еда", speaker_id=SASHA)
 
         assert result.success
         contents = [r["content"] for r in result.data["results"]]
-        assert ONION in contents
-        assert all(r["source"] == "fact_browse" for r in result.data["results"])
+        assert contents == [ONION]
+        assert all(r["source"] == "fact" for r in result.data["results"])
     finally:
         memory.close()

@@ -24,7 +24,14 @@
 #
 #   1. status=exited/dead                       → провал сразу
 #   2. status=restarting, подтверждён ОБОИМИ     → провал
-#   3. Health.Status=unhealthy в любом замере   → провал
+#   3. Health.Status=unhealthy в любом замере   → провал,
+#      КРОМЕ окна start_period (issue #5012): Docker сам ещё не считает
+#      пробы этого окна провалом (docs: failures within start_period are
+#      not counted towards the maximum number of retries), но Status уже
+#      пишет "unhealthy". Возраст контейнера (State.StartedAt) короче
+#      Config.Healthcheck.StartPeriod — не провал. После окна — провал,
+#      как раньше. Поднимать start_period «на глаз» нельзя: лечит один
+#      сервис и прячет долгий старт.
 #   4. RestartCount вырос между замерами        → провал (та самая гонка)
 #
 # Контрактно важно: правило «exited → провал» НЕ применяется к
@@ -68,7 +75,9 @@ log() { printf '[check_container_status] %s %s\n' "$(date -Iseconds)" "$*" >&2; 
 
 # Снять JSON `docker inspect` для всех контейнеров compose-проекта.
 # Возвращает JSON-массив объектов {name, status, restarting, health,
-# restarts, exitcode} (по одному на контейнер).
+# restarts, exitcode, started_at, start_period_ns} (по одному на контейнер).
+# started_at — State.StartedAt (RFC3339Nano); start_period_ns —
+# Config.Healthcheck.StartPeriod в наносекундах (0, если healthcheck нет).
 #
 # Команда `docker inspect` берётся из PATH — для тестов подменяется
 # mock-скриптом, который читает заранее заданные JSON из fixture-файла.
@@ -86,8 +95,25 @@ sample_containers() {
         restarting: .State.Restarting,
         health: (.State.Health.Status // "none"),
         restarts: .RestartCount,
-        exitcode: .State.ExitCode
+        exitcode: .State.ExitCode,
+        started_at: (.State.StartedAt // ""),
+        start_period_ns: (.Config.Healthcheck.StartPeriod // 0)
     }' 2>/dev/null || true
+}
+
+# true, если замер unhealthy попал ВНУТРЬ start_period контейнера
+# (issue #5012): возраст от State.StartedAt до момента замера короче
+# Config.Healthcheck.StartPeriod. Нет StartedAt, нет start_period или
+# дата не разобралась — не льгота, unhealthy остаётся провалом.
+within_start_period() {  # $1=started_at (RFC3339) $2=start_period_ns $3=epoch секунд замера
+    local started_at="$1" period_ns="$2" sampled_epoch="$3"
+    [ -n "$started_at" ] && [ -n "$period_ns" ] && [ "$period_ns" -gt 0 ] 2>/dev/null || return 1
+    local started_epoch
+    started_epoch="$(date -d "$started_at" +%s 2>/dev/null)" || return 1
+    [ -n "$started_epoch" ] || return 1
+    local age_s=$((sampled_epoch - started_epoch))
+    local period_s=$((period_ns / 1000000000))
+    [ "$age_s" -lt "$period_s" ]
 }
 
 # --- main -------------------------------------------------------------------
@@ -133,6 +159,11 @@ for name in $NAMES; do
     HE2="$(echo "$S2" | jq -r '.health' 2>/dev/null || echo none)"
     RC1="$(echo "$S1" | jq -r '.restarts // empty' 2>/dev/null || true)"
     RC2="$(echo "$S2" | jq -r '.restarts' 2>/dev/null || true)"
+    # StartPeriod/StartedAt берём из более позднего замера: рестарт между
+    # замерами двигает StartedAt, и льгота должна считаться от нового старта.
+    SA="$(echo "$S2" | jq -r '.started_at // empty' 2>/dev/null || true)"
+    [ -n "$SA" ] || SA="$(echo "$S1" | jq -r '.started_at // empty' 2>/dev/null || true)"
+    SP="$(echo "$S2" | jq -r '.start_period_ns // 0' 2>/dev/null || echo 0)"
 
     REASON=""
     EC2="$(echo "$S2" | jq -r '.exitcode // 0' 2>/dev/null || echo 0)"
@@ -148,7 +179,10 @@ for name in $NAMES; do
         REASON="State.Status=dead"
     elif [ "$ST1" = "restarting" ] && [ "$ST2" = "restarting" ]; then
         REASON="State.Status=restarting (confirmed at t=0s and t=${CONFIRM_INTERVAL}s)"
-    elif [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; then
+    elif { [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; } \
+        && ! within_start_period "$SA" "$SP" "$(date +%s)"; then
+        # issue #5012: unhealthy внутри start_period — не провал (Docker ещё
+        # не считает пробы окна). После окна и без данных об окне — провал.
         REASON="Health.Status=unhealthy"
     elif [ -n "$RC1" ] && [ "$RC2" -gt "$RC1" ] 2>/dev/null; then
         REASON="RestartCount grew during the ${CONFIRM_INTERVAL}s confirmation window: $RC1 -> $RC2 (container crashed while being checked)"

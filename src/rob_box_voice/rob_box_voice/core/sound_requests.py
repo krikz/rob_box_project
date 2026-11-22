@@ -38,7 +38,8 @@ SKIP_SILENCED = "silenced"
 #: Причины пропуска звука (``SoundEvent.reason``).
 SKIP_BUSY, SKIP_VOICE_STREAM, SKIP_NOT_FOUND, SKIP_ERROR = "busy", "voice_stream", "not_found", "error"
 SKIP_SUPERSEDED = "superseded"
-#: Ждущий запрос: (файл звука, триггер, request_id).
+#: Ждущий запрос: (файл звука, триггер, request_id). Источник («chimera») лежит в ``_queued_source``
+#: по ``request_id``: ``_pending_source`` к доигрыванию очереди уже сброшен, и обрыв потерял бы метку.
 Queued = Tuple[str, str, str]
 
 
@@ -47,6 +48,15 @@ def parse_trigger(data: str) -> Tuple[str, str]:
 
     Голое имя звука (ручной ``ros2 topic pub``, сценарный раннер E2E) - тоже запрос, id выдаёт владелец.
     """
+    return _trigger_body(data)[:2]
+
+
+def trigger_source(data: str) -> str:
+    """Источник запроса (``chimera`` — клип Химеры). Голое имя и чужой JSON — ``""``."""
+    return _trigger_body(data)[2]
+
+
+def _trigger_body(data: str) -> Tuple[str, str, str]:
     text = (data or "").strip()
     if text.startswith("{"):
         try:
@@ -54,8 +64,12 @@ def parse_trigger(data: str) -> Tuple[str, str]:
         except ValueError:
             body = None
         if isinstance(body, dict):
-            return str(body.get("sound") or "").strip(), str(body.get("request_id") or "") or uuid.uuid4().hex[:8]
-    return text, uuid.uuid4().hex[:8]
+            return (
+                str(body.get("sound") or "").strip(),
+                str(body.get("request_id") or "") or uuid.uuid4().hex[:8],
+                str(body.get("source") or ""),
+            )
+    return text, uuid.uuid4().hex[:8], ""
 
 
 class SoundRequestsMixin:
@@ -79,16 +93,40 @@ class SoundRequestsMixin:
                     return self._enqueue((sound_name, trigger, request_id))
                 return self._skip(request_id, trigger, SKIP_BUSY)
             # Занято с этой секунды, а не с первой строки потока: два earcon'а подряд не пройдут оба.
-            self._occupy(sound_name)
+            self._occupy(sound_name, request_id)
         self._launch((sound_name, trigger, request_id))
         return ""
+
+    def abort_request(self, request_id: str) -> bool:
+        """Оборвать звук Химеры по ``request_id``. ``True`` — он играл и поток прерван.
+
+        Голый ``STOP`` рации сюда не входит: тот закрывает голосовой стрим, а не эффект. Чужой звук (не этот
+        ``request_id``) не трогается. Поток, увидев пометку, публикует ``skipped``, а не ``finished``.
+        """
+        with self._play_lock:
+            current = getattr(self, "_request_id", "")
+            # «chimera» — обрыв клипа Химеры со стопа диалога; чужой эффект и earcon не трогаются
+            mine = (request_id == "chimera" and getattr(self, "_chimera", False)) or current == request_id
+            if not request_id or not mine or not self.is_playing:
+                return False
+            self._aborted = current or request_id
+        manager = getattr(self, "playback_manager", None)
+        stop = getattr(manager, "stop_playback", None)
+        if stop is not None:
+            stop("chimera")
+        return True
+
+    def aborted(self, request_id: str) -> bool:
+        """Поток Химеры оборван стопом, а не доиграл."""
+        return bool(request_id) and getattr(self, "_aborted", "") == request_id
 
     def release_channel(self) -> None:
         """Звук доиграл: следующим - ждущий запрос (канал не освобождается между ними), иначе канал свободен."""
         with self._play_lock:
             nxt, self._queued = self._queued, None
             if nxt is not None and self._voice_stream is None:
-                self._occupy(nxt[0])
+                self._pending_source = getattr(self, "_queued_source", {}).pop(nxt[2], "")
+                self._occupy(nxt[0], nxt[2])
             else:
                 self.is_playing, self.current_sound, self._busy_until = False, None, None
         if nxt is None:
@@ -99,9 +137,11 @@ class SoundRequestsMixin:
         self.get_logger().info(f"⏭️ Из очереди: {nxt[1]} (request {nxt[2][:8]})")
         self._launch(nxt)
 
-    def _occupy(self, sound_name: str) -> None:
+    def _occupy(self, sound_name: str, request_id: str = "") -> None:
         seconds = getattr(self.sounds.get(sound_name), "duration_seconds", None)
-        self.is_playing, self.current_sound = True, sound_name
+        self.is_playing, self.current_sound, self._request_id = True, sound_name, request_id
+        self._chimera = getattr(self, "_pending_source", "") == "chimera"
+        self._pending_source = ""
         self._busy_until = time.monotonic() + seconds if seconds else math.inf
 
     def _remaining_s(self) -> float:
@@ -110,6 +150,10 @@ class SoundRequestsMixin:
         return math.inf if until is None else max(0.0, until - time.monotonic())
 
     def _enqueue(self, request: Queued) -> str:
+        sources = getattr(self, "_queued_source", None)
+        if sources is None:
+            sources = self._queued_source = {}
+        sources[request[2]] = getattr(self, "_pending_source", "")
         old, self._queued = self._queued, request
         self.get_logger().info(f"⏳ В очередь: {request[1]} (request {request[2][:8]}, играет: {self.current_sound}, "
                                f"осталось {self._remaining_s():.1f} с)")

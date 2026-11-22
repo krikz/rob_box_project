@@ -32,7 +32,8 @@ def test_snapshot_gives_at_most_one_fresh_phrase_of_the_same_interlocutor_with_i
     backlog.add(_h("покажи анимацию", t=95.0, doa=85.0, voice_s=2.0))
     backlog.add(_h("телевизор", t=96.0, doa=250.0))
     assert backlog.recent_unaddressed(_h("робот", t=100.0, doa=80.0)) == {
-        "text": "покажи анимацию", "age_s": 5.0, "duration_s": 2.0, "doa_deg": 85, "same_direction": True,
+        "text": "покажи анимацию", "age_s": 5.0, "duration_s": 2.0, "doa_deg": 85,
+        "doa_conf": None, "doa_unreliable": False, "same_direction": True,
         "speaker": {"identified": False, "label": "неопознанный", "bio": "none"}, "speaker_id": "unknown",
         "same_as_caller": True}
 

@@ -997,6 +997,20 @@ jobs:
              fi" \
             || echo "⚠️  Warning: time sync failed on Main Pi"
 
+      # Issue #5045: /maps/mapping_state.json на Main Pi не читается с 4f5baba18
+      # (6 марта), но в томе карт остался и называет «квартиру». Источник правды
+      # об активной карте — maps.is_active в БД (#4392). Чистка идемпотентна:
+      # нет файла — шаг молча проходит; есть — удаляет и пишет строку в лог.
+      # rtabmap.db не трогаем. До Stop Containers: том ./maps ещё не занят записью.
+      - name: "[Main Pi] Remove dead mapping_state.json (#5045)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Removing dead /maps/mapping_state.json on Main Pi (#5045)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "bash ~/rob_box_project/scripts/deploy/remove_dead_mapping_state.sh ~/rob_box_project/docker/main/maps"
+
       # Issue #2930: Stop стоит ПОСЛЕ Pull Docker Images — `down` выполняется,
       # только если preflight подтвердил, что все образы стека лежат локально.
       # Раньше down шёл первым, и при отсутствии образов в реестре стек

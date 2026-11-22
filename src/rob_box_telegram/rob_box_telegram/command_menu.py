@@ -49,7 +49,7 @@ MENU: Mapping[str, Entry] = MappingProxyType({
     "music": Entry("Музыка: /music код или /music stop"),
     "stopmusic": Entry("Остановить музыку"),
     "clear": Entry("Очистить историю разговора"),
-    "faces": Entry("Список лиц в базе"),
+    "faces": Entry("Список лиц (владелец — Vision Pi)"),
     "face": Entry("Карточка лица: /face номер или имя"),
     "myid": Entry("Показать chat ID", in_menu=False),
     "repl": Entry("Код Renardo на робота (операторская)", in_menu=False),

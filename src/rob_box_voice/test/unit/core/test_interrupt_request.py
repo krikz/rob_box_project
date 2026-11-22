@@ -3,7 +3,6 @@
 import math
 
 from rob_box_core.msg_stub import install_dialog_msgs_stub
-
 from rob_box_voice.core.interrupt_request import InterruptOffer
 
 msgs = install_dialog_msgs_stub()
@@ -52,4 +51,12 @@ def test_offer_waits_for_the_echo_window_to_pass_the_phrase():
 def test_offer_unknown_direction_is_nan():
     offer, sent = _offer(doa=None)
     offer.offer("Робот, стоп", "")
-    assert math.isnan(sent[0].doa_deg) and sent[0].utterance_id == ""
+    assert math.isnan(sent[0].doa_deg) and math.isnan(sent[0].doa_conf) and sent[0].utterance_id == ""
+
+
+def test_offer_carries_confidence_even_when_the_angle_is_unreliable():
+    """#3784: ниже порога угол на проводе есть, а уверенность видна — потребитель сам решит по порогу знания."""
+    reading = type("Reading", (), {"doa_deg": 90.0, "doa_conf": 0.2})()
+    offer, sent = _offer(doa=reading)
+    offer.offer("робот", "u1")
+    assert sent[0].doa_deg == 90.0 and sent[0].doa_conf == 0.2

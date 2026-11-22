@@ -15,13 +15,11 @@ from pathlib import Path as _Path
 # means the winner no longer matters: every directory publishes the same
 # policy names and the same kwargs-recording ``QoSProfile``.
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-from ros_stubs import (  # noqa: E402
-    FakeNode as _FakeNode,
-    qos_stub as _qos_stub,
-)
-
 import types
 from unittest.mock import MagicMock
+
+from ros_stubs import FakeNode as _FakeNode  # noqa: E402
+from ros_stubs import qos_stub as _qos_stub
 
 
 def _install_ros_mocks():
@@ -146,6 +144,14 @@ def _install_ros_mocks():
     except ImportError:
         mocks["rob_box_mcp_tools"] = mock_mcp
     for name, mock in mocks.items():
+        # httpx тесту стопа нужен настоящий (PR-9 #3703): заглушка без AsyncClient
+        # молча подменяет клиент, если модуль ещё не загружен. Настоящий — оставляем.
+        if name == "httpx":
+            try:
+                import httpx as _real_httpx  # noqa: F401
+            except ImportError:
+                sys.modules.setdefault(name, mock)
+            continue
         sys.modules.setdefault(name, mock)
 
 

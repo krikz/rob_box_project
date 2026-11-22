@@ -54,6 +54,8 @@ class Heard:
     t: float
     source: str = "respeaker"
     doa_deg: Optional[float] = None
+    #: Уверенность направления, R ∈ [0, 1]. None — старая запись без поля.
+    doa_conf: Optional[float] = None
     person_ref: str = ""
     #: Длительность фразы, с: голосу короткой фразы не верим (``knowledge.VOICE_MIN_PHRASE_S``).
     voice_s: float = 0.0
@@ -70,8 +72,19 @@ class Heard:
 
 
 def same_direction(a: Optional[float], b: Optional[float]) -> bool:
-    """Оба направления известны и лежат в одном секторе ±``PICKUP_DOA_SECTOR_DEG``."""
+    """Оба направления известны и лежат в одном секторе ±``PICKUP_DOA_SECTOR_DEG``.
+
+    ``None`` — направления нет: не измеряли или угол недостоверен (``DoaReading.usable_deg``).
+    """
     return a is not None and b is not None and angle_diff_deg(a, b) <= PICKUP_DOA_SECTOR_DEG
+
+
+def direction_unreliable(heard: Heard) -> bool:
+    """Угол посчитан, но ниже порога: ``doa_conf`` есть и ``doa_deg`` пуст.
+
+    Оба пусты — не измеряли. Старая запись без ``doa_conf`` недостоверной не считается.
+    """
+    return heard.doa_deg is None and heard.doa_conf is not None
 
 
 class Backlog:
@@ -181,6 +194,8 @@ class Backlog:
         с кличкой), или ``unknown`` — голос не узнан, спорный или результата нет."""
         return {"text": entry.text, "age_s": round(heard.t - entry.t, 1), "duration_s": round(entry.voice_s, 1),
                 "doa_deg": None if entry.doa_deg is None else round(entry.doa_deg),
+                "doa_conf": None if entry.doa_conf is None else round(entry.doa_conf, 2),
+                "doa_unreliable": direction_unreliable(entry),
                 "same_direction": same_direction(entry.doa_deg, heard.doa_deg),
                 "speaker": phrase_speaker(entry.voice, entry.faces),
                 "speaker_id": entry.person_ref or NAME_UNKNOWN,

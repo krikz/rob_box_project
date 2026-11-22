@@ -666,7 +666,7 @@ class STTNode(Node):
             self.interrupt_pub.publish,
             InterruptRequest,
             lambda: self.wake_words,
-            lambda: self._doa.during(*self._phrase_window),
+            lambda: self._doa.during(*self._phrase_window),  # DoaReading: угол и уверенность, не голый градус
         )
 
         # Publishers
@@ -1866,6 +1866,7 @@ class STTNode(Node):
         pub = self.utterance_pub
         self._offer_interrupt(text)
 
+        reading = self._doa.during(*self._phrase_window)
         pub.publish(
             fill_respeaker_utterance(
                 Utterance(),
@@ -1876,6 +1877,8 @@ class STTNode(Node):
                 speaker_tag=self._last_speaker_tag or "",
                 provider=provider,
                 hypotheses=phrase_hypotheses(provider, self._last_hypotheses),
+                doa_deg=reading.doa_deg,
+                doa_conf=reading.doa_conf,
             )
         )
         self.get_logger().info(f"📤 Опубликовал результат: {text}")

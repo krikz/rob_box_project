@@ -527,8 +527,6 @@ def test_n811_stops_speech_and_keeps_music():
 
 
 @pytest.mark.parametrize("label,ok,bad", [
-    ("n409_speed_down", [_param("minimax_speed", "0.8")], [_param("minimax_speed", "1.2"),
-                                                           "✅ Инструмент set_speed выполнен успешно"]),
     ("n411_pitch_bass", [_param("pitch_shift", "0.8")], [_param("pitch_shift", "1.2"),
                                                          "✅ Инструмент set_pitch выполнен успешно"]),
 ])
@@ -538,6 +536,22 @@ def test_prosody_steps_judge_the_effect_not_the_call(label, ok, bad):
         assert _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
     for line in bad:
         assert not _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
+
+
+def test_n409_needs_the_effect_and_a_real_set_speed_call():
+    """#4039: ось ниже нормы, не имя тула. #5007 (run 44890078495): actions=[] и «говорю медленнее» прошли приёмку,
+    потому что expected_tool_calls был пуст -- паттерн поймал PATTERN_MISS, acceptance сказал «all checks passed».
+    Теперь нужны оба: ось ниже нормы И маркер реального вызова set_speed (имя в списке тулов хода вызовом не считается)."""
+    axis = _param("minimax_speed", "0.8")
+    called = "✅ Инструмент set_speed выполнен успешно"
+    assert _verdict("n409_speed_down", "\n".join([axis, called, DONE]))["pass"]
+    for bad in (
+        "\n".join([axis, DONE]),                                          # эффект есть, вызова нет
+        "\n".join([called, DONE]),                                        # вызов есть, оси ниже нормы нет
+        "\n".join([_param("minimax_speed", "1.2"), called, DONE]),        # ось не ниже нормы (#4039)
+        "\n".join([axis, "tools(3): set_speed, set_pitch, set_volume", DONE]),  # имя в списке тулов - не вызов
+    ):
+        assert not _verdict("n409_speed_down", bad)["pass"], bad
 
 
 def _speed_said(provider: str, param: str, said: str) -> str:

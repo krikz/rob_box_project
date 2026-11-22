@@ -147,6 +147,12 @@ E2E_SILERO_SAMPLE_RATE="${E2E_SILERO_SAMPLE_RATE:-48000}"
 # если фича-ассерт (patterns/acceptance/GATE-1) зафейлился — это баг кода,
 # а НЕ «робот не ответил» (иначе e2e-process классифицирует как infra).
 E2E_FAIL_KIND=""
+# Сколько шагов акта получили ПОДТВЕРЖДЁННЫЙ цикл (run_step вернул 0: акцепт и
+# закрытый ход, в обоих режимах судьи). Ноль к моменту GATE-1 значит: робот не
+# ответил ни на один шаг, и провал агрегата (ноль вызовов тулов) -- следствие
+# молчания, а не «ответил, но не сделал». Без этого счётчика GATE-1 перекрашивал
+# молчание в feature, и гард марафона не останавливал акт (run 44963710006).
+E2E_CONFIRMED_CYCLES=0
 
 # RUN_ID — уникальный идентификатор прогона. Используем github.run_id если
 # передан (workflow L-E2E Voice Test.yml передаёт GITHUB_RUN_ID в env), иначе
@@ -166,7 +172,9 @@ mkdir -p "$OUT_DIR"
 # not invoked»), хотя tool calls в логах были. Фикс: фиксируем момент старта
 # прогона ПО ЧАСАМ РОБОТА (docker logs --since сравнивает с timestamp
 # контейнера робота) до первого шага.
-E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+# #5031: сам вызов стоит ПОСЛЕ refuse_first_mid_series. Дата ничего не стирает,
+# но отказ first посреди серии не должен ходить на робота вообще — иначе
+# тест не отличит «базы целы» от «уже сходили, и enter_e2e_mode мог стереть».
 
 # --- самовосстановление артефакт-дира (ретро 11.08 t_26a6d362) -------------
 # Параллельный infra-cleanup на 249 (t_0a5d65af) удалял /tmp/e2e_v2_* ВО ВРЕМЯ
@@ -299,6 +307,17 @@ PATTERNS=""
 CHECK_TG_ECHO=0
 E2E_MARATHON_PHASE="${E2E_MARATHON_PHASE:-}"
 E2E_PRIOR_STEPS="${E2E_PRIOR_STEPS:-}"
+# #5077 — признак серии. Маркер пишет раннер ($REPORT/series.id), id приходит
+# сюда env. Пустой id — прогон без серии: e2e-БД удаляется при снятии режима.
+E2E_SERIES_ID="${E2E_SERIES_ID:-}"
+# Маркер по умолчанию — на машине прогона (249), не в репо: раннер и харнесс
+# исполняются на разных машинах, а решение читает файл там, где он лежит.
+E2E_SERIES_MARKER="${E2E_SERIES_MARKER:-/tmp/e2e_series.id}"
+# Запас на обрыв, секунд. Живая серия обновляет mtime на каждом акте, поэтому
+# посреди серии маркер не протухает. Дольше TTL — серия мертва (SIGKILL раннера),
+# и e2e-БД можно удалить. Равен скользящему таймеру владельца (10800 с): режим
+# и каст умирают вместе, а не порознь.
+E2E_SERIES_TTL_S="${E2E_SERIES_TTL_S:-10800}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --text)     TEXT="$2"; shift 2 ;;
@@ -318,6 +337,8 @@ while [ $# -gt 0 ]; do
         --e2e-marathon-phase) E2E_MARATHON_PHASE="$2"; shift 2 ;;
         # #4077 П4 -- итоги шагов прошлых актов марафона (label=СТАТУС,…) для поля requires.
         --prior-steps) E2E_PRIOR_STEPS="$2"; shift 2 ;;
+        # #5031 — номер части серии (1 = с нуля). first на части > 1 — ошибка, не стирание.
+        --e2e-marathon-part) E2E_MARATHON_PART="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -326,6 +347,177 @@ case "$E2E_MARATHON_PHASE" in
     ""|first|middle|last) ;;
     *) echo "E2E_FATAL: --e2e-marathon-phase='$E2E_MARATHON_PHASE' — ожидается first|middle|last (issue #3972)" >&2; exit 2 ;;
 esac
+
+# #5077: решение «удалять ли e2e-БД при снятии режима» — функция, не текст.
+# Source здесь, а не рядом с либами (строка ~942): refuse_first_mid_series
+# зовётся ниже, на строке до тех source, и тест гоняет функцию напрямую.
+# shellcheck disable=SC1091
+SCRIPT_DIR_E2E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR_E2E/e2e_series_marker.sh"
+
+# --- issue #5031: first посреди серии стирает каст -------------------------
+# enter_e2e_mode (ниже) на переходе OFF->ON стирает обе e2e-БД — это #2890,
+# и для одиночного прогона так и должно быть. Но first — это «серия с нуля»:
+# 21.11 часть 2 марафона запустили отдельным раннером с first, и стирание
+# унесло каст и факты прошлой части (11 шагов покраснели ложно). middle базы
+# не трогает. Тихого даунгрейда first->middle нет: оператор должен увидеть
+# ошибку и выбрать middle (или осознанно удалить e2e-БД и начать с нуля).
+# Гард стоит ДО первого обращения к роботу, которое может стереть: отказ
+# выходит раньше enter_e2e_mode. Чтение профилей — только SELECT, файл не
+# удаляется (стирает узел на переходе OFF->ON, #2890).
+_e2e_speaker_profiles() {  # печатает число строк speakers; 0 — нет файла / ошибка / пусто
+    # E2E_SPEAKERS_DB — офлайн-тест: файл на машине харнесса, робота нет.
+    # Без него файл живёт в контейнере voice-assistant (/data/speakers.e2e.db),
+    # не на хосте харнесса и не на хосте робота.
+    local db="${E2E_SPEAKERS_DB:-}" n=""
+    if [ -n "$db" ]; then
+        [ -f "$db" ] || { echo 0; return 0; }
+        n="$(python3 - "$db" <<'PY'
+import sqlite3, sys
+try:
+    con = sqlite3.connect("file:%s?mode=ro" % sys.argv[1].replace("?", "%3f"), uri=True)
+    n = con.execute("select count(*) from speakers").fetchone()[0]
+except Exception:
+    n = 0
+print(int(n))
+PY
+)"
+    else
+        # bash -lc: так фейк тестов (и живой docker exec) разбирает команду.
+        # mode=ro — файл не создаётся и не пишется. Ошибка (нет файла, нет
+        # таблицы, нет контейнера) — 0, то есть «старт с нуля», не отказ.
+        n="$(${ROBOT_SSH} "docker exec voice-assistant bash -lc 'python3 -c \"import sqlite3
+try:
+ print(int(sqlite3.connect(\\\"file:/data/speakers.e2e.db?mode=ro\\\",uri=True).execute(\\\"select count(*) from speakers\\\").fetchone()[0]))
+except Exception:
+ print(0)\"'" 2>/dev/null || echo 0)"
+    fi
+    case "$n" in
+        ""|*[!0-9]*) echo 0 ;;
+        *) echo "$n" ;;
+    esac
+}
+refuse_first_mid_series() {  # rc 0 — first честный (серия с нуля); иначе exit 2
+    [ "$E2E_MARATHON_PHASE" = "first" ] || return 0
+    local part="${E2E_MARATHON_PART:-}" why="" profiles=""
+    case "$part" in
+        ""|*[!0-9]*) part="" ;;
+    esac
+    if [ -n "$E2E_PRIOR_STEPS" ]; then
+        why="переданы итоги шагов прошлых актов (--prior-steps)"
+    elif [ -n "$part" ] && [ "$part" -gt 1 ]; then
+        why="номер части ${part} > 1 (--e2e-marathon-part)"
+    fi
+    if [ -z "$why" ]; then
+        # Профили в speakers.e2e.db — каст уже живёт. Нет файла или 0 строк —
+        # это и есть старт с нуля (#2890), стирать можно.
+        profiles="$(_e2e_speaker_profiles)"
+        [ "$profiles" -gt 0 ] && why="в speakers.e2e.db уже ${profiles} профил(ей) каста"
+    fi
+    [ -n "$why" ] || return 0
+    [ -n "$part" ] || part="?"
+    echo "E2E_FATAL: часть ${part} серии запущена режимом first, а серия не с нуля (${why}). Часть ${part} запускается режимом middle; first стирает каст — если нужен чистый старт, удалите e2e-БД осознанно (issue #5031)" >&2
+    exit 2
+}
+# #5077: удалить e2e-БД, когда серия не активна. Определение стоит ДО вызова:
+# bash резолвит функцию в момент вызова, и вызов выше определения — command not found.
+#
+# Таймер владельца (e2e_release_after_s) снимает только флаг режима — он внутри
+# контейнера и маркера серии не видит. Файлы остаются, и следующий first падает
+# на гарде refuse_first_mid_series (run 44973642247: «уже 1 профил(ей)»).
+# Удалять на каждом снятии нельзя: middle/last держат каст между актами (#3972).
+#
+# Поэтому удаляет харнесс, и только по решению e2e_series_should_delete
+# (третий аргумент — id этой серии, пустой считается пустым):
+# маркер отсутствует/пуст/битый, id в нём чужой, id этой серии пуст (одиночный
+# прогон каст не держит) или маркер той же серии старше TTL — delete.
+# keep — только когда id совпал и маркер свежий.
+# SIGKILL раннера маркер не обновляет: mtime застывает, через TTL повтор той же
+# серии видит мёртвую серию и удаляет. Повтор чужой серии удаляет сразу, не
+# дожидаясь TTL: свежий маркер прошлой серии каст этой серии не держит
+# (инцидент 22.11: повтор через 2 ч 04 мин < TTL 10800 с).
+#
+# Где вызывается. До гарда — только из maybe_delete_stale_series_before_guard,
+# и только когда гард #5031 каст не защищает: фаза first или пустая, нет
+# --prior-steps и часть не больше 1. Признаки продолжения (итоги прошлых
+# актов, часть > 1) значат, что оператор продолжает серию: гард обязан
+# отказать, а базы остаться нетронутыми, чтобы перезапуск режимом middle
+# подхватил каст. middle/last здесь не трогаются никогда (#3972).
+# Второй вызов — в leave_e2e_mode, но туда прогон марафона не доходит:
+# E2E_MODE_HELD=0 у всех актов, кроме последнего, а trap последнего акта
+# снимает режим уже после того, как каст отработал.
+#
+# log к этому месту ещё не определена (она ниже по файлу): функция зовётся и
+# из maybe_delete_stale_series_before_guard, до source'а либ. Прямой вызов log
+# дал бы «log: command not found» и потерял бы предупреждение. Все строки здесь
+# идут через _series_log: она зовёт log, только если та уже определена.
+#
+# Боевые /data/speakers.db и /data/voice_memory.db здесь не упоминаются:
+# удаляются только e2e-файлы, и только внутри контейнера voice-assistant.
+_series_log() {  # log определена ниже по файлу; до неё — обычный echo
+    if declare -F log >/dev/null 2>&1; then
+        log "$@"
+    else
+        echo ">>> $*"
+    fi
+}
+delete_e2e_db_unless_series_active() {
+    local decision
+    decision="$(e2e_series_should_delete "$E2E_SERIES_MARKER" "$E2E_SERIES_TTL_S" "$E2E_SERIES_ID")"
+    case "$decision" in
+        keep)
+            _series_log "🔗 серия ${E2E_SERIES_ID} активна (маркер свежее ${E2E_SERIES_TTL_S} с) — e2e-БД не тронуты, каст остаётся следующему акту (issue #5077)"
+            echo "E2E_SERIES keep marker=$(basename "$E2E_SERIES_MARKER")"
+            return 0
+            ;;
+        delete) ;;
+        *)
+            # Неизвестное решение — не удалять: потеря каста живой серии хуже
+            # повторного прогона. Гард first поймает остаток и скажет прямо.
+            _series_log "⚠️ решение по серии не распознано ('$decision') — e2e-БД не тронуты (issue #5077)"
+            return 0
+            ;;
+    esac
+    _series_log "🧹 серия не активна (маркер отсутствует, чужой серии или старше ${E2E_SERIES_TTL_S} с) — удаляю e2e-БД, чтобы следующий first стартовал с нуля (issue #5077)"
+    # E2E_SPEAKERS_DB — офлайн-тест: файл на машине харнесса, робота нет.
+    # Без него файл в контейнере voice-assistant, как у _e2e_speaker_profiles.
+    if [ -n "${E2E_SPEAKERS_DB:-}" ]; then
+        rm -f -- "$E2E_SPEAKERS_DB" "${E2E_SPEAKERS_DB}-wal" "${E2E_SPEAKERS_DB}-shm" \
+            "${E2E_VOICE_MEMORY_DB:-}" 2>/dev/null || true
+    else
+        # Имена файлов зашиты: боевые /data/speakers.db и /data/voice_memory.db
+        # в команду не попадают. -wal/-shm — журнал sqlite, без него файл
+        # «вернётся» при следующем открытии.
+        ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'rm -f -- /data/speakers.e2e.db /data/speakers.e2e.db-wal /data/speakers.e2e.db-shm /data/voice_memory.e2e.db /data/voice_memory.e2e.db-wal /data/voice_memory.e2e.db-shm'" \
+            >/dev/null 2>&1 || _series_log "⚠️ e2e-БД не удалились (контейнер недоступен) — следующий first честно упадёт на гарде, а не сотрёт чужой каст молча (issue #5077)"
+    fi
+    echo "E2E_SERIES delete"
+}
+# До гарда — только когда гард #5031 каст не защищает. Признаки продолжения
+# (итоги прошлых актов, часть > 1) и фазы middle/last значат, что каст нужен
+# следующему акту: базы не трогаем, решение остаётся за гардом и за #3972.
+# first без этих признаков и одиночный прогон каст не держат — остаток
+# оборванной серии (маркер протух по TTL) убираем здесь, до гарда, иначе
+# гард увидит профили мёртвой серии и честно уронит чистый старт
+# (run 44973642247). Живой маркер здесь даёт keep, и базы остаются.
+maybe_delete_stale_series_before_guard() {
+    case "$E2E_MARATHON_PHASE" in
+        first|"") ;;
+        *) return 0 ;;
+    esac
+    [ -z "$E2E_PRIOR_STEPS" ] || return 0
+    local part="${E2E_MARATHON_PART:-}"
+    case "$part" in
+        ""|*[!0-9]*) ;;
+        *) [ "$part" -le 1 ] || return 0 ;;
+    esac
+    delete_e2e_db_unless_series_active
+}
+maybe_delete_stale_series_before_guard
+refuse_first_mid_series
+# Часы робота — первое обращение, которое ничего не пишет. Стоит после гарда:
+# first посреди серии выходит здесь, не дойдя ни до даты, ни до enter_e2e_mode.
+E2E_RUN_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 case "$E2E_TTS_PROVIDER" in
     auto|yandex|minimax|silero) ;;
     *) echo "E2E_FATAL: --tts-provider='$E2E_TTS_PROVIDER' — ожидается auto|yandex|minimax|silero" >&2; exit 2 ;;
@@ -578,6 +770,14 @@ adopt_e2e_mode() {
     log "🔗 e2e-режим подхвачен от прошлого акта: таймер снятия отменён, e2e-БД не стёрты — каст прошлого акта на месте"
 }
 marathon_e2e_mode() {  # $1 = first|middle|last — режим держит раннер марафона (#3972)
+    # #5077: живая серия обновляет mtime маркера на каждом акте. Без этого TTL
+    # истёк бы посреди длинного марафона и снятие режима унесло бы каст (#3972).
+    # Пустой E2E_SERIES_ID — прогон без серии, маркера нет, и это правильно:
+    # одиночный прогон каст не держит, снятие режима e2e-БД удалит.
+    if [ -n "$E2E_SERIES_ID" ]; then
+        e2e_series_marker_touch "$E2E_SERIES_MARKER" "$E2E_SERIES_ID" \
+            || { echo "E2E_FATAL: маркер серии не записан ($E2E_SERIES_MARKER) — без него снятие режима не отличит живую серию от оборванной (issue #5077)" >&2; exit 2; }
+    fi
     # Одно включение на марафон: first стирает e2e-БД (свежий каст), остальные акты каст не трогают —
     # иначе акты 2b/2c стирали Сашу и Бориса из акта 2, и в акте 3 диктор был unknown (разбор 23.10, §1.B).
     local phase="$1"
@@ -632,6 +832,11 @@ leave_e2e_mode() {
     stuck="$(_wait_e2e_followers False)" \
         || log "❌ ВНИМАНИЕ: $stuck не вернулся на боевую БД (e2e_mode_applied≠False) — долгосрочная память пишется в e2e-базу!"
     echo "E2E_MODE off"
+    # #5077: режим снят — e2e-БД больше некому держать, если серия мертва или
+    # чужая. Та же серия со свежим маркером каст не трогает: его подхватит
+    # следующий акт. middle/last сюда не доходят (E2E_MODE_HELD=0), каст посреди
+    # серии не теряется.
+    delete_e2e_db_unless_series_active
 }
 
 # --- issue #2890: изоляция АКТА, а не только БД дикторов --------------------
@@ -1733,6 +1938,7 @@ presynth_scenario() {
     local scenario="$1" rows="$OUT_DIR/scenario_presynth.txt" n=0 hits=0 safe slog cdir eq_wav
     local idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked
     local required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok
+    local pattern_grace_sec
     local row_read="$E2E_SCENARIO_ROW_READ"
     ensure_outdir
     parse_scenario_to_tsv "$scenario" "$rows"
@@ -1890,19 +2096,70 @@ check_cycle() {  # $1=before_rfc3339
 
 # Проверка ожидаемых паттернов (для фич, напр. speaker_analysis)
 # $1=before, $2..=паттерны (grep -E). Печатает найденные, rc=0 если все найдены.
-check_patterns() {
+# Верхняя граница окна (#5002) — не позиционный аргумент: контракт
+# test_e2e_voice_patterns_with_spaces.sh считает каждый аргумент после shift
+# паттерном. Границу несёт E2E_PATTERN_UNTIL на месте вызова (env-префикс),
+# чтобы она не протекла в _stt_step_executed и single-path (те без until).
+# #5030: поздняя строка восприятия (speaker_id печатает Speaker уже после того,
+# как STT-цикл шага закрылся) не должна красить шаг, если она пришла в пределах
+# шага плюс грейс. E2E_PATTERN_GRACE_SEC -- сколько секунд ПОСЛЕ момента
+# проверки строка ещё может прийти. Верхняя граница окна фиксируется ОДИН раз
+# на старте ожидания: момент проверки + грейс. Дальше она не едет -- строка,
+# пришедшая позже (уже ход следующего шага), не судится (гард #5002 сохранён).
+# Ожидание -- поллинг логов того же окна, не ретрай шага: состояние робота
+# не переигрывается, гард #2902 решает отдельно и по своим уликам.
+check_patterns() {  # $1=before $2..=паттерны; until = $E2E_PATTERN_UNTIL
     local before="$1"; shift
-    local logs pat rc=0
-    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
-    # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
-    logs="$(printf '%s
+    local until="${E2E_PATTERN_UNTIL:-}" logs pat rc=0
+    local grace="${E2E_PATTERN_GRACE_SEC:-0}" poll="${E2E_PATTERN_GRACE_POLL:-2}"
+    local grace_left=0 t0 now missing deadline=""
+    # Дробь отбрасывается вниз: грейс 30.9 ждёт 30 с, не 31. Кривое значение
+    # (пусто, буквы) -- 0: ждать не то, что написал автор, хуже, чем не ждать.
+    grace="${grace%%.*}"
+    poll="${poll%%.*}"
+    case "$grace" in
+        ''|*[!0-9]*) grace=0 ;;
+    esac
+    case "$poll" in
+        ''|*[!0-9]*|0) poll=2 ;;
+    esac
+    if [ "$grace" -gt 0 ]; then
+        # Граница -- часы робота, как и timestamp'ы docker-лога (#5002).
+        # Считается один раз: поллинг её не двигает.
+        deadline="$(${ROBOT_SSH} "date -u -d '+${grace} seconds' +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null \
+            || date -u -d "+${grace} seconds" +%Y-%m-%dT%H:%M:%S.%NZ 2>/dev/null || echo "")"
+        [ -n "$deadline" ] && until="$deadline"
+    fi
+    t0="$(date +%s)"
+    while :; do
+        logs="$(fetch_step_window_logs "$before" "$until")"
+        # Issue #3270: дамп LLM-запроса (tools(N), промпт) — не доказательство.
+        logs="$(printf '%s
 ' "$logs" | strip_llm_request_dump)"
+        rc=0
+        missing=""
+        for pat in "$@"; do
+            if printf '%s' "$logs" | grep -qE "$pat"; then
+                :
+            else
+                rc=1
+                missing="${missing:+$missing, }$pat"
+            fi
+        done
+        [ "$rc" = "0" ] && break
+        [ -n "$deadline" ] || break
+        now="$(date +%s)"
+        grace_left=$((grace - (now - t0)))
+        [ "$grace_left" -gt 0 ] || break
+        [ "$poll" -gt "$grace_left" ] 2>/dev/null && poll="$grace_left"
+        log "STEP ${STEP_LABEL:-?}: паттерн ещё не пришёл (${missing}), жду позднюю строку ${grace_left}s из ${grace}s, окно до ${until} (#5030)"
+        sleep "$poll"
+    done
     for pat in "$@"; do
         if printf '%s' "$logs" | grep -qE "$pat"; then
             echo "  PATTERN_OK: $pat"
         else
             echo "  PATTERN_MISS: $pat"
-            rc=1
         fi
     done
     # Issue #1134: return bash-convention (0=success, 1=fail). Внутренняя
@@ -1923,7 +2180,11 @@ check_music_compare() {  # $1 = label, $2 = файл сценария, $3 = на
     fi
     kind="$(printf '%s\n' "$raw" | _ev_kv compare)"
     case "$kind" in ''|-) return 0 ;; esac
-    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music\] ' \
+    # #5002: строки деки после конца шага не судятся. Судья compare и так режет
+    # --since, верхней границы у него нет -- её ставит окно fetch.
+    local until
+    until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    out="$(_events_fetch "${E2E_RUN_BEFORE:-600s}" '\[music\] ' "$until" \
         | python3 "$(_events_py)" compare --scenario "$2" --label "$1" --since "$3" 2>&1)"
     if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
         echo "  PATTERN_OK: music_compare=${kind}: $(printf '%s\n' "$out" | _ev_kv detail)"
@@ -2302,6 +2563,12 @@ step_wake_replay() {  # $1=label $2=safe
 # исполнению (тот же лог, что у ветки #4196). Исчерпание (retry=0, attempts_exhausted) эту проверку не проходит.
 _stt_step_executed() {  # $1=label $2=начало окна первой попытки; rc 0 -- исход шага в окне уже есть
     local -a pats=()
+    # #4981: у шага нет паттернов, но ожидаемый тул уже вызван в окне первой попытки --
+    # ход исполнен, повторять фразу поверх него нельзя (тот же смысл, что #4955).
+    # Решает e2e_events.tool_called_since; bash только спрашивает.
+    if _stt_tools_executed "$1" "$2"; then
+        return 0
+    fi
     [ -n "${patterns_json:-}" ] && [ "$patterns_json" != "[]" ] || return 1
     mapfile -t pats < <(printf '%s' "$patterns_json" \
         | python3 -c 'import json,sys
@@ -2313,13 +2580,43 @@ for p in json.load(sys.stdin):
     return 0
 }
 
-# step_heard -- последняя строка «✅ ПРИНЯТО» окна BEFORE (пустая строка -- фразу STT не принял).
-# Последняя, не первая: окно повтора начинается с нового PLAY (``--since``), и принятая там фраза --
+# _stt_tools_executed LABEL SINCE — rc 0, если каждый expected_tool_calls шага вызван не раньше SINCE.
+# Пустой список / нет сценария / лог не прочитан -- rc 1 (исход не доказан, повтор как раньше).
+_stt_tools_executed() {
+    local label="$1" since="$2" tools raw called
+    [ -n "${SCENARIO_FILE:-}" ] && [ -f "$SCENARIO_FILE" ] || return 1
+    tools="$(python3 -c 'import json,sys
+scen=json.load(open(sys.argv[1], encoding="utf-8"))
+label=sys.argv[2]
+for step in scen.get("steps") or []:
+    if step.get("label") == label:
+        acc=step.get("acceptance") or {}
+        names=acc.get("expected_tool_calls") or []
+        sys.stdout.write(",".join(str(n) for n in names))
+        break
+' "$SCENARIO_FILE" "$label" 2>/dev/null || true)"
+    [ -n "$tools" ] || return 1
+    # Окно режет docker logs --since (на роботе). Второй фильтр по метке строки здесь не нужен:
+    # фейк --since не режет, а строки фикстур -- {NOW-x}, старше UTC-штампа BEFORE. Судья
+    # tool_called_since с since режет окно сам, когда его зовут напрямую (приёмка после повтора).
+    raw="$(${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '${since}' 2>&1" 2>/dev/null || echo '')"
+    called="$(printf '%s\n' "$raw" | python3 "$(_events_py)" tool-since --tools "$tools" 2>/dev/null | _ev_kv called)"
+    [ "$called" = "1" ]
+}
+
+# step_heard -- последний «✅ ПРИНЯТО» окна BEFORE, который не эхо собственного TTS (#4981).
+# Пустая строка -- фразу STT не принял (или принял только эхо колонки). Решает e2e_events.step_answer:
+# приём внутри SpeechEvent started … finished/cancelled/rejected (или до «Воспроизведение завершено»)
+# и приём с флагом hardware AEC «во время TTS» -- не ответ шага. Текст фразы не сравнивается.
+# Последний не-эхо, не первый: окно повтора начинается с нового PLAY, и принятая там фраза --
 # ответ на повтор. Первая строка всего файла -- ПРИНЯТО прошлого хода, его судить уже нельзя.
 step_heard() {
-    ${ROBOT_SSH} "docker logs voice-assistant --since '${BEFORE}' 2>&1" 2>/dev/null \
-        | grep -oE '✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*[^[:space:]].*' | tail -1 \
-        | sed -E 's/^✅ ПРИНЯТО( \([^)]*\))?:[[:space:]]*//' | tr -d '\r'
+    local raw heard
+    # Окно режет docker logs --since (на роботе). --since в step-answer не передаём: фейк его не
+    # режет, а строки фикстур -- {NOW-x}, старше UTC-штампа BEFORE. Эхо TTS отсекает сам судья.
+    raw="$(${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '${BEFORE}' 2>&1" 2>/dev/null || echo '')"
+    heard="$(printf '%s\n' "$raw" | python3 "$(_events_py)" step-answer 2>/dev/null | _ev_kv heard)"
+    case "$heard" in ""|-) printf '' ;; *) printf '%s' "$heard" ;; esac
 }
 
 step_stt_replay() {  # $1=label $2=safe
@@ -2345,6 +2642,7 @@ step_stt_replay() {  # $1=label $2=safe
             E2E_STEP_STT_REPLAYED=1
             E2E_STEP_RECOVERED="stt_replay"
             recover_mark stt_replay "$label" "heard=«${heard}» missing=$(printf '%s\n' "$out" | _ev_kv missing)"
+            [ -n "${STEP_FIRST_BEFORE:-}" ] || STEP_FIRST_BEFORE="${STEP_BEFORE:-$BEFORE}"
             BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             E2E_LAST_PLAY_SINCE="$BEFORE"
             STEP_BEFORE="$BEFORE"
@@ -2433,6 +2731,7 @@ step_stt_replay() {  # $1=label $2=safe
         E2E_STEP_STT_REPLAYED=1
         E2E_STEP_RECOVERED="stt_replay"
         recover_mark stt_replay "$label" "heard=«${heard}» stt_miss=1 stt_attempt=${E2E_STEP_STT_ATTEMPT}/${max}"
+        [ -n "${STEP_FIRST_BEFORE:-}" ] || STEP_FIRST_BEFORE="${STEP_BEFORE:-$BEFORE}"
         BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         E2E_LAST_PLAY_SINCE="$BEFORE"
         STEP_BEFORE="$BEFORE"
@@ -2489,6 +2788,7 @@ step_stt_garbage_retry() {  # $1=label $2=safe
         E2E_STEP_STT_REPLAYED=1
         E2E_STEP_RECOVERED="stt_replay"
         recover_mark stt_replay "$label" "heard=«${heard}» missing=${missing:-?} stt_attempt=${E2E_STEP_STT_ATTEMPT}/${max}"
+        [ -n "${STEP_FIRST_BEFORE:-}" ] || STEP_FIRST_BEFORE="${STEP_BEFORE:-$BEFORE}"
         BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
         E2E_LAST_PLAY_SINCE="$BEFORE"
         STEP_BEFORE="$BEFORE"
@@ -2829,6 +3129,10 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     [ -n "${E2E_STT_MAX_ATTEMPTS:-}" ] || E2E_STT_MAX_ATTEMPTS="$(python3 "$(_events_py)" stt-retry --text "говори" --heard "колории" --attempt 1 --missing "говори" --allowed 1 | _ev_kv max)"
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
+        # silent_ok -- ход завершён без речи (rc=0 ниже, но робот не ответил). Флаг
+        # per-attempt: без сброса здесь протечёт на следующую попытку и спрячет
+        # настоящий ответ. Счётчик подтверждённых циклов такие шаги не считает.
+        _silent_ok=0
         if [ -n "$accepted_before" ]; then
             # ПРИНЯТО уже зафиксировано на предыдущей проверке этого шага —
             # НЕ переигрываем команду повторно (issue #2933: дубли на
@@ -2974,12 +3278,24 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             if [ "$rc" != "0" ] && [ "$rc" != "2" ] && [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && [ "${E2E_REPLY_NO_SPEECH:-0}" = "1" ]; then
                 log "STEP ${label}: ход завершён без речи (📊 [turn] stage=done, SpeechEvent нет) -- шаг помечен silent_ok"
                 rc=0
+                # Речи не было: rc=0 здесь -- не ответ робота, счётчик подтверждённых
+                # циклов его не считает (иначе GATE-1 перекрасит молчание в feature).
+                _silent_ok=1
             fi
         fi
         log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s, silence_after=${E2E_STEP_SILENCE_SEC:-0}s (wait=${E2E_WAIT_MODE})"
         if [ "$rc" = "0" ]; then
             log "STEP ${label}: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)"
             reaction=1
+            # rc=0 -- шаг, где робот реально ответил: полный цикл (оба судьи сходятся
+            # здесь) либо якорь barge_in (он невозможен без ПРИНЯТО, реакция была).
+            # silent_ok сюда тоже приходит с rc=0, но речи там не было -- такие шаги
+            # не считаем, иначе ноль настоящих ответов GATE-1 перекрасит в feature
+            # (run 44963710006). `${...:-0}` -- чтобы set -u не рвался, когда run_step
+            # зовут отдельно от главного скрипта (юнит-тесты харнесса).
+            if [ "${_silent_ok:-0}" != "1" ]; then
+                E2E_CONFIRMED_CYCLES=$((${E2E_CONFIRMED_CYCLES:-0} + 1))
+            fi
             break
         elif [ "$rc" = "2" ]; then
             log "STEP ${label}: ❌ LLM/TTS ERROR — тест красный, не чиним"
@@ -3367,6 +3683,11 @@ PY
 #                                     вызван ДО первого голосового ответа
 #                                     (verbal-only LLM answer regression guard)
 # Пишет acceptance.json в OUT_DIR.
+# #5002: окно шага -- [before, конец шага] в шкале docker-лога. Конец берётся
+# часами робота в момент проверки (наносекунды: docker --until без дроби отсекает
+# всю секунду). Сырые строки окна пишутся видимым файлом acceptance_window_<label>.txt
+# рядом со steps.jsonl: .acceptance_*.txt начинается с точки, и upload-artifact
+# (include-hidden-files выключен) его не увозит.
 check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339 [$4=attempt_tag]
     # $4 (issue #2846) — «попытка N/M», если у шага есть retry_acceptance.
     # Без него в логе шага подряд стояли
@@ -3377,11 +3698,20 @@ check_acceptance() {  # $1=label $2=acceptance_json_string $3=before_rfc3339 [$4
     # «STEP <label>: итог — …» в scenario-цикле.
     local label="$1" acc_json="$2" before="$3" attempt_tag="${4:-}"
     local rc=0
-    local logs logs_file tag_str=""
+    local logs logs_file tag_str="" step_until
     [ -n "$attempt_tag" ] && tag_str=" ${attempt_tag}"
-    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+    # Тело окна инлайном (#5002): unit-тесты вырезают check_acceptance() {
+    # ... } целиком и гоняют без source lib. set -u не ловит вызов
+    # несуществующей функции -- окно молча пустело бы. Та же нарезка для
+    # паттернов/ретрая/речи -- e2e_voice_lib.sh:fetch_step_window_logs.
+    # #5002: верхняя граница окна -- момент взятия конца шага, та же шкала, что у
+    # docker --since (часы робота). Наносекунды обязательны: --until без дроби
+    # отсекает всю свою секунду, и ход, закрывшийся в ней, выпал бы из окна.
+    step_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' --until '${step_until}' --timestamps 2>&1" 2>/dev/null || echo '')"
     # Логи шага тоже пишем в файл (ARG_MAX защита, как в check_gate1_aggregate).
-    logs_file="$OUT_DIR/.acceptance_${label}.txt"
+    # Видимое имя (#5002): .acceptance_*.txt upload-artifact не берёт (скрытый файл).
+    logs_file="$OUT_DIR/acceptance_window_${label}.txt"
     printf '%s' "$logs" > "$logs_file"
 
     # Issue #2846: исход register_speaker ищется в логе speaker_id_node. Если
@@ -3400,7 +3730,12 @@ logs = open(os.environ["LOGS_FILE"], encoding="utf-8", errors="replace").read()
 sys.exit(0 if registration_pending(json.loads(os.environ["ACC_JSON"]), logs) else 1)' 2>/dev/null; do
         sleep 1
         _reg_waited=$((_reg_waited + 1))
-        logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' 2>&1" 2>/dev/null || echo '')"
+        # #5002: until переснимается на каждой итерации. Один until, снятый до
+        # ожидания, отрезал бы ack speaker_id_node, который как раз и ждём
+        # (он может лечь позже начала проверки). Чужой ход за эти <=6 с --
+        # остаточный риск, не 244 с открытого окна.
+        step_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+        logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${before}' --until '${step_until}' --timestamps 2>&1" 2>/dev/null || echo '')"
         printf '%s' "$logs" > "$logs_file"
     done
     if [ "$_reg_waited" -gt 0 ]; then
@@ -3667,6 +4002,7 @@ elif [ -n "$SCENARIO_FILE" ]; then
         E2E_STEP_STT_INJECT_TRIED=""
         E2E_STT_MISS_FAIL=""
         E2E_STT_REPLAY_INJECT_FAILED=""
+        STEP_FIRST_BEFORE=""
         # retry_acceptance = доп. попытки при FAIL patterns/acceptance.
         # Нужно для dj01: LLM недетерминирован — если renardo не запустился
         # (request_music не вызван), повторяем команду (e2e run 32595628905).
@@ -3710,6 +4046,12 @@ elif [ -n "$SCENARIO_FILE" ]; then
             last_fail_what=""
             STEP_BEFORE="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
             [ -z "$step_window_start" ] && step_window_start="$STEP_BEFORE"
+            # #4981: окно первой попытки не двигается повтором. Повтор из-за эха TTS его не сдвигает
+            # (step_heard эхо отбрасывает). Если повтор всё же был (искажённый ход, #4196), приёмка
+            # и паттерны ищутся от первой попытки, чтобы вызов тула первой попытки не выпал из --since.
+            # Инъекция (#4951) сама ставит STEP_BEFORE на свой ход и судит его; STEP_FIRST_BEFORE
+            # для неё не подменяет окно -- инъекция пишет STEP_BEFORE после этого присваивания.
+            [ -z "${STEP_FIRST_BEFORE:-}" ] && STEP_FIRST_BEFORE="$STEP_BEFORE"
             # issue #3857: поля шага для ожидания событий. Перебивание -- только на первой попытке
             # (ретрай после перебивания играется в тишине).
             E2E_STEP_BARGE_IN="$barge_in_json"
@@ -3745,6 +4087,14 @@ elif [ -n "$SCENARIO_FILE" ]; then
                 break
             fi
             step_ok=1
+            # #4981: после stt_replay окно STEP_BEFORE сдвинуто на повтор. Приёмка и паттерны
+            # ищутся от STEP_FIRST_BEFORE, чтобы вызов тула первой попытки не выпал из --since.
+            # Инъекция судит свой ход (STEP_BEFORE она поставила сама) -- первое окно ей не подменяем:
+            # искажённый ход до инъекции человеком не говорился (#4196).
+            STEP_JUDGE_BEFORE="$STEP_BEFORE"
+            if [ -n "${STEP_FIRST_BEFORE:-}" ] && [ -z "${E2E_STEP_STT_INJECTED:-}" ]; then
+                STEP_JUDGE_BEFORE="$STEP_FIRST_BEFORE"
+            fi
             # Паттерны шага
             if [ -n "$patterns_json" ] && [ "$patterns_json" != "[]" ]; then
                 # bug(run 34414065635, 09.09.2026): раньше здесь было
@@ -3772,7 +4122,25 @@ for p in json.load(sys.stdin):
     print(p.replace("\n", " "))' | tr -d '\015')
                 log "STEP ${label}: проверка паттернов (${#_pats_arr[@]}): ${_pats_arr[*]}"
                 pat_checked=1
-                check_patterns "$STEP_BEFORE" "${_pats_arr[@]}"
+                # #5002: верхняя граница окна паттернов -- момент проверки (наносекунды).
+                # Env-префикс, не позиционный аргумент: гард patterns_with_spaces
+                # считает каждый аргумент после shift паттерном (лишний until
+                # давал COUNT=N+1 и пустой PAT[]).
+                # #5030: pattern_grace_sec шага -- поздняя строка восприятия
+                # (speaker_id печатает Speaker после конца STT-цикла) судится,
+                # если пришла в пределах грейса. Граница фиксируется внутри
+                # check_patterns один раз (момент проверки + грейс) и дальше
+                # не едет: строка следующего шага за окном, как и без грейса.
+                # Грейс -- не ретрай: гард #2902 ниже решает по своим уликам,
+                # поздняя регистрация по-прежнему запрещает повтор шага.
+                # ${var-} : spaces-тест вырезает этот блок и гоняет под set -u
+                # без объявления поля. Пустое -- грейс 0, как у шага без поля.
+                case "${pattern_grace_sec-}" in
+                    ''|*[!0-9.]*) pattern_grace_sec=0 ;;
+                esac
+                _pat_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+                STEP_LABEL="$label" E2E_PATTERN_GRACE_SEC="$pattern_grace_sec" \
+                    E2E_PATTERN_UNTIL="$_pat_until" check_patterns "${STEP_JUDGE_BEFORE}" "${_pats_arr[@]}"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="patterns"
@@ -3782,12 +4150,12 @@ for p in json.load(sys.stdin):
                 fi
             fi
             # issue #3971 — вид результата против музыки ДО шага (поле music_compare): провал — как у паттерна.
-            if ! check_music_compare "$label" "${SCENARIO_FILE:-}" "$STEP_BEFORE"; then
+            if ! check_music_compare "$label" "${SCENARIO_FILE:-}" "$STEP_JUDGE_BEFORE"; then
                 step_ok=0
                 last_fail_what="patterns"
             fi
             # issue #3710 — вызов тула на трек песни акта (поле track_ref): другой id или вызова без id — провал.
-            if ! check_track_ref "$label" "${SCENARIO_FILE:-}" "$STEP_BEFORE"; then
+            if ! check_track_ref "$label" "${SCENARIO_FILE:-}" "$STEP_JUDGE_BEFORE"; then
                 step_ok=0
                 last_fail_what="patterns"
             fi
@@ -3813,7 +4181,7 @@ for p in json.load(sys.stdin):
                     _acc_tag="попытка $((attempt_n + 1))/$((retry_acceptance + 1))"
                 fi
                 OUT_DIR="$OUT_DIR" STEP_LABEL="$label" \
-                    check_acceptance "$label" "$acceptance_json" "$STEP_BEFORE" "$_acc_tag"
+                    check_acceptance "$label" "$acceptance_json" "$STEP_JUDGE_BEFORE" "$_acc_tag"
                 if [ $? != 0 ]; then
                     step_ok=0
                     last_fail_what="${last_fail_what:+$last_fail_what+}acceptance"
@@ -3840,7 +4208,9 @@ for p in json.load(sys.stdin):
             # запрещается по уликам в логе ЭТОЙ попытки: см.
             # retry_block_reason() в e2e_tool_match.py. Сбой самого разбора —
             # тоже запрет: «не доказано, что безопасно» не равно «безопасно».
-            _attempt_logs="$(${ROBOT_SSH} "docker logs voice-assistant --since '${STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            # #5002: улики ретрая -- только окно попытки, не ход следующего шага.
+            _attempt_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+            _attempt_logs="$(fetch_step_window_logs "$STEP_BEFORE" "$_attempt_until")"
             if ! retry_blocked="$(NEXT_WRA="${next_when_robot_asked:-}" \
                 PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import os, sys
@@ -3863,7 +4233,9 @@ sys.stdout.write(retry_block_reason(sys.stdin.read(), os.environ.get("NEXT_WRA",
         # это валидный сигнал "робот ничего не сказал"), поэтому стоит ДО
         # ветвления по cycle_failed/step_skipped/step_ok ниже.
         if [ -n "${LAST_STEP_SPEECH_FILE:-}" ]; then
-            _step_logs_for_speech="$(${ROBOT_SSH} "docker logs voice-assistant --since '${step_window_start:-$STEP_BEFORE}' 2>&1" 2>/dev/null || echo '')"
+            # #5002: речь шага для when_robot_asked -- до конца шага, не речь следующего.
+            _speech_until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+            _step_logs_for_speech="$(fetch_step_window_logs "${step_window_start:-$STEP_BEFORE}" "$_speech_until")"
             if PYTHONPATH="$SCRIPT_DIR_E2E${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import sys
 from e2e_tool_match import robot_speech
@@ -3979,9 +4351,22 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
             check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
             if [ $? != 0 ]; then
                 PASS=0
-                mark_fail_kind feature
-                log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
-                echo "E2E_GATE1_FAIL"
+                # feature честен только если робот ХОТЬ РАЗ ответил: «ответил, но не
+                # сделал нужный вызов». Ноль подтверждённых циклов -- робот молчал, и
+                # ноль вызовов тулов есть следствие молчания, а не отдельная находка.
+                # Иначе вид no_reaction (его уже поставили упавшие шаги) перекрашивается
+                # в feature, маркер акта врёт «E2E_FEATURE_FAIL», и гард марафона
+                # (run_night_marathon.sh, STOP_ON_FOUNDATION_FAIL) не останавливает акт,
+                # который не ответил ни на один шаг (run 44963710006, 10/10
+                # cycle_unconfirmed_after_accept).
+                if [ "${E2E_CONFIRMED_CYCLES:-0}" -gt 0 ]; then
+                    mark_fail_kind feature
+                    log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+                    echo "E2E_GATE1_FAIL"
+                else
+                    log "GATE-1: ❌ aggregate acceptance FAIL, но подтверждённых циклов 0 -- это молчание, не фича: вид не повышаю до feature (см. $OUT_DIR/acceptance.json)"
+                    echo "E2E_GATE1_FAIL_NO_CYCLE"
+                fi
             else
                 log "GATE-1: ✅ aggregate acceptance PASS"
                 echo "E2E_GATE1_OK"

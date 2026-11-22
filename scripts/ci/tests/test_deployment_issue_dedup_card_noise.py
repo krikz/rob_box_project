@@ -114,6 +114,60 @@ def test_other_error_next_to_recovered_guard_still_surfaces() -> None:
     assert critical(logs, "main") == real
 
 
+# --- стартовый fail-fast, контейнер потом жив (issue #4989, run 44817771673) -------------
+
+# Форма строки — как в карточке #4989 (vision-hailo, gaze.py). Числа и топик не важны:
+# окно решает порядок «умер → стартовал и больше не падает», а не текст ошибки.
+FAILFAST = (
+    "[ERROR] [1795209099.065226069] [vision_hailo]: vision_hailo: Gaze source 'oak_d' не отдал "
+    "кадр за 10.0s (capability-honest, ADR-0018).. fail-fast (real-mode обязателен, gaze_source='oak_d')."
+)
+DIED = "[ERROR] [vision_hailo-1]: process has died [pid 57, exit code 1, cmd 'vision_hailo']."
+STARTED_AGAIN = "[INFO] [vision_hailo-1]: process started with pid [203]"
+XLINK = "[ERROR] [oak_d]: X_LINK_ERROR: camera link lost, no frames"
+
+
+def test_startup_failfast_then_healthy_does_not_create_candidate() -> None:
+    # (а) fail-fast, затем контейнер поднялся и больше не падает — кандидата нет.
+    logs = "\n".join([FAILFAST, DIED, STARTED_AGAIN, "[INFO] [vision_hailo]: subscribed to image_raw"])
+
+    assert critical(logs, "vision") is None
+
+
+def test_startup_failfast_without_recovery_creates_candidate() -> None:
+    # (б) fail-fast без подъёма: смерть есть, повторного старта нет.
+    logs = "\n".join([FAILFAST, DIED])
+
+    assert critical(logs, "vision") == FAILFAST
+
+
+def test_failfast_that_came_back_and_died_again_creates_candidate() -> None:
+    # (в) поднялся, но снова падает: restarts растут, «жив после» нет.
+    logs = "\n".join([FAILFAST, DIED, STARTED_AGAIN, DIED.replace("pid 57", "pid 203")])
+
+    assert critical(logs, "vision") == FAILFAST
+
+
+def test_familiar_failfast_line_without_alive_after_stays_critical() -> None:
+    # «Строка знакомая» недостаточна: нет свидетельства «жив после» — кандидат есть.
+    assert critical(FAILFAST, "vision") == FAILFAST
+
+
+def test_recovered_failfast_does_not_mask_a_real_xlink_error() -> None:
+    # Настоящий X_LINK рядом с оправившимся fail-fast карточку получает.
+    logs = "\n".join([FAILFAST, DIED, STARTED_AGAIN, XLINK])
+
+    assert critical(logs, "vision") == XLINK
+
+
+def test_crash_loop_without_failfast_marker_stays_critical() -> None:
+    # «process has died» само по себе не шум: без маркера fail-fast цикл
+    # (смерть, старт, снова смерть) остаётся critical.
+    logs = "\n".join([DIED, STARTED_AGAIN, DIED.replace("pid 57", "pid 203")])
+
+    assert critical(logs, "vision") == DIED
+
+
 # --- promtail → Loki 429 (runs 42288712543 … 42335902952, 06–07.11) --------------------
 
 PROMTAIL_429 = (

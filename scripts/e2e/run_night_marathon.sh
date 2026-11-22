@@ -99,6 +99,11 @@ fi
 
 RUN_TS="$(date -u +%Y%m%d_%H%M%S)"
 REPORT="${REPORT:-$ROOT/tests/e2e/_artifacts/night_${RUN_TS}}"
+# #5077: id серии. Харнесс пишет marker-файл на машине прогона (249) и по его
+# mtime решает, удалять ли e2e-БД при снятии режима. Раннер и харнесс на разных
+# машинах, поэтому раннер передаёт только id, а не путь к файлу. Пустой id —
+# прогон без серии, и снятие режима e2e-БД удалит (одиночный прогон каст не держит).
+E2E_SERIES_ID="${E2E_SERIES_ID:-night_${RUN_TS}}"
 mkdir -p "$REPORT"
 SUMMARY="$REPORT/summary.tsv"
 # #3989: recovered — шагов, прошедших после восстановления харнессом (не чистый PASS); act_recover — что харнесс
@@ -344,7 +349,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
             scenario_file="$a_scn" \
             acceptance_file="$a_acc" \
             triggered_by_script="run_night_marathon.sh" \
-            triggered_by_reason="night marathon act $a_n: $a_title" \
+            triggered_by_reason="night marathon act $a_n: $a_title${E2E_SERIES_ID:+ series=$E2E_SERIES_ID}" \
             ${PRIOR_STEPS:+prior_steps="$PRIOR_STEPS"} \
             ${TTS_PROVIDER:+tts_provider="$TTS_PROVIDER"} \
             ${HOLD_VALUES[@]+"${HOLD_VALUES[@]}"} \
@@ -428,24 +433,29 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
     # Акты 1-2 — фундамент: без wake-word и без профилей голосов остальное
     # утонет в no_accept и диагностической ценности не даст.
     #
-    # Но красный красному рознь, и различать их обязательно. Харнесс сам
-    # печатает причину отказа отдельным маркером:
-    #   E2E_NO_REACTION / E2E_INFRA_FAIL — робот не отвечает или упал синтез.
-    #     Дальше идти бессмысленно: следующие девять актов дадут девять
-    #     страниц no_accept и ни одного факта.
-    #   E2E_FEATURE_FAIL — робот ответил, но не выполнил ассерт. Это НАХОДКА,
-    #     ради которой марафон и запускают, и она не мешает актам 2-10:
-    #     wake-word жив, значит остальное диагностично.
-    # Первый прогон акта 1 (run 34408526453) прошёл 9 шагов из 10 и упал
-    # ровно на фиче — останавливать там марафон было бы ошибкой.
+    # Но красный красному рознь, и различать их обязательно. Решение принимает
+    # marathon_foundation_decision (scripts/e2e/marathon_markers.sh) по маркеру
+    # харнесса, а не по отсутствию стоп-маркера:
+    #   continue — настоящий E2E_FEATURE_FAIL: робот ответил, ассерт не
+    #     выполнен. Это НАХОДКА, ради которой марафон и запускают, и она не
+    #     мешает актам 2-10: wake-word жив, значит остальное диагностично.
+    #     Первый прогон акта 1 (run 34408526453) прошёл 9 шагов из 10 и упал
+    #     ровно на фиче — останавливать там марафон было бы ошибкой.
+    #   stop — всё остальное: E2E_NO_REACTION, E2E_INFRA_FAIL, E2E_STAND_FAIL,
+    #     E2E_FATAL и провал без единого маркера вердикта (харнесс упал раньше
+    #     вердикта, «E2E verdict missing»). Дальше идти бессмысленно: следующие
+    #     девять актов дадут девять страниц no_accept и ни одного факта.
+    # До #5076 ветка else была безусловной и печатала «красный по фиче» даже
+    # когда маркера E2E_FEATURE_FAIL в логе не было (run 44973642247).
     if [ "$STOP_ON_FOUNDATION_FAIL" = "1" ] && [ "$conclusion" != "success" ] \
        && { [ "$a_n" = "1" ] || [ "$a_n" = "2" ]; }; then
-        if marathon_has_marker "$act_log" 'E2E_NO_REACTION|E2E_INFRA_FAIL|E2E_STAND_FAIL'; then
-            log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra/stand) — останавливаю марафон"
+        if [ "$(marathon_foundation_decision "$act_log")" = "continue" ]; then
+            log "⚠️ акт $a_n красный по фиче (E2E_FEATURE_FAIL) — это находка, продолжаю марафон"
+        else
+            log "❌ фундаментальный акт $a_n не отвечает (no_reaction/infra/stand/fatal/нет вердикта) — останавливаю марафон"
             log "   (STOP_ON_FOUNDATION_FAIL=0 чтобы продолжать вопреки)"
             break
         fi
-        log "⚠️ акт $a_n красный по фиче (E2E_FEATURE_FAIL) — это находка, продолжаю марафон"
     fi
 done <<< "$plan"
 
