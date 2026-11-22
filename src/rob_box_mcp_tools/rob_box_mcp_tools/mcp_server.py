@@ -1383,7 +1383,7 @@ class MCPServer(Node):
             self.result_pub.publish(msg_out)
             self.get_logger().info(f"✅ Результат опубликован на /mcp/result")
 
-            from .engine.song_order import tool_outcome_line
+            from .tool_outcome import tool_outcome_line
 
             line = tool_outcome_line(tool_name, result.success, result.data, result.error)
             # Уровень — из результата, не из текста строки (#5092): отказ остаётся WARNING.

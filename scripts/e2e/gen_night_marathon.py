@@ -700,7 +700,7 @@ if _UNKNOWN_COMPARES:
 #: {…}``). Просьба удалить трек, а не его поиск: без ``delete`` в параметрах шаг не засчитывается.
 LIBRARY_DELETE_CALL = r"music_library с параметрами \{.*'action': 'delete'"
 #: ``music_library delete`` без «да» человека ОТКАЗАЛ и только спросил (#4025: трек цел). Строка в логе контейнера --
-#: ``mcp_server`` печатает строку ``song_order.tool_outcome_line`` (WARNING):
+#: ``mcp_server`` печатает строку ``tool_outcome.tool_outcome_line`` (WARNING):
 #: ``❌ Инструмент {tool_name} завершился с ошибкой: {error}``, где
 #: ``error`` -- сам вопрос (``gen_library._delete``: «Удалить «<название>»? Скажи «да, удаляй».» либо «Удалить этот
 #: трек? …»). Строка ``📨 [execute] событие … rejected needs_confirmation`` пишется python-логгером

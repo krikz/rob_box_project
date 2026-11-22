@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from rob_box_mcp_tools.tool_outcome import PENDING_ORDERS, tool_outcome, tool_outcome_line  # noqa: F401
 from rob_box_music import knowledge as kn
 from rob_box_music.source import DECLINE, GENERATE, SONG_GEN_KINDS, Route, SourceAsk, decline_text, gen_kind
 
@@ -24,35 +25,6 @@ from .gen.song import (
 
 #: Код отказа пути (``engine_tools.SOURCE_DECLINED``; равенство держит тест).
 DECLINED = "music_source"
-
-#: Значения ``data["pending"]``, при которых тул только ПРИНЯЛ фоновый заказ, а не исполнил его.
-#: «выполнен успешно» про такой заказ — ложь: исход скажет поток, когда закончит (#5092, ADR-0148).
-PENDING_ORDERS = ("song", "instrumental")
-
-
-def tool_outcome(
-    tool_name: str, success: bool, data: Optional[Dict[str, Any]], error: Optional[str]
-) -> Tuple[str, str]:
-    """``(уровень, строка)`` исхода тула: ``warning`` — провал, ``info`` — успех и принятый заказ.
-
-    Уровень решает код из результата, не первый символ строки: харнесс и разбор лога ищут отказ
-    на WARNING, как раньше."""
-    line = tool_outcome_line(tool_name, success, data, error)
-    return ("info" if success else "warning"), line
-
-
-def tool_outcome_line(tool_name: str, success: bool, data: Optional[Dict[str, Any]], error: Optional[str]) -> str:
-    """Строка лога об исходе тула — из результата исполнения, не из флага ``success`` вслепую.
-
-    Успех — «выполнен успешно». Провал — «завершился с ошибкой» и текст ошибки. Фоновый заказ
-    (``data["pending"]`` из :data:`PENDING_ORDERS`) — «принят, готовится»: работа ещё идёт,
-    и строка успеха про неё врала бы (акт 7, #5092: успех, через 14 мс отказ студии)."""
-    pending = (data or {}).get("pending") if success else None
-    if pending in PENDING_ORDERS:
-        return f"⏳ Инструмент {tool_name} принят, готовится: {pending}"
-    if success:
-        return f"✅ Инструмент {tool_name} выполнен успешно"
-    return f"❌ Инструмент {tool_name} завершился с ошибкой: {error}"
 
 
 def _declined(message: str) -> Tuple[str, Dict[str, Any]]:

@@ -767,8 +767,8 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
-    # #5092: строку исхода строит song_order.tool_outcome_line, mcp_server только печатает её
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/song_order.py",
+    # #5092: строку исхода строит tool_outcome.tool_outcome_line, mcp_server только печатает её
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tool_outcome.py",
      'return f"❌ Инструмент {tool_name} завершился с ошибкой: {error}"'),
     # #4062: текст вопроса - одна фраза каталога (её берут и тул через media_phrases, и диалог v2 по причине)
     ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml",

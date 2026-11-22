@@ -83,7 +83,7 @@ from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
 from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections, settle  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
-from rob_box_mcp_tools.engine.song_order import tool_outcome_line  # noqa: E402
+from rob_box_mcp_tools.tool_outcome import tool_outcome_line  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
 from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_dialog_host.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
