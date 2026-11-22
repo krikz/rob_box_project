@@ -220,6 +220,54 @@ Solutions:
    └─> docker compose up -d
 ```
 
+#### Порядок старта: ноды ждут готовности zenoh-router (#5039)
+
+`docker compose up -d` поднимает контейнеры за доли секунды, и ноды успевают
+открыть сессию у zenoh раньше, чем роутер готов их принимать. На Main Pi это
+проявляется не как ошибка compose, а как падение или зависание nav2:
+
+```
+zenoh ... panicked: Invalid Key Expr '$.164c6834d94a': '$' is only allowed in '$*'
+...
+[ros2run]: Aborted
+```
+
+Поэтому у всех сервисов, которым нужен роутер, зависимость задана длинной
+формой:
+
+```yaml
+depends_on:
+  zenoh-router:
+    condition: service_healthy
+```
+
+У `zenoh-router` есть healthcheck на admin API `:8000` (`start_period: 30s`),
+и от него зависят 11 сервисов. Прочие зависимости (например, `twist-mux` у
+`teleop`) остаются `condition: service_started` — это ровно прежнее поведение
+короткого списка, порядок между ними не меняется.
+
+**Что измерено.** Контролируемые опыты 23.11.2026 на Main Pi (сырьё и разбор —
+issue #5039):
+
+- одновременный холодный старт роутера и нод ломал nav2 в 3 опытах из 4;
+  четвёртый одновременный старт — при восстановлении стенда — прошёл. Это
+  вероятностная гонка, а не детерминированный отказ;
+- старт «роутер до healthy, затем остальные» дал healthy nav2 2/2 за 60 с;
+- сам `depends_on: zenoh-router: condition: service_healthy` — 2/2 (22:18Z,
+  22:23Z); в сырье (`trial2.log`) 12 замеров до t=240s: nav2 healthy, роутер
+  healthy, 12 контейнеров Up, `/controller_server` active, паник zenoh 0.
+  Healthy-статус замерялся только у nav2 и роутера: у imu-filter, lslidar,
+  rtabmap и robot-state-publisher healthcheck нет вовсе;
+- один `docker restart nav2` при уже поднятом роутере лечил 2/2 за 30–45 с.
+
+**Что не проверено.** Все эти замеры — руками на стенде. Что тот же порядок
+даёт первый `L: Deploy and Verify` с этим compose — ещё нет: боевой деплой
+предстоит. Страховка второго уровня — гейт `scripts/ci/wait_nav2_active.sh` —
+отдельным изменением.
+
+Гард структуры: `tests/unit/docker/test_main_compose_zenoh_start_order.py` —
+короткая форма `- zenoh-router` у любого сервиса валит тест.
+
 ### 4. Initialization Wait
 
 ```
