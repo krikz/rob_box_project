@@ -2323,7 +2323,8 @@ INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "comm
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
                                                                VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE,
-                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE})
+                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE,
+                                                               "speech_asked": "command.speech_asked"})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
@@ -4029,6 +4030,9 @@ SPEECH_ASK_NEGATION: Tuple[str, ...] = ("не", "без")
 #: Нарушение формы просьбы говорить: ход закрыт только тем, чего не слышно (``SILENT_DONE_TOOLS``,
 #: ``INAUDIBLE_TOOLS``, одно лицо). Мост по ``tool_not_available`` срез расширяет — это нарушение своё.
 VIOLATION_SPEECH_ASKED = "speech_asked"
+#: Просьба говорить, а после повторов за словами ответа всё нет (#5094, n906): код не выдумывает анекдот
+#: и не мычит «Угу, я тут.» — честно говорит, что рассказать не вышло. Анимация просьбы при этом исполнена.
+SPEECH_ASKED_PHRASE = "command.speech_asked"
 #: Ответ без слов, повтор за которым даёт ход, а не мост (:func:`command.words_only`): последняя итерация после
 #: запроса и просьба говорить. Мост по ним срез не расширяет и свой повтор не тратит — вызовы считает ход.
 WORDS_ONLY_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SPEECH_REQUIRED, VIOLATION_SPEECH_ASKED)
@@ -4037,6 +4041,24 @@ SPEECH_ASKED_HINT = (
     "(анимацию положи в actions рядом) или скажи выступлением в perform; play_animation и expression "
     "без речи эту просьбу не закрывают"
 )
+#: Повтор за словами на просьбу говорить не смотрит, был ли запрос и просили ли лицо
+#: (:func:`turn.speech_push_owed`): «покажи» рядом с «расскажи» просьбу говорить не отменяет.
+#: Повторы кончились — фраза кода :data:`SPEECH_ASKED_PHRASE`, не молчание и не выдуманный анекдот.
+
+
+def speech_push_owed(needs_speech: bool, queried: bool, show: bool, singing: bool) -> bool:
+    """Ход ещё раз зовёт модель за словами (ADR-0148: решает код по форме, не промпт).
+
+    Просьба говорить (``needs_speech``) — даже без запроса и даже если рядом просили лицо
+    (``show``): «расскажи и покажи» не закрывается одной мигалкой (#5094). Последняя итерация
+    после запроса — как раньше, если лицо словами не просили. Путь пения (``singing``) не трогаем:
+    там выступление обязательно своей формой.
+    """
+    if singing:
+        return False
+    if needs_speech:
+        return True
+    return bool(queried) and not show
 
 
 def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:

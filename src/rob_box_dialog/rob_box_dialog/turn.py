@@ -1334,20 +1334,23 @@ async def _ask_iteration(engine: "TurnEngine", turn: _Turn, messages: Sequence[A
         return await turn.deadline.wait(engine._ports.ask(messages, _offered(tools, last), turn.deadline.left()), "llm")
 
 
-def _push_for_words(engine: "TurnEngine", turn: _Turn) -> Optional[str]:
-    """Последняя итерация после запроса, а модель без слов (``VIOLATION_SPEECH_REQUIRED``; решение Шифу 28.10 по PR
-    «модель не должна молчать… пнуть модель»): данные хода уже в её окне - ещё один вызов с подсказкой нарушения
-    (``command.HINTS``: ответь словами по этим данным, коротко), не больше ``SPEECH_PUSHES_MAX`` на ход и только если до
-    потолка хода осталось ``SPEECH_PUSH_MIN_LEFT_S``. Повторов нет (лимит, время, форма итерации слов не ждёт) -
-    ``None``: тогда говорит код по данным (:func:`query_fallback`) как последняя страховка."""
-    owed = answer_form(current_form(), turn, True, engine.session.snapshot).speech_required
+def _push_for_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[str]:
+    """Модель без слов, а слова должны быть (:func:`knowledge.speech_push_owed`): ещё один вызов с подсказкой
+    ЭТОГО нарушения, не больше ``SPEECH_PUSHES_MAX`` на ход и только если до потолка хода осталось
+    ``SPEECH_PUSH_MIN_LEFT_S``. Просьба говорить толкает и без запроса, и когда рядом просили лицо (#5094:
+    «расскажи и покажи» не закрывается одной мигалкой). Повторов нет — ``None``: тогда говорит код
+    (фраза по данным запроса или :data:`knowledge.SPEECH_ASKED_PHRASE`)."""
+    form = current_form()
+    snap = engine.session.snapshot
+    owed = kn.speech_push_owed(form.needs_speech, bool(turn.queried), show_asked(turn.text, turn.wake_words),
+                               bool(form.sing) or not speaks_aloud(snap))
     if not owed or turn.pushed >= kn.SPEECH_PUSHES_MAX or turn.deadline.left() < kn.SPEECH_PUSH_MIN_LEFT_S:
         return None
     turn.pushed += 1
-    engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SPEECH_REQUIRED}: последняя итерация без слов → повтор за словами "
+    engine._log.warning(f"{LOG_MARK} {reason}: без слов → повтор за словами "
                         f"{turn.pushed}/{kn.SPEECH_PUSHES_MAX} (осталось {turn.deadline.left():.1f} с) "
                         f"turn={turn.turn_id}")
-    return explain(Invalid(kn.VIOLATION_SPEECH_REQUIRED), after_query=True)
+    return explain(Invalid(reason), after_query=bool(turn.queried))
 
 
 #: Нарушения последней итерации «ответа нет, слов нет»: за словами ход повторяет вызов (:func:`_push_for_words`) -
@@ -1362,7 +1365,7 @@ def _missed_words(engine: "TurnEngine", turn: _Turn, reason: str) -> Optional[st
     в лог (страховка кода по данным видна в марафоне)."""
     if reason not in _WORDS_MISSED:
         return None
-    more = _push_for_words(engine, turn)
+    more = _push_for_words(engine, turn, reason)
     if more is None and turn.pushed:
         engine._log.warning(f"{LOG_MARK} {kn.VIOLATION_SPEECH_REQUIRED}: без слов и после {turn.pushed} повторов → "
                             f"страховка: фраза кода по данным turn={turn.turn_id}")
@@ -1661,9 +1664,11 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     спасённые ``query`` - озвученные отказы чтения памяти (``memory.voiced_refusals``): фразу сказал :func:`query_more`,
     читать модели нечего - ход ``done`` здесь же (итог ``addressed`` давал рефлекс «услышал»).
     ``expression`` - лицо команды, исполняемой после нарушения ``silent_answer``: красит итог вместе с её
-    действиями, если они не провалились (:func:`command_face`)."""
+    действиями, если они не провалились (:func:`command_face`). Просьба говорить
+    (``VIOLATION_SPEECH_ASKED``, #5094) толкает за словами и на первой итерации: ``last`` там ложь
+    (``LLM_QUERY_ITERATIONS_MAX`` ещё не выбран), и без этого мигалка закрывала ход сразу."""
     log, why = engine._log, invalid.reason
-    pushed = _missed_words(engine, turn, why) if last else None
+    pushed = _missed_words(engine, turn, why) if last or why == kn.VIOLATION_SPEECH_ASKED else None
     if pushed is not None:
         return pushed
     if turn.queried:
@@ -1718,7 +1723,8 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
         return " ".join(text for text in (said, query_fallback(queried)) if text)
     snap = engine.session.snapshot
     salvage = Command(actions=tuple(invalid.salvage))
-    if said or (results and not words_owed(snap, turn.text, salvage, turn.wake_words)):
+    if said or (results and not words_owed(snap, turn.text, salvage, turn.wake_words)
+                and invalid.reason != kn.VIOLATION_SPEECH_ASKED):
         return said or ""
     if invalid.reason == kn.VIOLATION_MUSIC_PROMISE:
         return engine._pick(music_promise_key(turn.music_stopped, snap.music_playing))
