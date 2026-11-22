@@ -463,7 +463,11 @@ _series_log() {  # log определена ниже по файлу; до не�
 }
 delete_e2e_db_unless_series_active() {
     local decision
-    decision="$(e2e_series_should_delete "$E2E_SERIES_MARKER" "$E2E_SERIES_TTL_S" "$E2E_SERIES_ID")"
+    # Четвёртый аргумент — фаза. Для first решение требует вторую строку маркера
+    # «opened»: её пишет только акт, прошедший гард. Без неё id совпал и TTL не
+    # истёк, но серия ещё не открыта — каст принадлежит оборванному прогону.
+    decision="$(e2e_series_should_delete "$E2E_SERIES_MARKER" "$E2E_SERIES_TTL_S" \
+        "$E2E_SERIES_ID" "$E2E_MARATHON_PHASE")"
     case "$decision" in
         keep)
             _series_log "🔗 серия ${E2E_SERIES_ID} активна (маркер свежее ${E2E_SERIES_TTL_S} с) — e2e-БД не тронуты, каст остаётся следующему акту (issue #5077)"
@@ -774,9 +778,22 @@ marathon_e2e_mode() {  # $1 = first|middle|last — режим держит ра
     # истёк бы посреди длинного марафона и снятие режима унесло бы каст (#3972).
     # Пустой E2E_SERIES_ID — прогон без серии, маркера нет, и это правильно:
     # одиночный прогон каст не держит, снятие режима e2e-БД удалит.
+    # «opened» пишется здесь, а не до гарда: до этого места доходит только акт,
+    # прошедший refuse_first_mid_series. Оборванный first сюда не доходит, его
+    # маркер остаётся без второй строки, и повтор той же серии видит серию
+    # неоткрытой — даже если id совпал и TTL не истёк (повтор через 2 ч 04 мин,
+    # run 44973642247).
     if [ -n "$E2E_SERIES_ID" ]; then
-        e2e_series_marker_touch "$E2E_SERIES_MARKER" "$E2E_SERIES_ID" \
-            || { echo "E2E_FATAL: маркер серии не записан ($E2E_SERIES_MARKER) — без него снятие режима не отличит живую серию от оборванной (issue #5077)" >&2; exit 2; }
+        if ! e2e_series_marker_touch "$E2E_SERIES_MARKER" "$E2E_SERIES_ID"; then
+            echo "E2E_FATAL: маркер серии не записан ($E2E_SERIES_MARKER, issue #5077)" >&2
+            echo "           без него снятие режима не отличит живую серию от оборванной" >&2
+            exit 2
+        fi
+        if ! e2e_series_marker_opened "$E2E_SERIES_MARKER" "$E2E_SERIES_ID"; then
+            echo "E2E_FATAL: маркер серии не открыт ($E2E_SERIES_MARKER, issue #5077)" >&2
+            echo "           повтор first не отличит оборванный прогон от живой серии" >&2
+            exit 2
+        fi
     fi
     # Одно включение на марафон: first стирает e2e-БД (свежий каст), остальные акты каст не трогают —
     # иначе акты 2b/2c стирали Сашу и Бориса из акта 2, и в акте 3 диктор был unknown (разбор 23.10, §1.B).
