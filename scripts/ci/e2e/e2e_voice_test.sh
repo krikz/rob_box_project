@@ -427,11 +427,15 @@ refuse_first_mid_series() {  # rc 0 — first честный (серия с ну
 # на гарде refuse_first_mid_series (run 44973642247: «уже 1 профил(ей)»).
 # Удалять на каждом снятии нельзя: middle/last держат каст между актами (#3972).
 #
-# Поэтому удаляет харнесс, и только по решению e2e_series_should_delete:
-# маркер отсутствует/пуст/битый/протух по TTL — delete, свежий — keep.
-# Одиночный прогон (E2E_SERIES_ID пуст) маркера не пишет, для него это delete.
-# SIGKILL раннера маркер не обновляет: mtime застывает, через TTL следующий
-# прогон видит мёртвую серию и удаляет.
+# Поэтому удаляет харнесс, и только по решению e2e_series_should_delete
+# (третий аргумент — id этой серии, пустой считается пустым):
+# маркер отсутствует/пуст/битый, id в нём чужой, id этой серии пуст (одиночный
+# прогон каст не держит) или маркер той же серии старше TTL — delete.
+# keep — только когда id совпал и маркер свежий.
+# SIGKILL раннера маркер не обновляет: mtime застывает, через TTL повтор той же
+# серии видит мёртвую серию и удаляет. Повтор чужой серии удаляет сразу, не
+# дожидаясь TTL: свежий маркер прошлой серии каст этой серии не держит
+# (инцидент 22.11: повтор через 2 ч 04 мин < TTL 10800 с).
 #
 # Где вызывается. До гарда — только из maybe_delete_stale_series_before_guard,
 # и только когда гард #5031 каст не защищает: фаза first или пустая, нет
@@ -443,8 +447,10 @@ refuse_first_mid_series() {  # rc 0 — first честный (серия с ну
 # E2E_MODE_HELD=0 у всех актов, кроме последнего, а trap последнего акта
 # снимает режим уже после того, как каст отработал.
 #
-# log к этому месту ещё не определена (она ниже по файлу). declare -F, а не
-# вызов: вызов дал бы «log: command not found» в stderr и потерял бы строку.
+# log к этому месту ещё не определена (она ниже по файлу): функция зовётся и
+# из maybe_delete_stale_series_before_guard, до source'а либ. Прямой вызов log
+# дал бы «log: command not found» и потерял бы предупреждение. Все строки здесь
+# идут через _series_log: она зовёт log, только если та уже определена.
 #
 # Боевые /data/speakers.db и /data/voice_memory.db здесь не упоминаются:
 # удаляются только e2e-файлы, и только внутри контейнера voice-assistant.
@@ -457,10 +463,10 @@ _series_log() {  # log определена ниже по файлу; до не�
 }
 delete_e2e_db_unless_series_active() {
     local decision
-    decision="$(e2e_series_should_delete "$E2E_SERIES_MARKER" "$E2E_SERIES_TTL_S")"
+    decision="$(e2e_series_should_delete "$E2E_SERIES_MARKER" "$E2E_SERIES_TTL_S" "$E2E_SERIES_ID")"
     case "$decision" in
         keep)
-            _series_log "🔗 серия ${E2E_SERIES_ID:-?} активна (маркер свежее ${E2E_SERIES_TTL_S} с) — e2e-БД не тронуты, каст остаётся следующему акту (issue #5077)"
+            _series_log "🔗 серия ${E2E_SERIES_ID} активна (маркер свежее ${E2E_SERIES_TTL_S} с) — e2e-БД не тронуты, каст остаётся следующему акту (issue #5077)"
             echo "E2E_SERIES keep marker=$(basename "$E2E_SERIES_MARKER")"
             return 0
             ;;
@@ -472,7 +478,7 @@ delete_e2e_db_unless_series_active() {
             return 0
             ;;
     esac
-    _series_log "🧹 серия не активна (маркер отсутствует или старше ${E2E_SERIES_TTL_S} с) — удаляю e2e-БД, чтобы следующий first стартовал с нуля (issue #5077)"
+    _series_log "🧹 серия не активна (маркер отсутствует, чужой серии или старше ${E2E_SERIES_TTL_S} с) — удаляю e2e-БД, чтобы следующий first стартовал с нуля (issue #5077)"
     # E2E_SPEAKERS_DB — офлайн-тест: файл на машине харнесса, робота нет.
     # Без него файл в контейнере voice-assistant, как у _e2e_speaker_profiles.
     if [ -n "${E2E_SPEAKERS_DB:-}" ]; then
@@ -483,7 +489,7 @@ delete_e2e_db_unless_series_active() {
         # в команду не попадают. -wal/-shm — журнал sqlite, без него файл
         # «вернётся» при следующем открытии.
         ${ROBOT_SSH} "docker exec voice-assistant bash -lc 'rm -f -- /data/speakers.e2e.db /data/speakers.e2e.db-wal /data/speakers.e2e.db-shm /data/voice_memory.e2e.db /data/voice_memory.e2e.db-wal /data/voice_memory.e2e.db-shm'" \
-            >/dev/null 2>&1 || log "⚠️ e2e-БД не удалились (контейнер недоступен) — следующий first честно упадёт на гарде, а не сотрёт чужой каст молча (issue #5077)"
+            >/dev/null 2>&1 || _series_log "⚠️ e2e-БД не удалились (контейнер недоступен) — следующий first честно упадёт на гарде, а не сотрёт чужой каст молча (issue #5077)"
     fi
     echo "E2E_SERIES delete"
 }
@@ -826,8 +832,10 @@ leave_e2e_mode() {
     stuck="$(_wait_e2e_followers False)" \
         || log "❌ ВНИМАНИЕ: $stuck не вернулся на боевую БД (e2e_mode_applied≠False) — долгосрочная память пишется в e2e-базу!"
     echo "E2E_MODE off"
-    # #5077: режим снят — e2e-БД больше некому держать, если серия мертва.
-    # Живая серия (маркер свежий) каст не трогает: его подхватит следующий акт.
+    # #5077: режим снят — e2e-БД больше некому держать, если серия мертва или
+    # чужая. Та же серия со свежим маркером каст не трогает: его подхватит
+    # следующий акт. middle/last сюда не доходят (E2E_MODE_HELD=0), каст посреди
+    # серии не теряется.
     delete_e2e_db_unless_series_active
 }
 
