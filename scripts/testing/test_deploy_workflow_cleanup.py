@@ -24,14 +24,24 @@ def test_deploy_workflow_prunes_unused_docker_artifacts_on_all_pis():
     body = steps[CLEANUP_STEP]
     for host in ("env.vision_pi_ip", "env.sound_pi_ip", "env.main_pi_ip"):
         assert host in body, f"очистка не ходит на {host}"
-    assert body.count("docker image prune -af") >= 3, "image prune должен идти на всех трёх Pi"
+    # Issue #5089: `docker image prune -af` снял in-use теги на Main Pi
+    # (деплой №8, run 44991405421). Образы чистит docker_prune_safe.sh.
+    # Старую команду допустимо упоминать только в комментарии.
+    code = [ln for ln in body.splitlines() if not ln.strip().startswith("#")]
+    assert not any("docker image prune" in ln for ln in code), (
+        "image prune снимает теги живых контейнеров (#5089)"
+    )
+    assert (
+        body.count("docker_prune_safe.sh") >= 3
+    ), "безопасная уборка должна идти на всех трёх Pi"
     assert body.count("docker builder prune -af") >= 3, "builder prune должен идти на всех трёх Pi"
 
 
 def test_deploy_workflow_never_prunes_while_stack_is_stopped():
-    """`docker image prune -af` удаляет все образы без контейнеров. Если он
+    """Уборка образов (с #5089 — docker_prune_safe.sh, раньше
+    `docker image prune -af`) удаляет образы без контейнеров. Если она
     выполнится между Stop Containers (`compose down`) и Start Containers,
-    он снесёт образы стека, которые только что скачал/проверил Pull-шаг
+    она снесёт образы стека, которые скачал/проверил Pull-шаг
     (#2930), и `up --pull never` упадёт. Исходно очистка стояла ДО Stop,
     сейчас — после Start; инвариант один: не внутри окна Stop..Start."""
     names = [name for name, _ in _steps(WORKFLOW_PATH.read_text(encoding="utf-8"))]
