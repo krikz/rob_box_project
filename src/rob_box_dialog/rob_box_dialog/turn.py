@@ -637,15 +637,16 @@ def _in_order(scenes: Sequence[Expression]) -> Expression:
     return Shown(**{f.name: getattr(first, f.name) for f in fields(Expression)}, then=tuple(scenes[1:]))
 
 
-def held_expression(expression: Optional[Expression], text: str) -> Optional[Expression]:
+def held_expression(expression: Optional[Expression], text: str,
+                    wake_words: Optional[Sequence[str]] = None) -> Optional[Expression]:
     """Лицо команды без ``play_animation``: время - заказанное моделью (``expression.duration_s``) или, когда
     человек просил показать лицо (``tools_view.show_asked``: «покажи, как тебе грустно», «покажи молча, что ты
     задумался»), по правилу показа ``expression.show_seconds`` (не меньше ``FACE_SHOW_MIN_S``, а не 3 с рефлекса
     ``done``); сцена лица - то же время. Обычный ответ (показ не просили, время не задано) - время рефлекса, как
-    было."""
+    было. ``wake_words`` - таблица вейков хода: ей снимают вейк перед разбором просьбы о тишине (#5105)."""
     if expression is None or not shows(expression.emotion, expression.gesture, expression.face):
         return expression
-    if expression.duration_s is None and not show_asked(text):
+    if expression.duration_s is None and not show_asked(text, wake_words):
         return expression
     seconds = show_seconds(_asked_seconds(expression.duration_s, expression.face))
     face = replace(expression.face, duration_s=seconds) if expression.face is not None else None
@@ -661,7 +662,8 @@ def _scenes_of(face: Optional[Expression]) -> List[Expression]:
 
 
 def command_face(expression: Optional[Expression], results: Sequence[ActionResult], text: str = "",
-                 earlier: Optional[Expression] = None) -> Optional[Expression]:
+                 earlier: Optional[Expression] = None,
+                 wake_words: Optional[Sequence[str]] = None) -> Optional[Expression]:
     """Экспрессия исполненной команды для итога хода; исполненные ``play_animation`` красят итог своими
     сценами по очереди (:func:`shown_face`: «покажи, как тебе грустно» → ``sad``, а не рефлекс ``happy``;
     пачка — первая сцена на итоге, остальные в ``Shown.then``), иначе лицо команды со временем показа
@@ -680,7 +682,7 @@ def command_face(expression: Optional[Expression], results: Sequence[ActionResul
     shown = [shown_face(expression, r.data) for r in results if r.tool == kn.SHOW_TOOL and r.status == "done"]
     kept, fresh = _scenes_of(earlier), [s for s in shown if s is not None and s is not expression]
     scenes = kept + _without_repeat(kept, fresh)
-    return _in_order(scenes) if scenes else held_expression(expression, text)
+    return _in_order(scenes) if scenes else held_expression(expression, text, wake_words)
 
 
 def _scene_key(scene: Expression) -> Tuple[Any, ...]:
@@ -1681,7 +1683,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     results = await engine._execute(turn, invalid.salvage, snap)
     if engine._stale(turn, "results"):
         return None
-    turn.expression = command_face(expression, results, turn.text, earlier=turn.expression)
+    turn.expression = command_face(expression, results, turn.text, earlier=turn.expression, wake_words=turn.wake_words)
     read = not last and any(r.cls == _QUERY for r in results)
     more = query_more(engine, turn, results) if read else None
     if more is not None:
@@ -1715,7 +1717,8 @@ def _salvaged_phrase(engine: "TurnEngine", turn: _Turn, invalid: Invalid, result
     if queried:
         return " ".join(text for text in (said, query_fallback(queried)) if text)
     snap = engine.session.snapshot
-    if said or (results and not words_owed(snap, turn.text, Command(actions=tuple(invalid.salvage)))):
+    salvage = Command(actions=tuple(invalid.salvage))
+    if said or (results and not words_owed(snap, turn.text, salvage, turn.wake_words)):
         return said or ""
     if invalid.reason == kn.VIOLATION_MUSIC_PROMISE:
         return engine._pick(music_promise_key(turn.music_stopped, snap.music_playing))
@@ -1761,12 +1764,17 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 
 
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
-    """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
-    адресованную реплику (:func:`words_owed`; и подхват бэклога), звук без слов на вопрос после чтения
-    (:func:`sound_owed`), ответ о каталоге звуков/голосов без его данных (:func:`catalog_owed`), только текст в чат на
-    просьбу сделать роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
-    из :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
+    """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: ответ о каталоге
+    звуков/голосов без его данных (:func:`catalog_owed` — раньше общего молчания: после повтора код сам читает тул
+    каталога, а не говорит «я на связи»), голый неслышимый ответ на адресованную реплику (:func:`words_owed`; и подхват
+    бэклога), звук без слов на вопрос после чтения (:func:`sound_owed`), только текст в чат на просьбу сделать роботом
+    (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи из
+    :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
     состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
+    # каталог раньше silent_answer (#5104): у молчания в ``_OWED`` нет ``reads``, и сальваж не читал тул каталога
+    catalog = catalog_owed(snapshot, turn, cmd)
+    if catalog:
+        return catalog
     silent = words_owed(snapshot, turn.text, cmd, turn.wake_words) or read_owed(snapshot, turn, cmd)
     if silent:
         return kn.VIOLATION_SILENT_ANSWER
@@ -1774,9 +1782,6 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
         return kn.VIOLATION_KNOWN_VOICE_REGISTER
     if sound_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SOUND_ANSWER
-    catalog = catalog_owed(snapshot, turn, cmd)
-    if catalog:
-        return catalog
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
     if foreign_name.offending(cmd, names):
@@ -2014,7 +2019,7 @@ def start_chain(engine: "TurnEngine", turn: _Turn, cmd: Command, actions: Sequen
 
     chain = action_chain.chain_of(actions)
     turn.stage, turn.status, turn.reason = "done", "done", turn.reason or "chain"
-    turn.expression = command_face(cmd.expression, (), turn.text, earlier=turn.expression)
+    turn.expression = command_face(cmd.expression, (), turn.text, earlier=turn.expression, wake_words=turn.wake_words)
     if action_chain.over_limit(chain):
         engine._log.warning(f"{LOG_MARK} вереница за лимитом {chain.task}: шагов {len(chain.steps)}, поездок "
                             f"{chain.trips} - не начинается turn={turn.turn_id}")
@@ -2519,7 +2524,8 @@ class TurnEngine:
         if self._stale(turn, "results"):
             return None
         if face_group.returns_to_model(turn.text, last, results):
-            turn.expression = command_face(turn.expression, results, turn.text, earlier=turn.expression)
+            turn.expression = command_face(turn.expression, results, turn.text, earlier=turn.expression,
+                                           wake_words=turn.wake_words)
             return query_more(self, turn, results, cmd.expression.emotion)
         self._speak(turn, fresh, results, unread=unanswered(cmd, fresh, runnable))
         return None
@@ -2530,7 +2536,8 @@ class TurnEngine:
         ``unread`` — модель не дала ответа сверх сделанного (:func:`unanswered`: на последней итерации ещё просила
         ``query`` или только повторила исполненное): слов её не слышно — говорит код по данным хода
         (:func:`_close_unread`), без грусти, если это ответ по данным (:func:`query_emotion`)."""
-        turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression)
+        turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression,
+                                       wake_words=turn.wake_words)
         outcome = _spoken_outcome(cmd, unsaid_stops(turn, results), self.session.snapshot.agent, self.log.performing())
         outcome = replace_timeout_outcome(self, turn, results, outcome)  # прежний сет звучит - не «не заиграла» (#4479)
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
