@@ -1758,21 +1758,23 @@ def robot_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
 
 
 def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: Collection[str] = ()) -> str:
-    """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: голый неслышимый ответ на
-    адресованную реплику (:func:`words_owed`; и подхват бэклога), звук без слов на вопрос после чтения
-    (:func:`sound_owed`), ответ о каталоге звуков/голосов без его данных (:func:`catalog_owed`), только текст в чат на
-    просьбу сделать роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
-    из :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
+    """Ответ модели не тот, что ждёт человек, — причина нарушения (:data:`_OWED`), иначе «»: ответ о каталоге
+    звуков/голосов без его данных (:func:`catalog_owed` — раньше общего молчания: после повтора код сам читает тул
+    каталога, а не говорит «я на связи»), голый неслышимый ответ на адресованную реплику (:func:`words_owed`; и подхват
+    бэклога), звук без слов на вопрос после чтения (:func:`sound_owed`), только текст в чат на просьбу сделать роботом
+    (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи из
+    :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
     состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
+    # каталог раньше silent_answer (#5104): у молчания в ``_OWED`` нет ``reads``, и сальваж не читал тул каталога
+    catalog = catalog_owed(snapshot, turn, cmd)
+    if catalog:
+        return catalog
     if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SILENT_ANSWER
     if known_voice_registers(turn_speaker(snapshot, turn), turn.text, cmd.actions, wake_words=turn.wake_words):
         return kn.VIOLATION_KNOWN_VOICE_REGISTER
     if sound_owed(snapshot, turn, cmd):
         return kn.VIOLATION_SOUND_ANSWER
-    catalog = catalog_owed(snapshot, turn, cmd)
-    if catalog:
-        return catalog
     if robot_owed(snapshot, turn, cmd):
         return kn.VIOLATION_REMOTE_OWED
     if foreign_name.offending(cmd, names):
