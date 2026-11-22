@@ -147,6 +147,12 @@ E2E_SILERO_SAMPLE_RATE="${E2E_SILERO_SAMPLE_RATE:-48000}"
 # если фича-ассерт (patterns/acceptance/GATE-1) зафейлился — это баг кода,
 # а НЕ «робот не ответил» (иначе e2e-process классифицирует как infra).
 E2E_FAIL_KIND=""
+# Сколько шагов акта получили ПОДТВЕРЖДЁННЫЙ цикл (run_step вернул 0: акцепт и
+# закрытый ход, в обоих режимах судьи). Ноль к моменту GATE-1 значит: робот не
+# ответил ни на один шаг, и провал агрегата (ноль вызовов тулов) -- следствие
+# молчания, а не «ответил, но не сделал». Без этого счётчика GATE-1 перекрашивал
+# молчание в feature, и гард марафона не останавливал акт (run 44963710006).
+E2E_CONFIRMED_CYCLES=0
 
 # RUN_ID — уникальный идентификатор прогона. Используем github.run_id если
 # передан (workflow L-E2E Voice Test.yml передаёт GITHUB_RUN_ID в env), иначе
@@ -2997,6 +3003,10 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     [ -n "${E2E_STT_MAX_ATTEMPTS:-}" ] || E2E_STT_MAX_ATTEMPTS="$(python3 "$(_events_py)" stt-retry --text "говори" --heard "колории" --attempt 1 --missing "говори" --allowed 1 | _ev_kv max)"
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
+        # silent_ok -- ход завершён без речи (rc=0 ниже, но робот не ответил). Флаг
+        # per-attempt: без сброса здесь протечёт на следующую попытку и спрячет
+        # настоящий ответ. Счётчик подтверждённых циклов такие шаги не считает.
+        _silent_ok=0
         if [ -n "$accepted_before" ]; then
             # ПРИНЯТО уже зафиксировано на предыдущей проверке этого шага —
             # НЕ переигрываем команду повторно (issue #2933: дубли на
@@ -3142,12 +3152,24 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             if [ "$rc" != "0" ] && [ "$rc" != "2" ] && [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && [ "${E2E_REPLY_NO_SPEECH:-0}" = "1" ]; then
                 log "STEP ${label}: ход завершён без речи (📊 [turn] stage=done, SpeechEvent нет) -- шаг помечен silent_ok"
                 rc=0
+                # Речи не было: rc=0 здесь -- не ответ робота, счётчик подтверждённых
+                # циклов его не считает (иначе GATE-1 перекрасит молчание в feature).
+                _silent_ok=1
             fi
         fi
         log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s, silence_after=${E2E_STEP_SILENCE_SEC:-0}s (wait=${E2E_WAIT_MODE})"
         if [ "$rc" = "0" ]; then
             log "STEP ${label}: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)"
             reaction=1
+            # rc=0 -- шаг, где робот реально ответил: полный цикл (оба судьи сходятся
+            # здесь) либо якорь barge_in (он невозможен без ПРИНЯТО, реакция была).
+            # silent_ok сюда тоже приходит с rc=0, но речи там не было -- такие шаги
+            # не считаем, иначе ноль настоящих ответов GATE-1 перекрасит в feature
+            # (run 44963710006). `${...:-0}` -- чтобы set -u не рвался, когда run_step
+            # зовут отдельно от главного скрипта (юнит-тесты харнесса).
+            if [ "${_silent_ok:-0}" != "1" ]; then
+                E2E_CONFIRMED_CYCLES=$((${E2E_CONFIRMED_CYCLES:-0} + 1))
+            fi
             break
         elif [ "$rc" = "2" ]; then
             log "STEP ${label}: ❌ LLM/TTS ERROR — тест красный, не чиним"
@@ -4203,9 +4225,22 @@ sys.stdout.write(robot_speech(sys.stdin.read()))
             check_gate1_aggregate "$ACCEPTANCE_FILE" "${E2E_RUN_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
             if [ $? != 0 ]; then
                 PASS=0
-                mark_fail_kind feature
-                log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
-                echo "E2E_GATE1_FAIL"
+                # feature честен только если робот ХОТЬ РАЗ ответил: «ответил, но не
+                # сделал нужный вызов». Ноль подтверждённых циклов -- робот молчал, и
+                # ноль вызовов тулов есть следствие молчания, а не отдельная находка.
+                # Иначе вид no_reaction (его уже поставили упавшие шаги) перекрашивается
+                # в feature, маркер акта врёт «E2E_FEATURE_FAIL», и гард марафона
+                # (run_night_marathon.sh, STOP_ON_FOUNDATION_FAIL) не останавливает акт,
+                # который не ответил ни на один шаг (run 44963710006, 10/10
+                # cycle_unconfirmed_after_accept).
+                if [ "${E2E_CONFIRMED_CYCLES:-0}" -gt 0 ]; then
+                    mark_fail_kind feature
+                    log "GATE-1: ❌ aggregate acceptance FAIL (см. $OUT_DIR/acceptance.json)"
+                    echo "E2E_GATE1_FAIL"
+                else
+                    log "GATE-1: ❌ aggregate acceptance FAIL, но подтверждённых циклов 0 -- это молчание, не фича: вид не повышаю до feature (см. $OUT_DIR/acceptance.json)"
+                    echo "E2E_GATE1_FAIL_NO_CYCLE"
+                fi
             else
                 log "GATE-1: ✅ aggregate acceptance PASS"
                 echo "E2E_GATE1_OK"
