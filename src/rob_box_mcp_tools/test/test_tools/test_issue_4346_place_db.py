@@ -15,9 +15,11 @@ from rob_box_mcp_tools.map_places import (
     LEGACY_DB_PATH,
     PlacePathError,
     is_legacy_db_path,
+    is_place_db_path,
     legacy_db_path,
     place_db_path,
     place_slug,
+    same_place_path,
 )
 from rob_box_mcp_tools.waypoint_store import WaypointStore
 
@@ -91,6 +93,13 @@ def test_place_slug_rejects_empty_slash_and_dotdot(bad):
         place_slug(bad)
     with pytest.raises(PlacePathError):
         place_db_path(bad)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [None, 12, b"ceh", ["цех"]])
+def test_place_slug_rejects_non_string(bad):
+    with pytest.raises(PlacePathError):
+        place_slug(bad)
 
 
 @pytest.mark.unit
@@ -181,3 +190,74 @@ def test_old_rows_without_path_still_read(tmp_path):
     rows = {row["name"]: row["db_path"] for row in store.list_maps()}
     assert rows["двор"] is None
     assert rows["квартира"] == place_db_path("квартира")
+
+
+@pytest.mark.unit
+def test_slug_collision_stores_null_on_the_second_map(tmp_path):
+    """«хил-офис» и «hil-ofis» — один slug. Второй путь не пишем, файл не трогаем."""
+    store = WaypointStore(db_path=str(tmp_path / "maps.db"))
+    store.create_map("хил-офис")
+    first = store.get_active_map()
+    assert first["db_path"] == "/maps/hil-ofis/rtabmap.db"
+    assert same_place_path("хил-офис", "hil-ofis")
+
+    store.create_map("hil-ofis")
+    second = store.get_active_map()
+    assert second["name"] == "hil-ofis"
+    assert second["db_path"] is None
+    rows = {row["name"]: row["db_path"] for row in store.list_maps()}
+    assert rows["хил-офис"] == "/maps/hil-ofis/rtabmap.db"
+    assert rows["hil-ofis"] is None
+
+
+@pytest.mark.unit
+def test_explicit_legacy_root_is_stored_as_null(tmp_path):
+    store = WaypointStore(db_path=str(tmp_path / "maps.db"))
+    store.create_map("цех", db_path="/maps/rtabmap.db")
+    assert store.get_active_map()["name"] == "цех"
+    assert store.get_active_map()["db_path"] is None
+
+
+@pytest.mark.unit
+def test_explicit_valid_place_path_is_still_written(tmp_path):
+    store = WaypointStore(db_path=str(tmp_path / "maps.db"))
+    store.create_map("цех", db_path="/maps/ceh/rtabmap.db")
+    assert store.get_active_map()["db_path"] == "/maps/ceh/rtabmap.db"
+
+
+@pytest.mark.unit
+def test_rename_map_does_not_move_db_path(tmp_path):
+    """Шаг 1 путь при переименовании не чинит. Чинка — шаг 2."""
+    store = WaypointStore(db_path=str(tmp_path / "maps.db"))
+    map_id = store.create_map("цех")
+    assert store.rename_map(map_id, "хил-офис") is True
+    active = store.get_active_map()
+    assert active["name"] == "хил-офис"
+    assert active["db_path"] == "/maps/ceh/rtabmap.db"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "/maps/rtabmap.db",
+        "/maps/../rtabmap.db",
+        "/maps/ceh/../rtabmap.db",
+        "/maps/foo/../ceh/rtabmap.db",
+        "/other/ceh/rtabmap.db",
+        "/maps/ceh/other.db",
+        "/maps//rtabmap.db",
+        "",
+        None,
+        12,
+        b"/maps/ceh/rtabmap.db",
+    ],
+)
+def test_is_place_db_path_rejects_root_dotdot_foreign_empty_nonstr(bad):
+    assert is_place_db_path(bad) is False
+
+
+@pytest.mark.unit
+def test_is_place_db_path_accepts_only_a_place_file():
+    assert is_place_db_path("/maps/ceh/rtabmap.db") is True
+    assert is_place_db_path(place_db_path("мастерская")) is True

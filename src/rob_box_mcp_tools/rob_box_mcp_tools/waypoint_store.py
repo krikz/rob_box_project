@@ -54,7 +54,11 @@ from typing import Dict, List, Optional
 
 from rob_box_core import migrations as core_migrations
 from rob_box_core.tools_db import waypoint_db_path
-from rob_box_mcp_tools.map_places import PlacePathError, place_db_path
+from rob_box_mcp_tools.map_places import (
+    PlacePathError,
+    is_place_db_path,
+    place_db_path,
+)
 
 #: Схема карт и точек - шаг потока миграций ядра (данные пакета ``rob_box_core.migrations``, ADR-0167 Ш1а).
 #: Раньше файл искался в корне чекаута (``parents[4]``), а на роботе его там не было - шла копия DDL в коде.
@@ -66,16 +70,37 @@ def map_name_key(name: Optional[str]) -> str:
     return (name or "").strip().casefold()
 
 
-def _map_db_path(name: Optional[str], db_path: Optional[str]) -> Optional[str]:
-    """Путь, который пишем в ``maps.db_path``: явный, из имени, или ``None``."""
+def _occupied_db_paths(conn: sqlite3.Connection) -> set:
+    """Уже записанные пути баз. ``NULL`` не занимает слот: это «пути нет»."""
+    rows = conn.execute(
+        "SELECT db_path FROM maps WHERE db_path IS NOT NULL"
+    ).fetchall()
+    return {row["db_path"] for row in rows}
+
+
+def _map_db_path(
+    name: Optional[str],
+    db_path: Optional[str],
+    occupied: Optional[set] = None,
+) -> Optional[str]:
+    """Путь в ``maps.db_path``: проверенный явный, из имени, или ``None``.
+
+    Явный путь принимается только если :func:`is_place_db_path`. Иначе, и при
+    коллизии с уже записанным путём, — ``None`` (``NULL``): безопасного
+    уникального пути нет. Файл не двигается и не удаляется.
+    """
     if db_path is not None:
-        return db_path
-    if not name or not str(name).strip():
+        candidate = db_path if is_place_db_path(db_path) else None
+    elif not name or not str(name).strip():
+        candidate = None
+    else:
+        try:
+            candidate = place_db_path(name)
+        except PlacePathError:
+            candidate = None
+    if candidate is not None and occupied and candidate in occupied:
         return None
-    try:
-        return place_db_path(name)
-    except PlacePathError:
-        return None
+    return candidate
 
 
 def _map_row(row: sqlite3.Row) -> Dict:
@@ -154,19 +179,19 @@ class WaypointStore:
         """Create a new map entry and make it the active map.
 
         ``db_path`` — путь базы места (#4346). Не передан — считается из имени
-        через :func:`rob_box_mcp_tools.map_places.place_db_path`. Имени нет или
-        из него не выходит безопасный slug — в колонку пишется ``NULL`` (как у
-        строк до колонки), исключение наружу не лезет: картографирование без
-        имени места не должно падать из-за пути, который тулы ещё не читают.
-        Явно переданный путь пишется как есть (вызывающий уже выбрал файл).
+        через :func:`rob_box_mcp_tools.map_places.place_db_path`. Имени нет,
+        slug небезопасен, явный путь не ``/maps/<slug>/rtabmap.db`` или такой
+        путь уже записан у другой карты — в колонку пишется ``NULL``. Файл при
+        коллизии не двигается и не удаляется. Исключение наружу не лезет:
+        тулы этот путь ещё не читают.
 
         Returns the generated ``map_id`` (UUID4 string).
         """
         map_id = str(uuid.uuid4())
         now = time.time()
-        stored_path = _map_db_path(name, db_path)
 
         with self._lock:
+            stored_path = _map_db_path(name, db_path, _occupied_db_paths(self._conn))
             cur = self._conn.cursor()
             # Deactivate all previous maps
             cur.execute("UPDATE maps SET is_active = 0 WHERE is_active = 1")
@@ -201,7 +226,7 @@ class WaypointStore:
         return _map_row(row)
 
     def rename_map(self, map_id: str, name: str) -> bool:
-        """Set a human-friendly name for a map.  Returns True if updated."""
+        """Переименовать карту. ``db_path`` не двигает — это шаг 2 (#4346)."""
         with self._lock:
             cur = self._conn.execute(
                 "UPDATE maps SET name = ? WHERE map_id = ?", (name, map_id)
