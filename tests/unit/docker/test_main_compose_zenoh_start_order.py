@@ -4,13 +4,16 @@
 нод ломал nav2 в 3 опытах из 4 (паника zenoh `Invalid Key Expr` → Aborted, либо
 молчащие сервисы controller_server); четвёртый одновременный старт — при
 восстановлении стенда — прошёл. Гонка вероятностная, не гарантированная.
-Двухфазный старт «роутер healthy, затем остальные» дал healthy nav2 2/2 за 60 с,
-и сам `depends_on: zenoh-router: condition: service_healthy` — 2/2 (22:18Z, 22:23Z):
-12 замеров до t=240s, nav2 healthy, роутер healthy, 12 контейнеров Up,
-`/controller_server` active, паник zenoh 0 (healthy-статус есть только у nav2 и
-роутера — у imu-filter, lslidar, rtabmap, robot-state-publisher healthcheck нет).
-Порядок подтверждён замером, но
-защищает он от вероятностной гонки, а не от детерминированного отказа. Поэтому у
+Двухфазный старт «роутер healthy, затем остальные» дал healthy nav2 2/2 за 60 с.
+Сам `depends_on: zenoh-router: condition: service_healthy` — 4 успешных старта из
+5 (22:18–23:10Z): 12 замеров до t=240s, nav2 healthy, роутер healthy,
+12 контейнеров Up, `/controller_server` active, паник zenoh 0 (healthy-статус есть
+только у nav2 и роутера — у imu-filter, lslidar, rtabmap,
+robot-state-publisher healthcheck нет). Пятый старт (22:55Z) упал при
+соблюдённом порядке — паника `Invalid Key Expr` с пустым/битым keyexpr уже
+после healthy-роутера, поэтому порядок гонку не устраняет, а «снижает частоту»
+статистически не доказано (4/5 против 1/4, точный тест Фишера p ≈ 0,17).
+Порядок защищает от вероятностной гонки, а не от детерминированного отказа. Поэтому у
 всех зависимых сервисов `depends_on` на zenoh-router — длинная форма с
 `condition: service_healthy`, а не короткий список.
 
