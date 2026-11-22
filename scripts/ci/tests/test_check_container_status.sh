@@ -157,8 +157,11 @@ inspect() {  # $1=name $2=status $3=health $4=restarts $5=exitcode [$6=started_a
 #   FIXTURE1        = содержимое sample #1 (один или несколько JSONL)
 #   FIXTURE2        = содержимое sample #2
 #   LABEL           = человекочитаемое имя кейса
+#   EXPECT_PENDING  = "true" | "false" | "" (пусто = не проверять; старые
+#                     кейсы не знают про pending_start, issue #5114)
 run_case() {
     local expect_healthy="$1" expect_failed="$2" fix1="$3" fix2="$4" label="$5"
+    local expect_pending="${6:-}"
 
     local fixture_dir
     fixture_dir="$(mktemp -d)"
@@ -193,7 +196,7 @@ run_case() {
 
     # Берём JSON результат. Скрипт печатает один JSON-объект в stdout.
     local result
-    result="$(echo "$stdout" | jq -c 'select(.healthy != null) | {healthy, failed_count}' 2>/dev/null | tail -n 1 || true)"
+    result="$(echo "$stdout" | jq -c 'select(.healthy != null) | {healthy, failed_count, pending_start}' 2>/dev/null | tail -n 1 || true)"
     if [ -z "$result" ]; then
         printf '%s  [ %s ] no JSON result from script — subshell failed\n' "$RED" "$label" >&2
         printf '    stdout: %s\n' "$stdout" >&2
@@ -209,6 +212,9 @@ run_case() {
     printf '  [%s]\n' "$label"
     assert_eq "$got_healthy" "$expect_healthy" "healthy"
     assert_eq "$got_failed" "$expect_failed" "failed_count"
+    if [ -n "$expect_pending" ]; then
+        assert_eq "$(echo "$result" | jq -r '.pending_start')" "$expect_pending" "pending_start"
+    fi
 }
 
 # --- cases ------------------------------------------------------------------
@@ -291,6 +297,32 @@ run_case false 1 "$FIX1" "$FIX1" "M: unhealthy, container age 120s > start_perio
 FIX1="$(inspect perception running unhealthy 1 0 "$YOUNG_STARTED" "$START_PERIOD_NS")"
 FIX2="$(inspect perception running unhealthy 2 0 "$YOUNG_STARTED" "$START_PERIOD_NS")"
 run_case false 1 "$FIX1" "$FIX2" "N: restarts grew 1→2 inside start_period → still failed (restart rule unchanged)"
+
+# Кейсы O-S (issue #5114): health=starting — не здоровье.
+# Ретро run 45019034598: nav2 на обоих замерах health=starting, restarts=0,
+# а шаг статуса написал «All Main Pi containers running and confirmed stable».
+# Docker не выносит вердикт, пока идёт start_period, поэтому starting внутри
+# окна — не провал (failed_count=0), но и не healthy: pending_start=true,
+# вызывающий должен дождаться конца окна и смерить снова. После окна
+# starting — провал с reason=starting_after_start_period.
+NAV2_START_PERIOD_NS=90000000000  # 90s, как у nav2 (docker/main/docker-compose.yaml)
+
+FIX1="$(inspect nav2 running starting 0 0 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
+run_case false 1 "$FIX1" "$FIX1" "O: starting on both samples, age 120s > start_period 90s → failed (issue #5114)" false
+
+FIX1="$(inspect nav2 running starting 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
+run_case false 0 "$FIX1" "$FIX1" "P: starting on both samples, age 5s < start_period 90s → not healthy, not failed (issue #5114)" true
+
+FIX1="$(inspect nav2 running healthy 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
+FIX2="$(inspect nav2 running starting 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
+run_case false 0 "$FIX1" "$FIX2" "Q: starting only in sample #2 inside window → not healthy, not failed (issue #5114)" true
+
+FIX1="$(inspect nav2 running starting 0 0)"
+run_case false 1 "$FIX1" "$FIX1" "R: starting with no start_period data → failed, no grace (issue #5114)" false
+
+FIX1="$(inspect nav2 running starting 1 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
+FIX2="$(inspect nav2 running starting 2 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
+run_case false 1 "$FIX1" "$FIX2" "S: RestartCount grew 1→2 while starting inside window → still failed (restart rule unchanged)" false
 
 # --- summary ----------------------------------------------------------------
 

@@ -16,7 +16,10 @@ WHITESPACE_RE = re.compile(r"\s+")
 SIGNATURE_MARKER_RE = re.compile(r"<!--\s*deploy-signature:\s*(.*?)\s*-->")
 
 CRITICAL_MATCH_RE = re.compile(
-    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped",
+    # illegal instruction / sigill — glibc печатает «Illegal instruction» на
+    # SIGILL (issue #5114, run 45019034598: controller_server умер
+    # `[ros2run]: Illegal instruction`, а сканер логов это не считал critical).
+    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped|illegal instruction|sigill",
     re.IGNORECASE,
 )
 WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)

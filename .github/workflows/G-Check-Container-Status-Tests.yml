@@ -26,6 +26,8 @@ on:
     paths:
       - 'scripts/ci/check_container_status.sh'
       - 'scripts/ci/tests/test_check_container_status.sh'
+      - 'scripts/ci/wait_nav2_active.sh'
+      - 'scripts/ci/tests/test_wait_nav2_active.sh'
       # ADR-0166: остальные скрипты проверки деплоя (L-Deploy and Verify)
       # переехали сюда из .github/scripts/ вместе с тестами, которые раньше
       # не звал ни один workflow.
@@ -35,6 +37,8 @@ on:
       - 'scripts/ci/tests/test_check_set_voice_traffic.sh'
       - 'scripts/ci/tests/test_check_container_logs.py'
       - 'scripts/ci/tests/test_deployment_issue_dedup*.py'
+      - 'scripts/ci/tests/test_deploy_hil_lock_no_issue.py'
+      - '.github/workflows/L-Deploy and Verify.yml'
       - '.github/workflows/G-Check-Container-Status-Tests.yml'
   workflow_dispatch:
 
@@ -68,12 +72,15 @@ jobs:
           # shellcheck старой версии ругается на subshell-сценарии).
           shellcheck -e SC2086,SC2030,SC2031 \
             scripts/ci/check_container_status.sh \
-            scripts/ci/tests/test_check_container_status.sh
+            scripts/ci/tests/test_check_container_status.sh \
+            scripts/ci/wait_nav2_active.sh \
+            scripts/ci/tests/test_wait_nav2_active.sh
 
       - name: Run regression test
         run: |
           set -euo pipefail
           bash scripts/ci/tests/test_check_container_status.sh
+          bash scripts/ci/tests/test_wait_nav2_active.sh
 
       # ADR-0166: тесты остальных скриптов шага проверки деплоя.
       - name: Run set_voice traffic test
@@ -84,11 +91,12 @@ jobs:
       - name: Run container logs + deployment issue dedup tests
         run: |
           set -euo pipefail
-          python3 -m pip install --quiet pytest
+          python3 -m pip install --quiet pytest pyyaml
           python3 -m pytest \
             scripts/ci/tests/test_check_container_logs.py \
             scripts/ci/tests/test_deployment_issue_dedup.py \
             scripts/ci/tests/test_deployment_issue_dedup_monitoring_noise.py \
             scripts/ci/tests/test_deployment_issue_dedup_telegram.py \
             scripts/ci/tests/test_deployment_issue_dedup_vesc_segfault.py \
+            scripts/ci/tests/test_deploy_hil_lock_no_issue.py \
             -v -o addopts="" -p no:cacheprovider

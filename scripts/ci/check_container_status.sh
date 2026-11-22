@@ -32,7 +32,15 @@
 #      Config.Healthcheck.StartPeriod — не провал. После окна — провал,
 #      как раньше. Поднимать start_period «на глаз» нельзя: лечит один
 #      сервис и прячет долгий старт.
-#   4. RestartCount вырос между замерами        → провал (та самая гонка)
+#   4. Health.Status=starting в любом замере    → не здоровье (issue #5114).
+#      Внутри start_period Docker ещё не обязан вынести вердикт — это не
+#      провал, но и не healthy: stdout несёт pending_start, workflow ждёт
+#      конца окна и мерит снова. После окна starting — провал
+#      (reason=starting_after_start_period): run 45019034598 счёл nav2
+#      здоровым, пока health=starting на обоих замерах, а controller_server
+#      уже умер SIGILL. Нет start_period или StartedAt не разобрался —
+#      льготы нет, starting остаётся провалом (как unhealthy без окна).
+#   5. RestartCount вырос между замерами        → провал (та самая гонка)
 #
 # Контрактно важно: правило «exited → провал» НЕ применяется к
 # one-shot init-контейнерам (voice-resources-init и подобные) с
@@ -45,7 +53,10 @@
 #   * принимает SSH-параметры через env (PI_HOST, PI_USER, PI_PASSWORD,
 #     PI_COMPOSE_DIR, PI_SSH_OPTS);
 #   * печатает JSON-результат `{healthy: bool, failed_count: int,
-#     findings: [...]}` в stdout — workflow его парсит и пишет outputs.
+#     pending_start: bool, pending: [{name, started_at, start_period_ns}]}`
+#     в stdout — workflow его парсит и пишет outputs. pending_start=true,
+#     только если провалов нет, а хотя бы один контейнер ещё starting
+#     внутри своего start_period: healthy при этом false (issue #5114).
 #   * в stderr — диагностика (как в workflow).
 #   * в FINDINGS_FILE (env) — JSONL одна запись на каждый failed-контейнер
 #     (для совместимости с остальным deploy-verify pipeline).
@@ -139,6 +150,8 @@ if [ -n "$SAMPLE2" ]; then
 fi
 
 FAILED_COUNT=0
+PENDING_FILE="$(mktemp)"
+trap 'rm -f "$PENDING_FILE"' EXIT
 : > "$SUMMARY_FILE"
 
 NAMES="$(echo "$SAMPLE2" | jq -r '.name' 2>/dev/null | sort -u || true)"
@@ -179,13 +192,27 @@ for name in $NAMES; do
         REASON="State.Status=dead"
     elif [ "$ST1" = "restarting" ] && [ "$ST2" = "restarting" ]; then
         REASON="State.Status=restarting (confirmed at t=0s and t=${CONFIRM_INTERVAL}s)"
+    elif [ -n "$RC1" ] && [ "$RC2" -gt "$RC1" ] 2>/dev/null; then
+        # Раньше health-веток: рост RestartCount — падение между замерами,
+        # даже если контейнер ещё starting/unhealthy внутри start_period.
+        REASON="RestartCount grew during the ${CONFIRM_INTERVAL}s confirmation window: $RC1 -> $RC2 (container crashed while being checked)"
     elif { [ "$HE2" = "unhealthy" ] || [ "$HE1" = "unhealthy" ]; } \
         && ! within_start_period "$SA" "$SP" "$(date +%s)"; then
         # issue #5012: unhealthy внутри start_period — не провал (Docker ещё
         # не считает пробы окна). После окна и без данных об окне — провал.
         REASON="Health.Status=unhealthy"
-    elif [ -n "$RC1" ] && [ "$RC2" -gt "$RC1" ] 2>/dev/null; then
-        REASON="RestartCount grew during the ${CONFIRM_INTERVAL}s confirmation window: $RC1 -> $RC2 (container crashed while being checked)"
+    elif { [ "$HE2" = "starting" ] || [ "$HE1" = "starting" ]; }; then
+        # issue #5114: starting — не здоровье ни внутри окна, ни после.
+        # Внутри окна это не провал (Docker ещё не вынес вердикт); после окна
+        # и без данных об окне — провал, reason=starting_after_start_period.
+        if within_start_period "$SA" "$SP" "$(date +%s)"; then
+            log "⏳ $name: Health.Status=starting inside start_period (not healthy, not failed yet)"
+            jq -nc --arg name "$name" --arg started_at "$SA" --argjson start_period_ns "$SP" \
+                '{name:$name, started_at:$started_at, start_period_ns:$start_period_ns}' \
+                >> "$PENDING_FILE"
+        else
+            REASON="reason=starting_after_start_period (Health.Status=starting after Config.Healthcheck.StartPeriod)"
+        fi
     fi
 
     if [ -n "$REASON" ]; then
@@ -246,13 +273,24 @@ for expected in ${EXPECTED_CONTAINERS:-}; do
 done
 
 # Печатаем JSON для workflow (он парсит через jq).
+# starting внутри окна — не провал (failed_count не растёт), но и не здоровье:
+# pending_start говорит вызывающему, что надо дождаться конца окна и смерить
+# снова (issue #5114). Провал рядом глушит pending: ждать уже нечего.
 HEALTHY_BOOL="true"
+PENDING_START="false"
 [ "$FAILED_COUNT" -gt 0 ] && HEALTHY_BOOL="false"
+if [ "$FAILED_COUNT" -eq 0 ] && [ -s "$PENDING_FILE" ]; then
+    HEALTHY_BOOL="false"
+    PENDING_START="true"
+fi
+PENDING_JSON="$(jq -sc '.' "$PENDING_FILE")"
 
 jq -nc \
     --argjson healthy "$( [ "$HEALTHY_BOOL" = "true" ] && echo true || echo false )" \
     --argjson failed_count "$FAILED_COUNT" \
-    '{healthy: $healthy, failed_count: $failed_count}'
+    --argjson pending_start "$( [ "$PENDING_START" = "true" ] && echo true || echo false )" \
+    --argjson pending "$PENDING_JSON" \
+    '{healthy: $healthy, failed_count: $failed_count, pending_start: $pending_start, pending: $pending}'
 
 # Через env, переданный через source, отдаём обратно в workflow.
 # Workflow вызывает `source` и читает HEALTHY_RESULT/FAILED_COUNT_RESULT.

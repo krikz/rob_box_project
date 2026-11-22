@@ -1834,3 +1834,22 @@ def test_rtabmap_other_compute_warning_still_reports() -> None:
 
     assert line is not None
     assert "Out of memory" in line
+
+
+def test_illegal_instruction_is_critical_in_main_scope() -> None:
+    """Issue #5114 (deploy run 45019034598): controller_server умер SIGILL.
+
+    glibc на aarch64 печатает «Illegal instruction», а python-ros2run
+    переписывает это как `[ros2run]: Illegal instruction`. До #5114
+    CRITICAL_MATCH_RE знал только «segmentation fault» / «core dumped»,
+    и строка не поднимала critical_count. Обе формы — critical в scope
+    main, где живёт nav2.
+    """
+    for log_text in (
+        "[ros2run]: Illegal instruction",
+        "controller_server[42]: Illegal instruction (core dumped)",
+        "process 1234 received SIGILL",
+    ):
+        line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+        assert line is not None, log_text
+        assert line == log_text

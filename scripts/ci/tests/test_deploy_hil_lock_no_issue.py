@@ -69,20 +69,27 @@ def test_hil_step_marks_only_real_lock(tmp_path, check_rc, expect_output):
     assert out.strip() == expect_output
 
 
-def _summary_status(tmp_path, hil_locked: str) -> str:
+def _summary(tmp_path, hil_locked: str):
     step = _step(id="deploy_summary")
     subst = {"steps.hil_lock.outputs.hil_locked": hil_locked, "job.status": "failure"}
-    rc, out = _run(step["run"], tmp_path, subst)
-    assert rc == 0
-    return dict(line.split("=", 1) for line in out.split())["deploy_status"]
+    return _run(step["run"], tmp_path, subst)
 
 
 def test_summary_marks_hil_lock_separately(tmp_path):
-    assert _summary_status(tmp_path, "true") == "hil_locked"
+    # Замок — намеренный отказ, не сбой деплоя: шаг остаётся зелёным.
+    rc, out = _summary(tmp_path, "true")
+    assert rc == 0
+    assert dict(line.split("=", 1) for line in out.split())["deploy_status"] == "hil_locked"
 
 
 def test_summary_without_lock_still_reports_issues(tmp_path):
-    assert _summary_status(tmp_path, "") == "issues"
+    # Issue #5114: ветка issues обязана валить шаг (exit 1), а не только
+    # писать deploy_status. До этого джоба оставалась зелёной при мёртвом nav2
+    # (run 45019034598). Статус issues при этом пишется — шаг карточки ниже
+    # с if: always() всё равно создаст issue.
+    rc, out = _summary(tmp_path, "")
+    assert rc == 1
+    assert dict(line.split("=", 1) for line in out.split())["deploy_status"] == "issues"
 
 
 def test_issue_step_fires_only_on_issues():
