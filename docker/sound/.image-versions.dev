@@ -8,4 +8,4 @@ TELEGRAM_BOT_TAG=dev-5f205b2
 SUPERVISOR_TAG=dev-5f205b2
 QUEST_TAG=dev-5f205b2
 # ↓ пишет Main-сборка (perception), ↑ — Sound-сборка. Строка-разделитель: их параллельные коммиты (Build All) правят этот файл без конфликта rebase.
-PERCEPTION_TAG=dev-5f205b2
+PERCEPTION_TAG=dev-87b099a
