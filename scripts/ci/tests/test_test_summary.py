@@ -44,7 +44,10 @@ def test_pr_does_not_treat_a_lying_success_result_as_ran():
     # строка PR всё равно говорит «не запускались», а не «success».
     text, code = test_summary.render_summary("pull_request", REQUIRED, "success")
     assert code == 0
-    assert "| Integration Tests | не запускались (skipped на PR, только develop/main) |" in text
+    assert (
+        "| Integration Tests | не запускались (skipped на PR, только develop/main) |"
+        in text
+    )
     assert "| Integration Tests | success |" not in text
 
 
@@ -104,11 +107,61 @@ def test_cli_failure_exit_one(capsys):
 
 
 def test_workflow_wires_script_and_does_not_claim_all_passed():
-    workflow = (REPO_ROOT / ".github" / "workflows" / "G-Run Tests.yml").read_text(encoding="utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "G-Run Tests.yml").read_text(
+        encoding="utf-8"
+    )
     assert "scripts/ci/test_summary.py" in workflow
     assert "All tests passed" not in workflow
     # Интеграция по-прежнему не ворота PR: условия джобы не трогаем.
-    assert "github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'" in workflow
+    assert (
+        "github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'"
+        in workflow
+    )
+    # На push сводка видит реальный result, а не пустую строку (#5116 остаток).
+    assert '--integration-result "${{ needs.integration-tests.result }}"' in workflow
+    assert "integration-tests" in _test_summary_needs(workflow)
+
+
+def _test_summary_needs(workflow: str) -> str:
+    """Список needs джобы test-summary, не соседних джоб."""
+    marker = "  test-summary:\n"
+    start = workflow.index(marker)
+    window = workflow[start : start + 400]
+    for line in window.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("needs:"):
+            return stripped
+    raise AssertionError("needs: у test-summary не найден")
+
+
+def test_push_success_is_not_called_not_run():
+    text, code = test_summary.render_summary("push", REQUIRED, "success")
+    assert code == 0
+    assert "| Integration Tests | success |" in text
+    assert "не запускались" not in text
+
+
+def test_push_failure_is_named_and_does_not_fail_the_run():
+    # Интеграция не ворота (решение Шифу): failure красит строку, не код выхода.
+    text, code = test_summary.render_summary("push", REQUIRED, "failure")
+    assert code == 0
+    assert "| Integration Tests | failure |" in text
+    assert "не запускались" not in text
+    assert "это не «интеграция прошла»" in text
+
+
+def test_push_empty_result_is_not_called_not_run():
+    text, code = test_summary.render_summary("push", REQUIRED, "")
+    assert code == 0
+    assert "результат не передан" in text
+    assert "не запускались" not in text
+    assert "| Integration Tests | success |" not in text
+
+
+def test_pr_skipped_stays_not_run_and_exit_zero():
+    text, code = test_summary.render_summary("pull_request", REQUIRED, "skipped")
+    assert code == 0
+    assert "не запускались (skipped на PR, только develop/main)" in text
 
 
 @pytest.mark.parametrize(
