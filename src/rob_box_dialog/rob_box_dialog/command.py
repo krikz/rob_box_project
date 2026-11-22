@@ -201,6 +201,9 @@ class Form:
     sing_over: bool = False
     backing: bool = True
     speech_required: bool = False
+    #: Реплика хода: «химер» в живом пении переводит форму в семью ``chimera`` (#5074). Пусто — как раньше.
+    #: В равенстве формы не участвует: тесты и сброс хода сравнивают поля решения, не текст реплики.
+    text: str = field(default="", compare=False)
     library: bool = False
 
     def closed(self) -> Tuple[str, ...]:
@@ -210,7 +213,7 @@ class Form:
     @property
     def sing_form(self) -> Optional[kn.SingForm]:
         """Что форма хода закрывает и требует по пути пения; не пение — ``None``."""
-        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over))
+        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over, self.text))
 
     def closed_tools(self) -> Tuple[str, ...]:
         """Тулы, которых в этом ходе нет: путь пения и библиотечная просьба (вне среза и вне команды)."""
@@ -244,7 +247,7 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
     """Схема команды без полей, закрытых формой хода (``None`` — текущей): модель их не видит
     (``knowledge.without_fields``); путь пения сужает перечни выступления (``knowledge.with_sing``)."""
     form = form or current_form()
-    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over)
+    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over, form.text)
 
 
 @dataclass
@@ -886,7 +889,7 @@ def _check_sing(cmd: Command, form: Form) -> None:
     sing = form.sing_form
     if sing is None or cmd.edit_pending:
         return
-    kinds = kn.sing_kinds(form.sing)
+    kinds = kn.sing_kinds(form.sing, form.text)
     closed = [a.tool for a in cmd.actions if a.tool in sing.closed_tools]
     if closed:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: {', '.join(closed)} закрыт", ("perform",))

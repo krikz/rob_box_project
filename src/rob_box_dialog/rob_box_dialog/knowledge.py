@@ -730,6 +730,8 @@ LIBRARY_TOOL = "music_library"
 GENERATE_TOOL = "generate_music"
 #: Тул правки ИГРАЮЩЕЙ музыки: темп, тембр, бас своего синт-трека на такте или честный отказ кодом.
 EDIT_TOOL = "edit_music"
+#: Тул разового выступления Химерой (ADR-0175): имя одно — группа ``sound`` и форма пути «химер» (#5074).
+CHIMERA_TOOL = "chimera_perform"
 #: Название трека в слоте ``{name}`` фраз библиотеки, когда в данных результата его нет (удаление отдаёт без названия).
 LIBRARY_UNNAMED = "этот трек"
 #: Класс ВЫЗОВА, когда он зависит от аргумента (ADR-0148: фразу об исходе строит код по результату, а не по тулу):
@@ -1182,7 +1184,7 @@ TOOL_GROUPS: Mapping[str, ToolGroup] = MappingProxyType({
     # ``llm_visible=False``, срез голоса не меняется (``tools_view.groups_for(agent=...)``). Голое «покажи» основой не
     # берём («покажи CPU», «покажи кухню»): «покажи лица» открывает «лиц». id лица (8 hex) открывает группу без слов
     "faces": ToolGroup(FACES_STEMS, ("people_list", "person_photo", "name_person", "find_similar", "merge_people")),
-    "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info", "chimera_perform")),
+    "sound": ToolGroup(SOUND_STEMS, ("play_sound", "get_sound_info", CHIMERA_TOOL)),
     # анимация всегда видна (``TOOLS_ALWAYS``); группа — чтобы просьба «покажи анимацию …» была командой (В17)
     # глаголы восприятия («посмотри налево») — взгляд лица, а не движение базы (``MOTION_VERB_STEMS``);
     # «покажи» + что показать (``FACE_SHOW_*``) группу открывает ``tools_view.face_asked``
@@ -3902,12 +3904,16 @@ class SingForm:
     backings: Tuple[str, ...] = ()
 
 
+#: Стебель, которым реплика называет Химеру. Тот же, что в :data:`SOUND_STEMS` (группа ``sound``): нового списка нет,
+#: ``has_word`` ловит «химерой» / «химеру» / «химера».
+CHIMERA_STEM = "химер"
 #: ``live`` — робот поёт сам: ``perform`` вида из id под синт-подложку (``none`` закрыт), генерация и трек закрыты (бит
 #: ставит код выступления: ``request_music(intent=backing)`` мимо среза). ``live_over`` — то же, когда музыка уже
 #: играет («под этот бит зачитай рэп», акт 8 n810): играющее и есть подложка — ``backing`` только ``none``, выступление
 #: идёт поверх, без вопроса «выключить и зачитать?» (``perform.ask_replace_music``) и без второго бита. ``generate``
 #: (генерация и кэш) — песню делает ``generate_music`` (фразу о старте строит код по исходу тула), петь выступлением
-#: (song/rap) нельзя.
+#: (song/rap) нельзя. ``chimera`` — «спой … химерой» (#5074): живое ``perform`` не обязательно, обязателен
+#: ``chimera_perform`` (срез музыки его вытесняет, форму хода — нет).
 SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     "live": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True,
                      backings=tuple(b for b in PERFORM_BACKINGS if b != "none")),
@@ -3917,6 +3923,8 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     # правка играющего: заказ нового закрыт, правка обязательна; выступление форма не трогает (любой вид)
     "edit": SingForm(closed_tools=("generate_music", "request_music", "dj_set"), needs_tool=EDIT_TOOL,
                      kinds=PERFORM_KINDS),
+    # «спой химерой»: не живое пение — тул Химеры обязателен, perform не обязателен (#5074, ADR-0148)
+    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False),
 })
 #: Голова id пути хода «правка играющего» (``edit:<вид>+…``): музыка играет, а реплика её правит («сделай бит
 #: потяжелее», «ускорь», «добавь баса»; кейс Шифу 27.10 посреди рэпа, марафон n504–n506). Решает хост до модели тем же
@@ -3928,14 +3936,28 @@ EDIT_ROUTE = "edit"
 VIOLATION_SING_ROUTE = "sing_route"
 
 
-def sing_family(route: str, over_music: bool = False) -> str:
+def chimera_named(text: str) -> bool:
+    """Реплика называет Химеру стеблем :data:`CHIMERA_STEM` (тот же, что в :data:`SOUND_STEMS`).
+
+    «Спой химерой» — не живое пение (#5074): стебель уже открывает группу ``sound``, здесь то же слово решает
+    форму пути. Нового списка и регулярки нет.
+    """
+    from rob_box_dialog.words import has_word  # noqa: PLC0415 — words импортирует knowledge: цикл на уровне модуля
+
+    return has_word(text or "", (CHIMERA_STEM,))
+
+
+def sing_family(route: str, over_music: bool = False, text: str = "") -> str:
     """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); правка
     играющего ``edit:*`` (:data:`EDIT_ROUTE`) — ``edit``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
-    «» — не пение."""
+    «» — не пение. Живое пение, в реплике которого названа Химера (:func:`chimera_named`), — семья ``chimera``:
+    форма требует ``chimera_perform``, а не ``perform`` (#5074)."""
     head = (route or "").split(":", 1)[0]
     if head == EDIT_ROUTE:
         return "edit"
     if head == "live":
+        if chimera_named(text):
+            return "chimera"
         return "live_over" if over_music else "live"
     return "generate" if head else ""
 
@@ -3964,10 +3986,11 @@ LIBRARY_REQUEST_HINT = (
 )
 
 
-def sing_kinds(route: str) -> Tuple[str, ...]:
+def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:
     """Допустимые ``perform.kind`` пути пения: ``live:<вид>`` — этот вид (вид вне ``SING_PERFORM_KINDS`` — оба),
-    иначе — из :data:`SING_FORMS`; не пение — пусто (как в схеме)."""
-    form = SING_FORMS.get(sing_family(route))
+    иначе — из :data:`SING_FORMS`; не пение — пусто (как в схеме). ``text`` — реплика хода: «химер» в ней
+    переводит живое пение в семью ``chimera`` (вид из id пути, perform не обязателен)."""
+    form = SING_FORMS.get(sing_family(route, text=text))
     if form is None:
         return ()
     kind = route.split(":")[1] if route.count(":") >= 1 else ""
@@ -3976,19 +3999,21 @@ def sing_kinds(route: str) -> Tuple[str, ...]:
     return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
 
 
-def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False) -> Dict[str, Any]:
+def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False, text: str = "") -> Dict[str, Any]:
     """Схема команды в форме пути пения: ``perform.kind`` и ``perform.backing`` — перечни пути, ``perform`` обязателен
     на живом пении (ADR-0148 п.2: выбор сужает структура, а не правило в промпте). Подложку вне перечня пути на живом
     пении валидатор ставит первой из перечня — синт (или поверх играющего, ``over_music``) решает код
     (``command._fit_sing_backing``). Путь, где можно только петь (песня, рэп), — без полей ролей ``ROLE_FIELDS``: всё
-    звучит голосом робота. Не пение — без изменений."""
-    form = SING_FORMS.get(sing_family(route, over_music))
+    звучит голосом робота. «Спой … химерой» (``text``, :func:`chimera_named`) — семья ``chimera``: ``perform`` не
+    обязателен. Не пение — без изменений."""
+    form = SING_FORMS.get(sing_family(route, over_music, text))
     out = copy.deepcopy(dict(schema))
     perform = out.get("properties", {}).get("perform")
     if form is None or perform is None:
         return out
-    perform["properties"]["kind"] = _enum(sing_kinds(route))
-    if not set(sing_kinds(route)) & set(PERFORM_ROLE_KINDS):  # песня и рэп — голосом робота, ролей нет
+    kinds = sing_kinds(route, text)
+    perform["properties"]["kind"] = _enum(kinds)
+    if not set(kinds) & set(PERFORM_ROLE_KINDS):  # песня и рэп — голосом робота, ролей нет
         for name in ROLE_FIELDS:
             perform["properties"].pop(name, None)
     if form.backings:
