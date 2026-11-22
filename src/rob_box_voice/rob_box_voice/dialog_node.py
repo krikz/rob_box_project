@@ -105,7 +105,14 @@ from rob_box_dialog_msgs.msg import Utterance as UtteranceMsg
 from rob_box_dialog_msgs.srv import DialogControl
 from rob_box_llm.provider import LLMSettings
 from rob_box_mcp_tools.voice_request import REQUEST_TOPIC as VOICE_REQUEST_TOPIC
-from rob_box_voice.core.sound_answer import SpeechAsClip, _session_generation, phrase_from_event
+from rob_box_voice.core.sound_answer import (
+    ModeOutcome,
+    SpeechAsClip,
+    _session_generation,
+    log_line,
+    phrase_from_event,
+    take_speech_outcome,
+)
 from rob_box_voice.observability import is_metrics_enabled, start_metrics_server
 
 from . import robot_profile
@@ -187,7 +194,7 @@ def wire_sound_answer(node: Any) -> SpeechAsClip:
         name_source=lambda: sound_answer_names(node),
     )
     clip = SpeechAsClip(gate, node._ports.say, publish, node._session)
-    node._ports.say = clip
+    node._ports.say = say_with_sound_answer(node, clip)
     node._sound_stop_pub = node.create_publisher(String, "/voice/sound/stop", 10)
     return clip
 
@@ -218,6 +225,21 @@ def _confident_voice_names(registry: Any) -> Tuple[str, ...]:
     return tuple(name for name in (confident_name(voice) for voice in voices) if name)
 
 
+def _stopped_outcome() -> ModeOutcome:
+    """Исход обрыва. Форму команды («стоп») код уже сверил — в лог идёт она, не текст ответа."""
+    return ModeOutcome("stopped", reason="стоп")
+
+
+def sound_answer_line(node: Any) -> None:
+    """Строка лога из последнего исхода режима. Исхода нет — строки нет: тишина тоже честная.
+
+    Фразу строит :func:`log_line` из полей результата. Текст ответа модели сюда не попадает.
+    """
+    outcome = node._sound_answer.gate.take_outcome()
+    if outcome is not None:
+        node.get_logger().info(log_line(outcome))
+
+
 def on_sound_answer(clip: SpeechAsClip, msg: Any) -> None:
     """``/voice/sound/event`` клипа режима: «сказал» только если код получил ``finished`` без причины."""
     phrase = phrase_from_event(clip, msg)
@@ -225,6 +247,22 @@ def on_sound_answer(clip: SpeechAsClip, msg: Any) -> None:
         return
     snap = clip._session.snapshot
     clip.say_finished("", int(snap.epoch), phrase)
+
+
+def say_with_sound_answer(node: Any, clip: SpeechAsClip):
+    """``ports.say``: клип вместо речи плюс строка лога из исхода этого шага.
+
+    Исход забирается сразу после шага: поздний лог из другого хода эту строку уже не повторит.
+    """
+
+    def say(*args, **kwargs):
+        spoken = clip(*args, **kwargs)
+        outcome = take_speech_outcome(clip)
+        if outcome is not None:
+            node.get_logger().info(log_line(outcome))
+        return spoken
+
+    return say
 
 
 def _prefix(agent: str) -> str:
@@ -680,6 +718,7 @@ class DialogNode(Node):
                 self._sound_answer.gate.observe(
                     decision.text, self._session.snapshot.session_id, _session_generation(self._session.snapshot)
                 )
+                sound_answer_line(self)
                 greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
@@ -791,6 +830,8 @@ class DialogNode(Node):
         self._sound_stop_pub.publish(body)
         self._sound_answer.gate.stop_pending()
         self._sound_answer.stop()
+        self._sound_answer.gate.last_outcome = _stopped_outcome()
+        sound_answer_line(self)
 
     def _on_control(self, request: Any, response: Any) -> Any:
         """``DialogControl``: hold — кадр ``OperatorHold`` (TTL), resume — снять его, reset — новая сессия.
