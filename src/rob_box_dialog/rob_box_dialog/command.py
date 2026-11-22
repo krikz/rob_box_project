@@ -152,18 +152,28 @@ class Busy:
     заново и не сверяются - так перепроверяется уже решённая команда).
 
     ``voice_genders`` — пол голосов каталога ``(голос, пол)``: по нему код даёт голос роли; ``cast`` — роли
-    идущего выступления и их голоса ``(ключ роли, голос)``: правка выступления их не перекрашивает."""
+    идущего выступления и их голоса ``(ключ роли, голос)``: правка выступления их не перекрашивает.
+    ``voice_catalogue`` — все голоса звучащего провайдера (``tts_voice_registry.voices_for``), не каталог ролей:
+    по нему сверяется явно названный голос реплики и строится enum схемы (пусто — не сверяется и enum как раньше,
+    из ``voices``). Роли (``voices``) не расширяются: каст марафона в роли не идёт (#3998, #4084, #5103)."""
 
     classes: FrozenSet[str] = frozenset()
     active_segment: Optional[int] = None
     voices: Tuple[str, ...] = ()
     voice_genders: Tuple[Tuple[str, str], ...] = ()
     cast: Tuple[Tuple[str, str], ...] = ()
+    voice_catalogue: Tuple[str, ...] = ()
 
     def role_pool(self) -> Tuple[Tuple[str, str], ...]:
         """Каталог ролей для :func:`.cast.assign`: голоса ``voices`` в их порядке и их пол (неизвестен — ``""``)."""
         genders = dict(self.voice_genders)
         return tuple((voice, genders.get(voice, "")) for voice in self.voices)
+
+    def line_voices(self) -> Tuple[str, ...]:
+        """Голоса реплики для enum схемы и сверки явного голоса: каталог провайдера, а не роли.
+
+        Пустой каталог — ``voices`` (старые вызовы и перепроверка вне хода). Роли отсюда не растут."""
+        return self.voice_catalogue or self.voices
 
 
 Result = Union[Command, Invalid]
@@ -614,7 +624,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
     голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
-    же и голос реплики без просьбы о голосе или не из каталога ролей (текущий голос робота, чужое имя, #4225)
+    же и голос реплики без просьбы о голосе или не из каталога провайдера (чужое имя, #4225, #5103)
     отбрасываются (``dropped``); форма последней итерации после запроса
     (``Form.speech_required``): ответ без слов (одно лицо, анимация) - нарушение ``VIOLATION_SPEECH_REQUIRED``
     (:func:`_check_answered`). Невалидная сцена лица и earcon не из перечня
@@ -826,15 +836,23 @@ def _drop_closed_passed(cmd: Command, form: Form) -> Command:
     return replace(cmd, passed=None, dropped=cmd.dropped + ("passed",))
 
 
+def _voice_allowed(voice: str, busy: Busy) -> bool:
+    """Явно названный голос принимается, если он есть в каталоге, который видит модель (``Busy.line_voices``).
+    Каталог пуст — не сверяется: так перепроверяется уже решённая команда вне хода."""
+    return not busy.line_voices() or voice in busy.line_voices()
+
+
 def _drop_cosmetic_voice(cmd: Command, form: Form, busy: Busy) -> Command:
     """Голос реплики, который ничего не меняет, — не нарушение, а лишнее поле: реплика звучит текущим голосом робота
     (голос сессии после ``set_voice``), поле — в ``dropped`` (лог ``fields_dropped``). Это голос без просьбы о голосе
-    (форма хода закрыла ``voice``, n109) и голос не из каталога ролей звучащего провайдера (``busy.voices``; пусто —
-    не сверяется): в каталоге нет текущего голоса робота (``plan_host.perform_busy``: рассказчик), и «скажи этим
-    голосом» с ``voice`` = текущий голос было ``bad_enum`` → повтор → модель брала другой голос из списка нарушения
-    (#4225, марафон-7 n404: после ``set_voice alena`` прозвучал ``arina`` через MiniMax мужским голосом). Чужое имя
-    тоже не уходит в TTS: подменил бы молча."""
-    if cmd.voice is None or (form.voice and (not busy.voices or cmd.voice in busy.voices)):
+    (форма хода закрыла ``voice``, n109) и голос, которого нет в каталоге звучащего провайдера
+    (``busy.voice_catalogue`` — все голоса реестра, не каталог ролей; пусто — сверяется ``busy.voices``, и он пуст —
+    не сверяется). Каталог ролей (``busy.voices``) сюда не годится: в нём нет текущего голоса робота
+    (``plan_host.perform_busy``: рассказчик) и нет голосов каста марафона (``English_Jovialman``, #5103), и «скажи
+    этим голосом» с ``voice`` из реестра было ``dropped`` → TTS брал ``default`` (#4225, марафон-7 n404: после
+    ``set_voice alena`` прозвучал ``arina`` через MiniMax мужским голосом). Чужое имя тоже не уходит в TTS:
+    подменил бы молча. Решение Шифу 22.11.2026: явно названный голос из каталога провайдера — используем."""
+    if cmd.voice is None or (form.voice and _voice_allowed(cmd.voice, busy)):
         return cmd
     return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
 

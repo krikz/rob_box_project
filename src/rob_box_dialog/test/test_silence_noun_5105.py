@@ -1,15 +1,16 @@
-"""#5105: «Робот, тишина» — просьба молчать, а не долг слов.
+"""#5105 / #5115: «Робот, тишина» — просьба молчать, и Tier-1 её знает.
 
-Живой факт (образ dev-9dd577c, turn ``a2ab8c87d268``, синтетическая реплика «Робот, тишина»): ответ одним лицом
-``expression:thinking`` стал нарушением ``silent_answer``, повтор заставил модель сказать «Тишина в эфире. Я тоже
-помолчу и постою рядом.». Tier-1 тишины знает только основы ``SILENCE_WORDS`` («помолч», «замолч»), а ``silent_asked``
-— «молча»/«без слов», и существительное «тишина» проходило мимо обоих. Решает код (ADR-0148): таблица форм в
-``knowledge``, предикат ``tools_view.silence_asked`` снимает вейк хода и считает просьбой фразу, где кроме «тишина»/
-«тишину»/«тишины»/«тишине»/«полная тишина» только служебные филлеры.
+Живой факт (#5105, образ dev-9dd577c, turn ``a2ab8c87d268``): ответ одним лицом ``expression:thinking`` стал нарушением
+``silent_answer``, повтор заставил модель сказать «Тишина в эфире. Я тоже помолчу и постою рядом.». #5105 снял долг
+слов, но ход всё равно звал LLM (ожидание ``llm_calls==1``): существительного «тишина» в ``SILENCE_WORDS`` нет, и
+``_stop`` возвращал ``None`` до проверки тишины. Живой прогон #5115: «Робот, тишина» ушло в модель, робот говорил, сцена
+Silence не ставилась. Теперь та же таблица (``words.silence_noun_asked``) — дверь Tier-1: 0 вызовов LLM, 0 TTS, сцена
+Silence. Старое ожидание ``llm_calls==1`` закрепляло обход, а не тишину.
 """
 
 import asyncio
 
+import rob_box_dialog.phrases as phrases
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import VOICE, Addressed
 from rob_box_dialog.command import Command, Expression, Invalid, ToolCall
@@ -17,8 +18,6 @@ from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import needs_words, silence_asked
 from rob_box_dialog.turn import Answer, TurnEngine, _Turn, owed_reason
-
-import rob_box_dialog.phrases as phrases
 
 #: Синтетические реплики (репо публичный: никаких данных людей).
 N_SILENCE = "Робот, тишина"
@@ -41,8 +40,19 @@ class Ports:
         return self.answers.pop(0)
 
     async def execute(self, actions, snapshot, turn_id):
-        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool],
-                             "done", None, dict(a.args)) for n, a in enumerate(actions)]
+        return [
+            ActionResult(
+                f"{turn_id}/{n}",
+                snapshot.epoch,
+                snapshot.agent,
+                a.tool,
+                kn.TOOL_CLASSES[a.tool],
+                "done",
+                None,
+                dict(a.args),
+            )
+            for n, a in enumerate(actions)
+        ]
 
     def say(self, turn_id, epoch, text, voice=None, emotion=None):
         self.said.append(text)
@@ -72,20 +82,23 @@ def _run(ports, text):
 
 
 def test_silence_noun_with_only_an_expression_closes_without_speech():
-    """«Робот, тишина» + одно лицо ``thinking`` — не нарушение ``silent_answer``: один вызов LLM, речи нет, ход закрыт."""
+    """«Робот, тишина» — Tier-1 (#5115): LLM не зовётся, речи нет, сцена Silence стоит. Старое ожидание ``llm_calls==1``
+    закрепляло обход: долг слов снят, а тишину решает модель."""
     ports = Ports([Answer(THINKING, "deepseek")])
-    agg = _run(ports, N_SILENCE)
-    assert len(ports.asked) == 1 and agg.llm_calls == 1, "нарушения нет — повторного вызова нет"
+    engine = TurnEngine(Session("personality", wake_words=WAKE), ports, system_prompt="Ты робот.")
+    agg = asyncio.run(engine.run(Addressed(N_SILENCE, VOICE)))
+    assert ports.asked == [] and agg.llm_calls == 0, "тишина решает код, не модель"
     assert ports.said == [], "ход закрывается без речи"
+    assert engine.session.snapshot.top("Silence") is not None
     assert (agg.stage, agg.status) == ("done", "finished")
     assert ports.stages[-1] == ("done", "finished", "")
 
 
 def test_silence_noun_with_please_is_still_a_silence_ask():
-    """«Робот, тишина, пожалуйста» — та же просьба: филлер «пожалуйста» просьбу не отменяет."""
+    """«Робот, тишина, пожалуйста» — та же Tier-1 тишина: филлер «пожалуйста» просьбу не отменяет, LLM не зовётся."""
     ports = Ports([Answer(THINKING, "deepseek")])
     agg = _run(ports, N_PLEASE)
-    assert len(ports.asked) == 1 and ports.said == []
+    assert ports.asked == [] and agg.llm_calls == 0 and ports.said == []
     assert (agg.stage, agg.status) == ("done", "finished")
 
 
@@ -140,13 +153,16 @@ BARE_SHOW = (ToolCall("play_animation", {"animation": "thinking"}),)
 
 
 def test_invalid_command_salvaged_by_a_bare_expression_stays_silent_on_a_silence_ask():
-    """Путь спасения (#5105): «Робот, тишина» + невалидная команда, спасение — одно неслышимое действие — код НЕ
-    говорит фразу нарушения. ``_salvaged_phrase`` снимает вейк той же таблицей хода, что и ``words_owed``."""
+    """«Робот, тишина» до спасения не доходит (#5115): Tier-1 закрывает ход до LLM, сцена Silence стоит, фразы нет.
+    Спасение упоминания («стих про тишину») проверяет соседний тест — тот путь в LLM остался."""
     bare = Invalid("bad_json", salvage=BARE_SHOW)
     ports = Ports([Answer(bare, "deepseek", calls=2)])
-    agg = _run(ports, N_SILENCE)
+    engine = TurnEngine(Session("personality", wake_words=WAKE), ports, system_prompt="Ты робот.")
+    agg = asyncio.run(engine.run(Addressed(N_SILENCE, VOICE)))
+    assert ports.asked == [] and agg.llm_calls == 0
     assert ports.said == [], "просьба о тишине — не долг слов, фразы нарушения нет"
-    assert (agg.stage, agg.status) == ("done", "done")
+    assert engine.session.snapshot.top("Silence") is not None
+    assert (agg.stage, agg.status) == ("done", "finished")
 
 
 def test_invalid_command_salvaged_by_a_bare_expression_still_speaks_on_a_mention():

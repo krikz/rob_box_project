@@ -26,7 +26,7 @@ from rob_box_dialog.command import Command, bare_answer
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog import phrases
 from rob_box_dialog.words import (asks_robot_to_act, has_form, has_speech_manner, has_word, introduces_self,
-                                  name_tokens, strip_wake_word, without_forms)
+                                  name_tokens, silence_noun_asked, without_forms)
 
 
 def groups_for(snapshot: SessionSnapshot, text: str, carry: Sequence[str] = (),
@@ -137,14 +137,9 @@ def silent_asked(text: str) -> bool:
 
 
 def silence_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
-    """Попросил ли человек тишины существительным (#5105): после снятия вейка и пунктуации (``words.strip_wake_word``,
-    ``words.name_tokens``) во фразе есть форма из ``knowledge.SILENCE_NOUN_FORMS`` («тишина», «тишину», «полная
-    тишина»), а остальные слова - только служебные ``SILENCE_NOUN_FILLER`` («пожалуйста», «ну», «давай», «режим»).
-    Упоминание («расскажи стих про тишину», «что такое тишина») и «не молчи» - не тишина: там есть другие слова.
-    «Помолчи»/«замолчи» решает Tier-1 (``SILENCE_WORDS``), сюда они не входят. Таблица одна - ``knowledge``."""
-    rest = name_tokens(strip_wake_word(text or "", wake_words))
-    forms, filler = kn.SILENCE_NOUN_FORMS, kn.SILENCE_NOUN_FILLER
-    return any(word in forms for word in rest) and all(word in forms or word in filler for word in rest)
+    """Попросил ли человек тишины существительным (#5105): тот же разбор, что у Tier-1 (#5115,
+    ``words.silence_noun_asked``). Таблица одна — ``knowledge.SILENCE_NOUN_FORMS`` / ``SILENCE_NOUN_FILLER``."""
+    return silence_noun_asked(text, wake_words)
 
 
 def robot_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:

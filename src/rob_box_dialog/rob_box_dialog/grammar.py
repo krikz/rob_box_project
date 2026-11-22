@@ -23,7 +23,8 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, has_word, music_off_rest,
-                                  name_tokens, speech_manner, stop_command, strip_wake_word, without_forms)
+                                  name_tokens, silence_noun_asked, speech_manner, stop_command, strip_wake_word,
+                                  without_forms)
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name, *алиасы)`` голосов активного провайдера (реестр ``tts_voice_registry.named_voices_for`` -
@@ -229,22 +230,40 @@ def _with(parse: _StepParse, step: Optional[Step]) -> _StepParse:
     return parse if step is None or step in parse.steps else replace(parse, steps=parse.steps + (step,))
 
 
+def _silence_noun(text: str, snapshot: SessionSnapshot) -> Optional[Tier1Command]:
+    """«Робот, тишина» (#5115): существительное из ``SILENCE_NOUN_FORMS`` — та же дверь, что «молчи».
+
+    Предикат один (``words.silence_noun_asked``): вейк и пунктуация сняты, упоминание («расскажи стих про тишину»,
+    «что такое тишина») — не тишина. При играющей музыке — ``stop_all``, не сцена Silence: сцена тишины плеер не
+    гасит (``interrupt.stops_music`` для ``silence`` ложен), а «тишина» при музыке должна её остановить. Сцена
+    Silence уже стоит — повтор «тишина» её не трогает (искажённый вейк «работа тишина» тишину не снимает, #3974).
+    """
+    if snapshot.top("Silence") is not None or not silence_noun_asked(text, snapshot.wake_words):
+        return None
+    if snapshot.music_playing:
+        return Tier1Command("stop_all")
+    return Tier1Command("silence")
+
+
 def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
     """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи» —
-    или точная форма ``SILENCE_EXACT_FORMS`` — «молчи», «молчите», #5108) или ``stop_all``
-    (остановить текущие звуки, режим тишины НЕ включается: «хватит», «стоп»; решение Шифу 22.10); после
-    стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с
-    ``disputed``.
+    или точная форма ``SILENCE_EXACT_FORMS`` — «молчи», «молчите», #5108; существительное «тишина»/«тишину» —
+    ``words.silence_noun_asked``, #5115) или ``stop_all`` (остановить текущие звуки, режим тишины НЕ включается:
+    «хватит», «стоп»; решение Шифу 22.10); после стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду
+    бы заглушила). Спорный — тот же вид с ``disputed``.
 
     Охват (``words.stop_scope``): названа речь («хватит читать/говорить/петь», «…а музыку оставь») —
     ``stop_speech`` (``args.keep_music``): речь и выступление гаснут, плеер музыки и движение — нет. Названа музыка
     («хватит музыки») или ничего («хватит», «стоп») — ``stop_all``, как было (В20). Во фразе есть «стой» (политика
     ``halt`` — стоп и движения) — тоже ``stop_all``, даже при названной речи. Оговорка «музыку оставь» без названной
-    речи («стой, а музыку оставь», «хватит, бит не трогай») — ``stop_all``/``silence`` с ``args.keep_music``: гаснет всё,
-    кроме музыки (движение — тоже). Покрытая охватом часть в ``rest`` не попадает."""
+    речи («стой, а музыку оставь», «хватит, бит не трогай») — ``stop_all``/``silence`` с ``keep_music``: гаснет всё,
+    кроме музыки (движение — тоже). Покрытая охватом часть в ``rest`` не попадает. Существительного «тишина» в
+    ``STOP_WORDS`` нет: ``stop_command`` даёт ``STOP_NONE``, и без отдельной ветки ``_stop`` возвращал ``None`` до
+    проверки тишины (#5115). Ветку глаголов («молчи», «замолчи», «хватит») эта проверка не трогает.
+    """
     call = stop_command(text, snapshot.wake_words)
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
-        return None
+        return _silence_noun(text, snapshot)
     scope = call.scope
     silence = not call.rest and not scope.music and any(
         _starts(word, kn.SILENCE_WORDS) or word in kn.SILENCE_EXACT_FORMS for word in call.words)
