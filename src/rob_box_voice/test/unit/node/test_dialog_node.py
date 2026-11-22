@@ -1199,9 +1199,10 @@ def _register_call(monkeypatch, heard, voice, name):
             made._on_speaker(_voice({**voice, "utterance_id": "u4054"}))
         made._on_utterance(_said(f"Робот, {heard}", "u4054"))
         made.last_turn.result(timeout=10)
-        [(tool, _, _, context)] = made.test_bridge.calls
-        assert tool == "register_speaker"
-        return context
+        # Диктовка факта (#5128) добавляет второй вызов — ``memory_save``. Гейт #4054 смотрит
+        # контекст ``register_speaker``; берём его явно, а не «ровно один вызов моста».
+        [(tool, _, _, context)] = [c for c in made.test_bridge.calls if c[0] == "register_speaker"]
+        return context, [c[0] for c in made.test_bridge.calls]
     finally:
         made.shutdown()
 
@@ -1209,7 +1210,8 @@ def _register_call(monkeypatch, heard, voice, name):
 def test_register_speaker_gets_the_voice_and_the_introduction_of_its_turn_4054(monkeypatch):
     """Акт 2c: Нина уверенно + «привет, я Тамара … запомни мой голос» - в тул едут и «назвалась Тамарой», и «по голосу это
     Нина» (раньше только ``utterance_id`` и ``heard_text``: гейт #2925 в v2 молчал)."""
-    context = _register_call(monkeypatch, TAMARA_HEARD, NINA, "Тамара")
+    context, tools = _register_call(monkeypatch, TAMARA_HEARD, NINA, "Тамара")
+    assert tools == ["register_speaker"]  # самопредставление — не диктовка факта, второго вызова нет
     assert context == {
         "utterance_id": "u4054",
         "heard_text": TAMARA_HEARD,
@@ -1222,8 +1224,10 @@ def test_register_speaker_of_a_fact_about_someone_else_gets_no_introduction_4054
     """«Запомни, что Саша любит чай» голосом Нины: человек себя не называл (``self_intro_name`` нет), голос - Нина; гейт
     по этому контексту откажет ``register_speaker("Саша")`` (``rob_box_mcp_tools/test/test_issue_4054_register_gate_v2``).
     """
-    context = _register_call(monkeypatch, FACT_HEARD, NINA, "Саша")
+    context, tools = _register_call(monkeypatch, FACT_HEARD, NINA, "Саша")
     assert context == {"utterance_id": "u4054", "heard_text": FACT_HEARD, "known_speaker_name": "Нина"}
+    # Факт про другого человека — диктовка (#5128): код сохраняет его, гейт регистрации не ослаблен.
+    assert tools == ["register_speaker", "memory_save"]
 
 
 @pytest.mark.parametrize(
@@ -1252,7 +1256,8 @@ def test_register_speaker_of_a_fact_about_someone_else_gets_no_introduction_4054
 def test_register_speaker_gets_no_known_speaker_unless_the_voice_is_confident_4054(monkeypatch, voice):
     """Нет биометрии фразы, голос не узнан, гипотеза, спор, профиль без имени - ключа ``known_speaker_name`` нет: гейт
     молчит, регистрацию разбирает ADR-0127 (граница #2925: уверенно - значит уверенно)."""
-    context = _register_call(monkeypatch, "меня зовут Олег", voice, "Олег")
+    context, tools = _register_call(monkeypatch, "меня зовут Олег", voice, "Олег")
+    assert tools == ["register_speaker"]  # «меня зовут» — представление, не диктовка: второго вызова нет
     assert context == {"utterance_id": "u4054", "heard_text": "меня зовут Олег", "self_intro_name": "олег"}
 
 
