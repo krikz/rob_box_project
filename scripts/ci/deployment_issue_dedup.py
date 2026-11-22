@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -75,6 +76,20 @@ HEALTH_MONITOR_PROXIMITY_ECHO_RE = re.compile(
     r"\[(?:ERROR|FATAL|WARN)\] proximity_guard \(\d+s ago\): .*нет свежих скана или одометрии",
     re.IGNORECASE,
 )
+
+# Окно старта zenoh-роутера (issue #5124, run 45040975024): роутер в первые секунды
+# пишет ERROR «Error propagating <kind> @<zid>/router/**: cannot get index ...» —
+# gossip успел объявить лицо и потерять его, пока сеть ещё пуста. Одна такая строка
+# в пределах ~10 с после строки старта того же процесса — warning. Вне окна и без
+# строки старта в дампе класс остаётся critical: шторм переподключений посреди
+# работы (16.11, 18.11 — сотни строк) должен по-прежнему красить деплой.
+# Узко: только модуль zenoh::net::routing::hat::router и только propagation на
+# /router/**. Другие контейнеры и другие сообщения zenoh правило не касается.
+ZENOH_ROUTER_START_RE = re.compile(r"zenohd v|Zenoh can be reached at:")
+ZENOH_ROUTER_PROPAGATION_RE = re.compile(
+    r"zenoh::net::routing::hat::router::\w+:\s+Error propagating \w+ @[0-9a-fA-F]+/router/\*\*"
+)
+ZENOH_ROUTER_STARTUP_WINDOW_SEC = 10.0
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
@@ -1100,6 +1115,45 @@ def _classify_error_like_line(
     return "critical"
 
 
+def _zenoh_router_startup_transient(line: str, log_text: str) -> bool:
+    """True, если строка — propagation роутера в окне ~10 с после его же старта.
+
+    Решает дамп, а не текст ошибки (ADR-0148): строка старта того же процесса
+    (``zenohd v`` / ``Zenoh can be reached at:``) обязана быть в дампе, а ошибка —
+    не позже ZENOH_ROUTER_STARTUP_WINDOW_SEC после неё. Ошибка раньше строки старта,
+    позже окна или дамп без строки старта — не транзиент, остаётся critical.
+    Метка времени — ISO-8601 с Z; строки без неё окно не двигают и не закрывают.
+    """
+    if not ZENOH_ROUTER_PROPAGATION_RE.search(line):
+        return False
+    # Старт привязан к ошибке, а не к дампу целиком: берётся последний старт,
+    # который идёт РАНЬШЕ строки ошибки. Старт после ошибки окно не открывает
+    # (дельта была бы отрицательной), повторный старт позже в дампе — тоже.
+    start_before_error = None
+    error_at = None
+    for row in log_text.splitlines():
+        stamp = _iso_z_timestamp(row)
+        if stamp is None:
+            continue
+        if error_at is None and row.strip() == line.strip() and ZENOH_ROUTER_PROPAGATION_RE.search(row):
+            error_at = stamp
+            break
+        if ZENOH_ROUTER_START_RE.search(row):
+            start_before_error = stamp
+    if start_before_error is None or error_at is None:
+        return False
+    delta = (error_at - start_before_error).total_seconds()
+    return 0.0 <= delta <= ZENOH_ROUTER_STARTUP_WINDOW_SEC
+
+
+def _iso_z_timestamp(line: str):
+    """Метка ISO-8601 с суффиксом Z из строки лога или None."""
+    match = TIMESTAMP_RE.search(line)
+    if match is None:
+        return None
+    return datetime.fromisoformat(match.group(0).replace("Z", "+00:00").replace("z", "+00:00"))
+
+
 def _classify_with_dump_windows(
     line: str,
     exclude_patterns: Iterable[str],
@@ -1108,7 +1162,7 @@ def _classify_with_dump_windows(
     own_blind_present: bool,
     log_text: str,
 ) -> str | None:
-    """Классификация с окнами дампа: эхо proximity_guard и стартовый fail-fast.
+    """Классификация с окнами дампа: эхо proximity_guard, fail-fast и старт роутера.
 
     Эхо — не самостоятельный пункт, только когда в дампе уже есть собственная
     строка слепоты ноды (её и так классифицирует окно возврата). Без собственной
@@ -1117,12 +1171,18 @@ def _classify_with_dump_windows(
     Fail-fast снимается, только если тот же дамп показывает «жив после»: процесс
     умер и после этого стартовал без новой смерти. Знакомая строка без этого
     свидетельства остаётся critical.
+
+    Стартовый транзиент zenoh-роутера понижается до warning, только если тот же
+    дамп несёт строку старта процесса и ошибка идёт в пределах ~10 с после неё.
+    Вне окна и без строки старта класс остаётся critical.
     """
     severity = _classify_error_like_line(line, exclude_patterns, demoted_patterns)
     if severity == "critical" and own_blind_present and _is_health_monitor_proximity_echo(line):
         return None
     if severity == "critical" and _is_recovered_failfast_line(line, log_text):
         return None
+    if severity == "critical" and _zenoh_router_startup_transient(line, log_text):
+        return "warning"
     return severity
 
 
