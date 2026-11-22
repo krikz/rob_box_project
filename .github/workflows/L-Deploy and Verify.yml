@@ -1280,6 +1280,36 @@ jobs:
             cat main_status_summary.txt
           fi
 
+          # Issue #5114 (run 45019034598): nav2 на обоих замерах был
+          # health=starting внутри start_period, шаг выше написал «стабильно»,
+          # а controller_server уже умер SIGILL. Гейт — только про nav2:
+          # вне окна читает последний ExitCode healthcheck (это rc
+          # docker/main/scripts/nav2/healthcheck.sh: три узла == active),
+          # внутри окна ждёт его конца и мерит снова. rc≠0 валит ШАГ, а не
+          # только пишет deploy_status ниже: Summary с if: always() зелёную
+          # джобу не краснит. Скрипт печатает JSON и выходит 0, чтобы причина
+          # успела попасть в лог шага.
+          PI_HOST="${{ env.main_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/main' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          STATUS_JSON="$(cat /tmp/main_status.json)" \
+            bash scripts/ci/wait_nav2_active.sh > /tmp/nav2_gate.json
+          echo "--- nav2 gate ---"
+          cat /tmp/nav2_gate.json
+          if [ "$(jq -r '.ok' /tmp/nav2_gate.json)" != "true" ]; then
+            echo "❌ nav2 is not active: $(jq -r '.reason' /tmp/nav2_gate.json)"
+            echo "main_healthy=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          # Приёмка #5118: гейт прошёл — main_healthy честно true. Раньше false
+          # из статуса (pending внутри start_period) оставался висеть, и
+          # Summary красил зелёный деплой. Статус сам дожидается окна, так что
+          # сюда healthy=false доходит только при провале; true здесь —
+          # страховка, что «гейт ok, а флаг false» не переживёт шаг.
+          echo "main_healthy=true" >> $GITHUB_OUTPUT
+
       - name: "[Vision Pi] Check Container Logs"
         if: '!inputs.dry_run'
         id: vision_logs
@@ -1680,6 +1710,10 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Check the logs above and created GitHub issue for details"
             echo "deploy_status=issues" >> "$GITHUB_OUTPUT"
+            # Issue #5114: до этого ветка только писала deploy_status, и джоба
+            # оставалась зелёной (run 45019034598 — success при мёртвом nav2).
+            # Шаг карточки ниже имеет if: always() и всё равно создаст issue.
+            exit 1
           fi
 
       # ==================== ISSUE CREATION (retro 14.08 t_d01fe536 + 15.08 t_feca724c) ====================

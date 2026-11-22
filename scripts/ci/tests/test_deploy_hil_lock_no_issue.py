@@ -69,20 +69,49 @@ def test_hil_step_marks_only_real_lock(tmp_path, check_rc, expect_output):
     assert out.strip() == expect_output
 
 
-def _summary_status(tmp_path, hil_locked: str) -> str:
+def _summary(tmp_path, hil_locked: str, healthy: str = "", job_status: str = "failure"):
     step = _step(id="deploy_summary")
-    subst = {"steps.hil_lock.outputs.hil_locked": hil_locked, "job.status": "failure"}
-    rc, out = _run(step["run"], tmp_path, subst)
-    assert rc == 0
-    return dict(line.split("=", 1) for line in out.split())["deploy_status"]
+    subst = {"steps.hil_lock.outputs.hil_locked": hil_locked, "job.status": job_status}
+    # Пустой healthy — подстановка ${{ }} даёт пустую строку, и условие успеха
+    # не срабатывает. Явный true нужен, чтобы прогнать ветку success.
+    for pi in ("vision", "sound", "main"):
+        # Регекс не жадный до первого `}`. У сравнения здоровости выражение
+        # без `||`, ключ — голое имя. У critical_count выражение
+        # `critical_count || 0` целиком внутри `${{ }}`, и ключ включает `|| 0`.
+        subst[f"steps.{pi}_status.outputs.{pi}_healthy"] = healthy
+        subst[f"steps.{pi}_logs.outputs.critical_count || 0"] = "0" if healthy == "true" else ""
+    return _run(step["run"], tmp_path, subst)
 
 
 def test_summary_marks_hil_lock_separately(tmp_path):
-    assert _summary_status(tmp_path, "true") == "hil_locked"
+    # Замок — намеренный отказ, не сбой деплоя: шаг остаётся зелёным.
+    rc, out = _summary(tmp_path, "true")
+    assert rc == 0
+    assert dict(line.split("=", 1) for line in out.split())["deploy_status"] == "hil_locked"
 
 
 def test_summary_without_lock_still_reports_issues(tmp_path):
-    assert _summary_status(tmp_path, "") == "issues"
+    # Issue #5114: ветка issues обязана валить шаг (exit 1), а не только
+    # писать deploy_status. До этого джоба оставалась зелёной при мёртвом nav2
+    # (run 45019034598). Статус issues при этом пишется — шаг карточки ниже
+    # с if: always() всё равно создаст issue.
+    rc, out = _summary(tmp_path, "")
+    assert rc == 1
+    assert dict(line.split("=", 1) for line in out.split())["deploy_status"] == "issues"
+
+
+def test_summary_exit_1_only_when_not_healthy(tmp_path):
+    # Приёмка #5118: exit 1 только когда реально не healthy. Три *_healthy=true
+    # и critical_count=0 — ветка success, шаг зелёный. Один false — issues и
+    # exit 1. Раньше pending внутри start_period писал healthy=false, и эта
+    # ветка красила живой деплой.
+    rc, out = _summary(tmp_path, "", healthy="true", job_status="success")
+    assert rc == 0
+    assert dict(line.split("=", 1) for line in out.split())["deploy_status"] == "success"
+
+    rc, out = _summary(tmp_path, "", healthy="false", job_status="success")
+    assert rc == 1
+    assert dict(line.split("=", 1) for line in out.split())["deploy_status"] == "issues"
 
 
 def test_issue_step_fires_only_on_issues():
