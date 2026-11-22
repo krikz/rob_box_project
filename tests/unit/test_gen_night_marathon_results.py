@@ -149,7 +149,10 @@ def test_every_music_action_step_has_a_result_marker():
     for label in ACTION_LABELS:
         step = steps[label]
         pats = step["patterns"]
-        assert any(p.startswith("✅ Инструмент ") and p.endswith(" выполнен успешно") for p in pats), label
+        # n702 (#5092): фоновый заказ ещё не исполнен — маркер «принят, готовится», не «выполнен успешно»
+        done = any(p.startswith("✅ Инструмент ") and p.endswith(" выполнен успешно") for p in pats)
+        accepted = any(p.startswith("⏳ Инструмент ") and "принят, готовится" in p for p in pats)
+        assert done or accepted, label
         # n709 (#4020, марафон-6): ход законно закрыт фразой кода (`code_closes`) -- конец хода `finished|done`
         assert gen.TURN_DONE in pats or gen.TURN_WITH_LLM in pats or gen.TURN_CLOSED_BY_CODE in pats, label
         assert gen.TURN_TIMEOUT in step["acceptance"]["must_not_call"], label
@@ -669,6 +672,24 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_n710_ask_binds_tr
         assert not re.search(gen.NO_SONG_LOG, fine), fine
 
 
+def test_n702_does_not_pass_an_order_that_never_became_a_song():
+    """#5092: «выполнен успешно» про фоновый заказ — не PASS. PASS — «принят, готовится»; песни при этом нет."""
+    step = _steps()["n702_generate_raccoon"]
+    assert gen.tool_accepted("generate_music") in step["patterns"]
+    assert gen.tool_done("generate_music") not in step["patterns"]
+    route = ("🎚️ [source] asked=[generated,vocal,robot_voice] genre=— кандидаты=['generate:robot_song:V6'] → "
+             "generate:robot_song:V6 (code) gen=ok")
+    asked = "📥 Запрос выполнения: generate_music с параметрами {}"
+    accepted = "\n".join([route, asked, "⏳ Инструмент generate_music принят, готовится: song",
+                          TURN_LINE % ("done", "finished")])
+    assert _verdict("n702_generate_raccoon", accepted)["pass"]
+    # акт 7 марафона №3: тул сказал «успех», через 14 мс студия отвергла текст, песни нет
+    lied = "\n".join([route, asked, "✅ Инструмент generate_music выполнен успешно",
+                      "🎤 [song] не вышло: lyrics: строк мало: нужно от 6, есть 1",
+                      TURN_LINE % ("done", "finished")])
+    assert not _verdict("n702_generate_raccoon", lied)["pass"]
+
+
 def test_n702_asks_the_generate_robot_song_cell_of_the_fork_not_a_live_performance():
     """Вилка Шифу 27.10 (#4070/#4079): «сгенерируй песню своим голосом» -- generate:robot_song; пение вживую -- ошибка."""
     step = _steps()["n702_generate_raccoon"]
@@ -676,7 +697,8 @@ def test_n702_asks_the_generate_robot_song_cell_of_the_fork_not_a_live_performan
     assert gen.ROUTE_GENERATE_ROBOT_SONG in step["patterns"]
     assert gen.PERFORM_STARTED_MARK in step["acceptance"]["must_not_call"]
     ok = "\n".join(["🎚️ [source] asked=[generated,vocal,robot_voice] genre=— кандидаты=['generate:robot_song:V6'] → "
-                    "generate:robot_song:V6 (code) gen=ok", "✅ Инструмент generate_music выполнен успешно", DONE])
+                    "generate:robot_song:V6 (code) gen=ok", "📥 Запрос выполнения: generate_music с параметрами {}",
+                    "⏳ Инструмент generate_music принят, готовится: song", DONE])
     assert _verdict("n702_generate_raccoon", ok)["pass"]
     live = "\n".join(["🎚️ [source] пение song слова=— кандидаты=[live:song] → live:song (code)",
                       "🧭 [turn-v2] выступление старт kind=song backing=none segments=3", DONE])
@@ -745,8 +767,9 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
-     'f"❌ Инструмент {tool_name} завершился с ошибкой: {result.error}"'),
+    # #5092: строку исхода строит tool_outcome.tool_outcome_line, mcp_server только печатает её
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tool_outcome.py",
+     'return f"❌ Инструмент {tool_name} завершился с ошибкой: {error}"'),
     # #4062: текст вопроса - одна фраза каталога (её берут и тул через media_phrases, и диалог v2 по причине)
     ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml",
      'music.library_fail.needs_confirmation: ["Удалить {name}? Скажи «да, удаляй»."]'),
