@@ -65,11 +65,11 @@ ERROR_LATE = ERROR_PLAIN.replace("2026-11-22T15:58:02.543989Z", "2026-11-22T16:0
 
 
 def _critical(log_text: str) -> str | None:
-    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="critical")
+    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="critical", container="zenoh-router-sound")
 
 
 def _warning(log_text: str) -> str | None:
-    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
+    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning", container="zenoh-router-sound")
 
 
 def test_real_run_45040975024_line_with_slash_is_demoted_inside_window() -> None:

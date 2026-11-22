@@ -140,7 +140,7 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
         logs_start, logs_end = fetch_logs(run, container)
         logs = f"{logs_start}\n{SEPARATOR}\n{logs_end}"
 
-        critical = dedup.extract_relevant_log_line(logs, scope=scope, severity="critical")
+        critical = dedup.extract_relevant_log_line(logs, scope=scope, severity="critical", container=container)
         if critical:
             critical_count += 1
             print(f"  ❌ CRITICAL errors found in {container}")
@@ -149,14 +149,18 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
                 finding(environment, scope, container, "critical_log", "critical", "Critical log pattern detected", critical)
             )
 
-        warning = dedup.extract_relevant_log_line(logs, scope=scope, severity="warning")
+        warning = dedup.extract_relevant_log_line(logs, scope=scope, severity="warning", container=container)
         if warning:
             warning_count += 1
             print(f"  ⚠️  Warnings found in {container}")
+            # Стартовый транзиент роутера не молчит: в сводке видно, что это окно
+            # старта, а не глухая ошибка (issue #5124). Прочие warning без пометки.
+            summary = "Warning log pattern detected"
+            if dedup.is_zenoh_router_container(container) and dedup.ZENOH_ROUTER_PROPAGATION_RE.search(warning):
+                summary = dedup.ZENOH_ROUTER_STARTUP_SUMMARY
+                report.append(f"=== {container} {summary} ===")
             report += [f"=== {container} WARNINGS ===", warning, ""]
-            findings.append(
-                finding(environment, scope, container, "warning_log", "warning", "Warning log pattern detected", warning)
-            )
+            findings.append(finding(environment, scope, container, "warning_log", "warning", summary, warning))
 
         if critical:
             report.append(f"=== {container} INITIALIZATION CONTEXT ===")

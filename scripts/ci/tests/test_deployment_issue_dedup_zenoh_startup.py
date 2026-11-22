@@ -38,11 +38,11 @@ PROPAGATION_LATE = (
 
 
 def critical(log_text: str) -> str | None:
-    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="critical")
+    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="critical", container="zenoh-router-sound")
 
 
 def warning(log_text: str) -> str | None:
-    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning")
+    return MODULE.extract_relevant_log_line(log_text, scope="sound", severity="warning", container="zenoh-router-sound")
 
 
 def test_startup_window_demotes_propagation_one_second_after_start() -> None:
