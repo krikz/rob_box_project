@@ -605,6 +605,78 @@ def test_known_name_from_the_session_is_not_replaced_by_a_clip(node, tmp_path):
     )
 
 
+def _ready_clip_dir(tmp_path):
+    """Каталог с готовым клипом подтверждения. Пустой каталог клип не подменяет."""
+    (tmp_path / "elephant.wav").write_bytes(b"RIFF")
+    return str(tmp_path)
+
+
+def _triggers(node):
+    return [json.loads(msg.data) for msg in _published(node, "/voice/sound/trigger")]
+
+
+def test_enabled_mode_substitutes_the_next_conversational_reply(node, tmp_path):
+    """Проба #5067: включён → следующий разговорный ответ — клип или «клипа нет», не тишина.
+
+    Фраза без числа и без известного имени. Имя в тексте само по себе точным его не делает.
+    """
+    node._sound_answer.gate.clip_dir = _ready_clip_dir(tmp_path)
+    node.test_llm.responses.append(_reply({"speech": "Всё хорошо. Работаю ровно."}))
+
+    node._on_utterance(_utterance("Робот, отвечай звуками"))
+    node.last_turn.result(timeout=10)
+    node._on_utterance(_utterance("Робот, как дела"))
+    node.last_turn.result(timeout=10)
+
+    lines = _sound_answer_lines(node)
+    assert lines[0] == "🔇 [sound-answer] включён"
+    assert any(line.startswith("🔇 [sound-answer] клип ") or "клипа нет (" in line for line in lines[1:])
+    assert _triggers(node), "разговорный ответ ушёл речью, клип не публиковался"
+    assert "Всё хорошо. Работаю ровно." not in _speech_texts(node)
+
+
+def test_enable_on_a_stale_window_still_answers_the_next_turn_with_a_clip(node, tmp_path):
+    """Включение на устаревшем окне не вооружает режим поколением, которое речь не увидит.
+
+    До фикса ``observe`` шёл до ``reset_if_idle`` внутри ``engine.run``: строка «включён» была,
+    следующий разговорный ответ звучал целиком и строки клипа не было (проба #5067).
+    """
+    from rob_box_dialog import knowledge as kn
+
+    node._sound_answer.gate.clip_dir = _ready_clip_dir(tmp_path)
+    node.test_llm.responses.append(_reply({"speech": "Всё хорошо. Работаю ровно."}))
+    node._engine._window.touch(node._engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
+    armed = node._session.snapshot.session_generation
+
+    node._on_utterance(_utterance("Робот, отвечай звуками"))
+    node.last_turn.result(timeout=10)
+    fresh = node._session.snapshot
+    assert fresh.session_generation == armed + 1
+    assert node._sound_answer.gate.active(fresh.session_id, fresh.session_generation)
+
+    node._on_utterance(_utterance("Робот, как дела"))
+    node.last_turn.result(timeout=10)
+
+    lines = _sound_answer_lines(node)
+    assert any(line.startswith("🔇 [sound-answer] клип ") or "клипа нет (" in line for line in lines)
+    assert _triggers(node)
+    assert "Всё хорошо. Работаю ровно." not in _speech_texts(node)
+
+
+def test_later_session_reset_still_clears_a_mode_armed_across_idle(node, tmp_path):
+    """Поздний ``DialogControl.reset`` режим снимает. Перенос через сброс этого хода его не отменяет."""
+    from rob_box_dialog import knowledge as kn
+
+    node._sound_answer.gate.clip_dir = _ready_clip_dir(tmp_path)
+    node._engine._window.touch(node._engine._clock() - kn.DIALOG_WINDOW_IDLE_RESET_S - 1)
+    node._on_utterance(_utterance("Робот, отвечай звуками"))
+    node.last_turn.result(timeout=10)
+    node._session.reset()
+    fresh = node._session.snapshot
+    node._sound_answer.gate.observe("привет", fresh.session_id, fresh.session_generation)
+    assert not node._sound_answer.gate.active(fresh.session_id, fresh.session_generation)
+
+
 def test_reset_clears_the_sound_answer_mode(node, tmp_path):
     """``DialogControl.reset`` — новая сессия при том же session_id: режим не переживает её."""
     (tmp_path / "bird.wav").write_bytes(b"")

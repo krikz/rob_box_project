@@ -57,6 +57,7 @@ from rob_box_core.e2e_mode import E2EModeFollower
 from rob_box_core.provider_publisher import make_publisher, publish_provider_states
 from rob_box_core.speaker_wire import speaker_result_to_payload
 from rob_box_core.tools_db import TOOLS_E2E_DB_DEFAULT, tools_db_path
+from rob_box_dialog import face_group
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import (
     BARE_WAKE,
@@ -86,7 +87,7 @@ from rob_box_dialog.speaker_adapter import confident_name, named_self, speaker_r
 from rob_box_dialog.turn import TurnEngine, host_sections, outcome_phrase, say_late
 from rob_box_dialog.turn_log import TurnLog
 from rob_box_dialog.voice_warmth import WarmVoices
-from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON
+from rob_box_dialog.window_reset import REASON_E2E_OFF, REASON_E2E_ON, reset_if_idle
 from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports, assemble_llm
 from rob_box_dialog_host.music_player_state import MUSIC_EVENT_TOPIC, MUSIC_STATE_TOPIC, parse_music_state
 from rob_box_dialog_host.speaker_memory import SpeakerMemory
@@ -715,11 +716,11 @@ class DialogNode(Node):
         async with self._turn_lock:
             try:
                 await self._note_speaker(decision)
+                self._settle_window_before_mode(greeting, greeting_epoch)
                 self._sound_answer.gate.observe(
                     decision.text, self._session.snapshot.session_id, _session_generation(self._session.snapshot)
                 )
                 sound_answer_line(self)
-                greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
                 await self._engine.run(decision)
             except Exception as exc:  # noqa: BLE001 — упавший ход не роняет ноду, но громко
                 self.get_logger().error(f"🧭 [turn-v2] ход упал: {type(exc).__name__}: {exc}")
@@ -732,6 +733,21 @@ class DialogNode(Node):
         self._warm.reset()  # беседа с голосами без имени — заново, как окно диалога
         self._loop.call_soon_threadsafe(self._engine.reset_window, REASON_E2E_ON if enabled else REASON_E2E_OFF)
         return True
+
+    def _settle_window_before_mode(self, greeting: Optional[SceneFrame], greeting_epoch: Optional[int]) -> None:
+        """Сброс окна этого хода — до включения режима, не после.
+
+        ``engine.run`` сбрасывает устаревшее окно уже после ``observe``. Включение тогда пишется
+        на поколение, которое этот же ход сейчас уничтожит: строка «включён» есть, а речь следующего
+        хода режима не видит и молчит (проба #5067). Здесь сброс делается тем же ``reset_if_idle``
+        и тем же касанием окна, что сделал бы ход, поэтому ``engine.run`` окно второй раз не сбрасывает.
+        Поздний ``reset`` режим по-прежнему снимает.
+        """
+        greeting_window.keep_greeting_after_idle_reset(self, greeting, greeting_epoch)
+        engine = self._engine
+        if reset_if_idle(self._session, engine.log, engine._window, engine._clock(), engine._log):
+            face_group.dropped(engine)
+        engine._window.touch(engine._clock())
 
     async def _note_speaker(self, decision: Addressed) -> None:
         """Начало хода: профиль подтверждённого собеседника ведёт код, раздел ``speaker_memory`` - в снимок (#3919).
