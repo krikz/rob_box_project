@@ -53,6 +53,8 @@ from rob_box_dialog.knowledge import (
     REQUEST_LEADS,
     SEARCH_PROMISES,
     SELF_MEMORY_ASK,
+    SILENCE_NOUN_FILLER,
+    SILENCE_NOUN_FORMS,
     SILENCE_WORDS,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
@@ -515,6 +517,18 @@ def asks_to_listen(text: str) -> bool:
     слушай и не влезай») или слово тишины ``knowledge.SILENCE_WORDS`` («помолчи»). «Не молчи», «слушай, а как…» -
     нет."""
     return has_form(text, LISTEN_ONLY_FORMS) or has_word(text, SILENCE_WORDS)
+
+
+def silence_noun_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Попросил ли человек тишины существительным (#5105, #5115): после снятия вейка и пунктуации
+    (``strip_wake_word``, ``name_tokens``) во фразе есть форма из ``knowledge.SILENCE_NOUN_FORMS`` («тишина»,
+    «тишину», «полная тишина»), а остальные слова — только служебные ``SILENCE_NOUN_FILLER`` («пожалуйста», «ну»,
+    «давай», «режим»). Упоминание («расскажи стих про тишину», «что такое тишина») и «не молчи» — не тишина: там
+    есть другие слова. «Помолчи»/«замолчи» решает Tier-1 по ``SILENCE_WORDS``, сюда они не входят. Таблица одна —
+    ``knowledge``; грамматике и ``tools_view`` один предикат, чтобы не плодить второй разбор."""
+    rest = name_tokens(strip_wake_word(text or "", wake_words))
+    forms, filler = SILENCE_NOUN_FORMS, SILENCE_NOUN_FILLER
+    return any(word in forms for word in rest) and all(word in forms or word in filler for word in rest)
 
 
 def asks_own_memory_condition(text: str) -> bool:

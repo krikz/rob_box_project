@@ -23,7 +23,8 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_dialog_host.tts_voice_registry import gender_of, known_provider, role_voices_for, tts_context_fields
+from rob_box_dialog_host.tts_voice_registry import (gender_of, known_provider, role_voices_for, tts_context_fields,
+                                                    voices_for)
 
 from . import perform_ask
 from rob_box_dialog_host.music_player_state import parse_music_event
@@ -247,12 +248,14 @@ def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
     (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
     без рассказчика (голос робота, :func:`robot_voice`; голоса каста марафона нерусские и в каталог ролей не входят,
-    :func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления (``rob_box_dialog.cast``), им же
-    сверяется голос реплики ``voice``."""
+    :func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления (``rob_box_dialog.cast``).
+    Голос реплики ``voice`` сверяется не с ролями, а с каталогом провайдера (``Busy.voice_catalogue``,
+    :func:`voices_for`, #5103): явно названный голос из каталога принимается, роли от этого не растут."""
     host = performer(node)
     provider, fallback = tts_state(node)
     voices = tuple(role_voices_for(provider, robot_voice(node, provider, fallback)))
     return Busy(active_segment=None if host is None else host.active_segment, voices=voices,
+                voice_catalogue=tuple(voices_for(provider)),
                 voice_genders=tuple((voice, gender_of(provider, voice)) for voice in voices),
                 cast=tuple((getattr(host, "cast", None) or {}).items()))
 
