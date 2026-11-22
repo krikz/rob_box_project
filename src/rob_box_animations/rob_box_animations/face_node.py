@@ -144,6 +144,8 @@ class FaceNode(Node):
         self.panels = PanelPublisher(self)
         self._event_pub = self.create_publisher(ExpressionEvent, '/voice/expression/event', 10)
         self._graph_present: Optional[bool] = None
+        #: слот оттенка, уже показанный в строке смены ключа; повтор строку не плодит (#5143)
+        self._logged_tint: Optional[str] = None
         self._subscribe(g['cmd_vel_topic'], g['battery_topic'])
         self._metrics_period = g['metrics_period_s']
         self._reset_metrics(time.time())
@@ -291,13 +293,24 @@ class FaceNode(Node):
         ma = self.panels.publish(frame, now)
         ms = (time.perf_counter() - t0) * 1000.0
         if self.director.key != prev:
-            self.get_logger().info(f'лицо: {prev or "—"} -> {self.director.key}')
+            self._log_face(prev)
         self._frames += 1
         self._render_ms = max(self._render_ms, ms)
         self._render_sum += ms
         self._peak_ma = max(self._peak_ma, ma)
         if now - self._metrics_at >= self._metrics_period:
             self._log_metrics(now)
+
+    def _log_face(self, prev: str) -> None:
+        """Смена ключа. Оттенок — слот из ``choose()``, и только если он сам изменился."""
+        cur = self.director._cur
+        slot = cur[2].tint_slot if cur is not None else None
+        line = f'лицо: {prev or "—"} -> {self.director.key}'
+        if slot != self._logged_tint:
+            self._logged_tint = slot
+            if slot:
+                line += f', оттенок: {slot}'
+        self.get_logger().info(line)
 
     def _reset_metrics(self, now: float) -> None:
         self._metrics_at, self._frames, self._render_ms, self._render_sum, self._peak_ma = now, 0, 0.0, 0.0, 0.0
