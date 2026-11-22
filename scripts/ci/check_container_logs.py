@@ -43,6 +43,12 @@ from typing import Callable
 
 SEPARATOR = "---[...SKIPPED MIDDLE LOGS...]---"
 SSH_CALL_TIMEOUT_SEC = 120
+# Строка «Initial conf: {...» zenohd — весь JSON-конфиг роутера в одну строку
+# (десятки КБ). Она попадает в первые 50 строк и целиком уезжает в комментарий
+# карточки деплоя как INITIALIZATION CONTEXT (issue #5124). В отчёте режем;
+# сам лог и сырой текст finding не трогаем.
+REPORT_LINE_LIMIT = 500
+REPORT_LINE_MARK = " …[обрезано, {n} символов]"
 
 _DEDUP_PATH = Path(__file__).resolve().parent / "deployment_issue_dedup.py"
 _spec = importlib.util.spec_from_file_location("deployment_issue_dedup", _DEDUP_PATH)
@@ -99,6 +105,18 @@ def fetch_logs(run: RemoteRunner, container: str) -> tuple[str, str]:
     return start.rstrip("\n"), end.rstrip("\n")
 
 
+def _clip_report_line(line: str) -> str:
+    """Обрезать гигантскую строку в тексте отчёта. Сырой лог не меняется."""
+    if len(line) <= REPORT_LINE_LIMIT:
+        return line
+    mark = REPORT_LINE_MARK.format(n=len(line))
+    return line[: REPORT_LINE_LIMIT - len(mark)] + mark
+
+
+def _clip_report(lines: list[str]) -> list[str]:
+    return [_clip_report_line(line) for line in lines]
+
+
 def finding(environment: str, scope: str, container: str, kind: str, severity: str, summary: str, raw: str) -> dict:
     return {
         "environment": environment,
@@ -141,9 +159,16 @@ def check_logs(run: RemoteRunner, *, scope: str, environment: str, compose_dir: 
             )
 
         if critical:
-            report += [f"=== {container} INITIALIZATION CONTEXT ===", logs_start, ""]
+            report.append(f"=== {container} INITIALIZATION CONTEXT ===")
+            report.extend(logs_start.splitlines())
+            report.append("")
 
-    return {"critical": critical_count, "warning": warning_count, "report": report, "findings": findings}
+    return {
+        "critical": critical_count,
+        "warning": warning_count,
+        "report": _clip_report(report),
+        "findings": findings,
+    }
 
 
 def main() -> int:

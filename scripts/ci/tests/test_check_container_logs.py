@@ -196,3 +196,32 @@ def test_ssh_runner_builds_sshpass_argv_and_maps_timeout(monkeypatch):
 
     monkeypatch.setattr(MODULE.subprocess, "run", boom)
     assert run_remote("uptime") == (124, "")
+
+
+def test_giant_initial_conf_line_is_clipped_in_the_report_only():
+    """Issue #5124: «Initial conf: {...» zenohd — десятки КБ в одну строку.
+
+    В комментарий карточки деплоя уезжает INITIALIZATION CONTEXT. Строку режем
+    в отчёте; сырой текст finding и сам лог не трогаем.
+    """
+    conf = "Initial conf: {" + "x" * 4000 + "}"
+    logs = conf + "\n[ERROR] scsynth crashed: segfault in audio thread\nshort tail"
+    _, result = run({"zenoh-router-sound": logs})
+
+    assert result["critical"] == 1
+    assert result["findings"][0]["raw_text"] == "[ERROR] scsynth crashed: segfault in audio thread"
+    report = "\n".join(result["report"])
+    assert conf not in report
+    clipped = [line for line in result["report"] if line.startswith("Initial conf:")]
+    assert len(clipped) == 1
+    assert len(clipped[0]) <= MODULE.REPORT_LINE_LIMIT
+    assert "обрезано" in clipped[0]
+    assert str(len(conf)) in clipped[0]
+
+
+def test_short_report_lines_are_not_clipped():
+    logs = "boot line\n[ERROR] scsynth crashed: segfault in audio thread\nlast line"
+    _, result = run({"supercollider": logs})
+    report = "\n".join(result["report"])
+    assert "boot line" in report and "last line" in report
+    assert "обрезано" not in report
