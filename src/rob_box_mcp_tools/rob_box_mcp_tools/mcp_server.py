@@ -1383,10 +1383,14 @@ class MCPServer(Node):
             self.result_pub.publish(msg_out)
             self.get_logger().info(f"✅ Результат опубликован на /mcp/result")
 
+            from .tool_outcome import tool_outcome_line
+
+            line = tool_outcome_line(tool_name, result.success, result.data, result.error)
+            # Уровень — из результата, не из текста строки (#5092): отказ остаётся WARNING.
             if result.success:
-                self.get_logger().info(f"✅ Инструмент {tool_name} выполнен успешно")
+                self.get_logger().info(line)
             else:
-                self.get_logger().warning(f"❌ Инструмент {tool_name} завершился с ошибкой: {result.error}")
+                self.get_logger().warning(line)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ Ошибка парсинга JSON запроса: {e}")
