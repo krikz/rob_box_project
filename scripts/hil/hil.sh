@@ -305,8 +305,14 @@ sim_compose() {  # sim_compose <args compose>...
 sim_gazebo_state() {
     rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo") 2>/dev/null | grep . || echo 'absent -'"
 }
-# Сырьё гейта контроллера (#5138): снимается ДО sim_down, пока контейнер ещё есть.
-# Строка inspect + хвост логов + есть ли /odom и /clock. Пустой ответ поля — «?», не выдумка.
+# Топики сима, по которым гейт судит мир (#5138). Голого /odom в симе нет:
+# его публикует rtabmap icp_odometry на роботе, в HIL-симе этого нет.
+# Модель/плагин подняты = мост Gazebo дал /sim/ground_truth/odom или идёт /clock.
+# Контроллер поднят = есть /diff_drive_controller/odom.
+SIM_TRUTH_ODOM="/sim/ground_truth/odom"
+SIM_DRIVE_ODOM="/diff_drive_controller/odom"
+# Сырьё гейта контроллера (#5138): снимается ДО гашения сима, пока контейнер ещё есть.
+# Строка inspect + хвост логов + три топика сима. Пустой ответ поля — «?», не выдумка.
 sim_gate_evidence() {
     local gz="$HIL_SIM_PREFIX-gazebo" line topics
     line=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$gz")" 2>/dev/null | grep . || true)
@@ -315,18 +321,23 @@ sim_gate_evidence() {
     rsh "$HIL_SANDBOX_HOST" "docker logs --tail 30 $(q "$gz")" >&2 2>&1 || printf 'docker logs не ответил\n' >&2
     topics=$(sim_exec_bounded "$gz" "/entrypoint.sh ros2 topic list 2>/dev/null" || true)
     if [ -z "$topics" ]; then
-        printf 'сырьё sim: ros2 topic list пуст или не ответил (/odom нет, /clock нет, топиков 0)\n' >&2
+        printf 'сырьё sim: ros2 topic list пуст или не ответил (/clock нет, %s нет, %s нет, топиков 0); /odom здесь не проверяем: его в симе нет\n' \
+            "$SIM_TRUTH_ODOM" "$SIM_DRIVE_ODOM" >&2
         return 0
     fi
-    local n odom=нет clock=нет
+    local n clock=нет truth=нет drive=нет
     n=$(printf '%s\n' "$topics" | grep -c .)
-    if printf '%s\n' "$topics" | grep -qx '/odom'; then odom=есть; fi
     if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=есть; fi
-    printf 'сырьё sim: /odom %s, /clock %s, топиков %s\n' "$odom" "$clock" "$n" >&2
+    if printf '%s\n' "$topics" | grep -qx "$SIM_TRUTH_ODOM"; then truth=есть; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_DRIVE_ODOM"; then drive=есть; fi
+    printf 'сырьё sim: /clock %s, %s %s, %s %s, топиков %s; /odom здесь не проверяем: его в симе нет\n' \
+        "$clock" "$SIM_TRUTH_ODOM" "$truth" "$SIM_DRIVE_ODOM" "$drive" "$n" >&2
 }
 # Причина таймаута гейта — из сырья, не общая фраза. Код печатает одну строку.
-# (а) контейнер перезапускался или вышел с кодом; (б) жив, /odom нет;
-# (в) /odom есть, контроллера нет; иначе — прежнее сообщение.
+# (а) контейнер перезапускался или вышел с кодом;
+# (б) жив, но нет ни /sim/ground_truth/odom, ни /clock — модель/плагин не поднялись;
+# (в) модель есть (/clock или ground_truth), а /diff_drive_controller/odom нет;
+# иначе — прежнее сообщение. Голый /odom не смотрим: в симе его нет.
 sim_cm_timeout_cause() {  # sim_cm_timeout_cause <inspect-строка> <topic-list>
     local inspect="$1" topics="$2" status rc restart
     status=$(printf '%s\n' "$inspect" | sed -n 's/.*Status=\([^ ]*\).*/\1/p' | head -n 1)
@@ -340,12 +351,17 @@ sim_cm_timeout_cause() {  # sim_cm_timeout_cause <inspect-строка> <topic-l
             "${restart:-?}" "${rc:-?}" "${status:-?}"
         return 0
     fi
-    if [ "$status" = running ] && ! printf '%s\n' "$topics" | grep -qx '/odom'; then
-        printf 'Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись; hil.sh off'
+    local clock=0 truth=0 drive=0
+    if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=1; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_TRUTH_ODOM"; then truth=1; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_DRIVE_ODOM"; then drive=1; fi
+    if [ "$status" = running ] && [ "$truth" = 0 ] && [ "$clock" = 0 ]; then
+        printf 'Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись (нет %s и /clock); hil.sh off' \
+            "$SIM_TRUTH_ODOM"
         return 0
     fi
-    if printf '%s\n' "$topics" | grep -qx '/odom'; then
-        printf 'мир идёт, ros2_control не поднял контроллеры; hil.sh off'
+    if { [ "$clock" = 1 ] || [ "$truth" = 1 ]; } && [ "$drive" = 0 ]; then
+        printf 'мир идёт, ros2_control не поднял контроллеры (нет %s); hil.sh off' "$SIM_DRIVE_ODOM"
         return 0
     fi
     printf 'за %s с контроллер Gazebo не появился; hil.sh off' "$HIL_WAIT_CM_S"
