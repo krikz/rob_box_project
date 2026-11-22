@@ -85,9 +85,17 @@ HEALTH_MONITOR_PROXIMITY_ECHO_RE = re.compile(
 # работы (16.11, 18.11 — сотни строк) должен по-прежнему красить деплой.
 # Узко: только модуль zenoh::net::routing::hat::router и только propagation на
 # /router/**. Другие контейнеры и другие сообщения zenoh правило не касается.
-ZENOH_ROUTER_START_RE = re.compile(r"zenohd v|Zenoh can be reached at:")
+# zenohd красит вывод: тусклая метка времени, цвет уровня, тусклые имя модуля и
+# двоеточие после него (\x1b[2mzenohd\x1b[0m\x1b[2m:\x1b[0m). docker logs без -t
+# эти коды не снимает, и в дамп деплоя они доезжают как есть (run 45040975024).
+_ANSI = r"(?:\x1b\[[0-9;]*m)*"
+ZENOH_ROUTER_START_RE = re.compile(rf"zenohd{_ANSI} v|Zenoh can be reached at:")
+# После «@» слэш НЕОБЯЗАТЕЛЕН: боевой лог пишет «@/<zid>/router/**» (run 45040975024,
+# строка 3091), первый вариант шаблона ждал «@<hex>» и реальную строку не ловил.
+# ZID не привязан к hex — требуется только «@/?<что-то>/router/**».
 ZENOH_ROUTER_PROPAGATION_RE = re.compile(
-    r"zenoh::net::routing::hat::router::\w+:\s+Error propagating \w+ @[0-9a-fA-F]+/router/\*\*"
+    rf"zenoh::net::routing::hat::router::{_ANSI}\w+{_ANSI}:{_ANSI}\s+"
+    rf"Error propagating \w+ @/?\S+?/router/\*\*"
 )
 ZENOH_ROUTER_STARTUP_WINDOW_SEC = 10.0
 
@@ -1131,14 +1139,16 @@ def _zenoh_router_startup_transient(line: str, log_text: str) -> bool:
     # (дельта была бы отрицательной), повторный старт позже в дампе — тоже.
     start_before_error = None
     error_at = None
+    target = _strip_ansi(line).strip()
     for row in log_text.splitlines():
         stamp = _iso_z_timestamp(row)
         if stamp is None:
             continue
-        if error_at is None and row.strip() == line.strip() and ZENOH_ROUTER_PROPAGATION_RE.search(row):
+        plain = _strip_ansi(row)
+        if error_at is None and plain.strip() == target and ZENOH_ROUTER_PROPAGATION_RE.search(plain):
             error_at = stamp
             break
-        if ZENOH_ROUTER_START_RE.search(row):
+        if ZENOH_ROUTER_START_RE.search(plain):
             start_before_error = stamp
     if start_before_error is None or error_at is None:
         return False
@@ -1146,9 +1156,18 @@ def _zenoh_router_startup_transient(line: str, log_text: str) -> bool:
     return 0.0 <= delta <= ZENOH_ROUTER_STARTUP_WINDOW_SEC
 
 
+def _strip_ansi(text: str) -> str:
+    """Снять ANSI-коды цвета. zenohd красит метку времени, уровень и имя модуля."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
 def _iso_z_timestamp(line: str):
-    """Метка ISO-8601 с суффиксом Z из строки лога или None."""
-    match = TIMESTAMP_RE.search(line)
+    """Метка ISO-8601 с суффиксом Z из строки лога или None.
+
+    Метка ищется и в сырой строке, и без ANSI: zenohd оборачивает её в
+    ``\x1b[2m...\x1b[0m``, и ``\b`` перед цифрой года на таком стыке не срабатывает.
+    """
+    match = TIMESTAMP_RE.search(line) or TIMESTAMP_RE.search(_strip_ansi(line))
     if match is None:
         return None
     return datetime.fromisoformat(match.group(0).replace("Z", "+00:00").replace("z", "+00:00"))
