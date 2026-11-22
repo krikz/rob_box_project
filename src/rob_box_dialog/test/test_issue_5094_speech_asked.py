@@ -11,8 +11,18 @@ import logging
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import (Busy, Command, Expression, Form, Invalid, ToolCall, current_form, explain, parse,
-                                    validate)
+from rob_box_dialog.command import (
+    Busy,
+    Command,
+    Expression,
+    Form,
+    Invalid,
+    ToolCall,
+    current_form,
+    explain,
+    parse,
+    validate,
+)
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import speech_asked
@@ -104,8 +114,19 @@ class _Ports:
         return Answer(told)
 
     async def execute(self, actions, snapshot, turn_id):
-        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool],
-                             "done", None, dict(a.args)) for n, a in enumerate(actions)]
+        return [
+            ActionResult(
+                f"{turn_id}/{n}",
+                snapshot.epoch,
+                snapshot.agent,
+                a.tool,
+                kn.TOOL_CLASSES[a.tool],
+                "done",
+                None,
+                dict(a.args),
+            )
+            for n, a in enumerate(actions)
+        ]
 
     def say(self, turn_id, epoch, text, voice=None, emotion=None):
         return "sp"
@@ -143,3 +164,203 @@ def test_a_heard_tool_outside_the_silent_sets_answers_the_request():
     assert isinstance(cmd, Command) and cmd.actions[0].tool == "memory_save"
     face = _check(FACE, Form(passed=False))  # без просьбы говорить лицо законно
     assert isinstance(face, Command) and face.expression == Expression(emotion="happy")
+
+
+def test_speech_push_owed_ignores_a_show_beside_a_speech_verb():
+    # «расскажи и покажи»: толчок только на уже поднятое speech_asked, и без запроса, и когда лицо просили.
+    # Само needs_speech толчок не открывает: голый earcon на «ответь» — свой повтор silent_answer (#4021).
+    assert kn.speech_push_owed(True, False, True, False, True)
+    assert kn.speech_push_owed(True, False, False, False, True)
+    assert not kn.speech_push_owed(True, False, True, False)  # просьба есть, speech_asked не поднят
+    assert not kn.speech_push_owed(False, False, True, False)
+    assert not kn.speech_push_owed(False, True, True, False)  # лицо просили, говорить — нет
+    assert kn.speech_push_owed(False, True, False, False)  # запрос без лица, как раньше
+    assert not kn.speech_push_owed(True, True, True, True, True)  # путь пения / не динамики
+
+
+class _BlinkPorts:
+    """Мост уже судил форму: просьба говорить — ``Invalid(speech_asked)``, голая «покажи» — законный Command.
+
+    Ход сам Command не перепроверяет: Command ушёл бы в ``_act`` и мимо ``_close_invalid``.
+    """
+
+    def __init__(self, speech_asked=False):
+        self.speech_asked = speech_asked
+        self.asked, self.executed, self.said = [], [], []
+
+    async def ask(self, messages, tools, timeout_s):
+        self.asked.append(list(messages))
+        blink = ToolCall("play_animation", {"animation": "happy"})
+        if self.speech_asked:
+            return Answer(Invalid(kn.VIOLATION_SPEECH_ASKED, salvage=(blink,)))
+        return Answer(Command(actions=(blink,)))
+
+    async def execute(self, actions, snapshot, turn_id):
+        self.executed.append([(a.tool, dict(a.args)) for a in actions])
+        return [
+            ActionResult(
+                f"{turn_id}/{n}",
+                snapshot.epoch,
+                snapshot.agent,
+                a.tool,
+                kn.TOOL_CLASSES[a.tool],
+                "done",
+                None,
+                dict(a.args),
+            )
+            for n, a in enumerate(actions)
+        ]
+
+    def say(self, turn_id, epoch, text, voice=None, emotion=None):
+        self.said.append(text)
+        return "sp"
+
+    def stage(self, *args, **kwargs):
+        pass
+
+    def cancel_speech(self, epoch, reason, boundary="as_requested"):
+        pass
+
+    def stop_perform(self, how):
+        return False
+
+    def intent(self, turn_id, epoch, kind):
+        pass
+
+
+def _run(text, speech_asked=False):
+    ports = _BlinkPorts(speech_asked=speech_asked)
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    asyncio.run(engine.run(Addressed(text, VOICE)))
+    return ports
+
+
+def test_n906_blink_only_is_pushed_then_the_code_says_it_could_not_tell(caplog):
+    with caplog.at_level(logging.WARNING):
+        ports = _run(N906, speech_asked=True)
+    # первый вызов + повторы за словами; мост свой повтор не тратит (words_only)
+    assert len(ports.asked) == 1 + kn.SPEECH_PUSHES_MAX
+    # каждый повтор кладёт подсказку в следующий запрос; последний запрос видит обе
+    hinted = [
+        call
+        for call in ports.asked
+        if any(isinstance(m, dict) and "speech_asked" in str(m.get("content")) for m in call)
+    ]
+    assert len(hinted) == kn.SPEECH_PUSHES_MAX
+    assert ports.executed == [[("play_animation", {"animation": "happy"})]]  # мигалка просьбы исполнена один раз
+    heard = " ".join(ports.said)
+    assert "Рассказать не вышло" in heard
+    assert "Угу, я тут" not in heard
+    assert any("speech_asked" in r.getMessage() and "повтор за словами" in r.getMessage() for r in caplog.records)
+
+
+N707 = "расскажи про песню про енота: кто, про что, сколько длится"
+
+
+class _LibraryPorts:
+    """n707 (акт 7, run 45051664932): ``music_library`` уже дал данные, модель отвечает только ``speech_asked``.
+
+    Живой ход закрылся ``query_fallback:speech_asked`` (``status=done``) без повтора за словами. Толчок с шапкой
+    «данные запроса уже получены» возвращает модели окно с данными — она говорит текстом, ход ``finished``.
+    Пока шапки нет, двойник молчит так же, как живая модель.
+    """
+
+    def __init__(self, speak=True):
+        self.asked, self.executed, self.said, self.stages = [], [], [], []
+        self.calls = 0
+        self.speak = speak
+
+    async def ask(self, messages, tools, timeout_s):
+        self.asked.append(list(messages))
+        self.calls += 1
+        lookup = ToolCall("music_library", {"action": "search", "query": "енот"})
+        if self.calls == 1:
+            return Answer(
+                Command(actions=(lookup,)), "deepseek", follow=lambda data: ({"role": "tool", "content": data},)
+            )
+        told = any(isinstance(m, dict) and "данные запроса уже получены" in str(m.get("content")) for m in messages)
+        if self.speak and told:
+            return Answer(Command(speech="Песня «Енот-механик», рок, три минуты."))
+        return Answer(Invalid(kn.VIOLATION_SPEECH_ASKED))
+
+    async def execute(self, actions, snapshot, turn_id):
+        self.executed.append([(a.tool, dict(a.args)) for a in actions])
+        return [
+            ActionResult(
+                f"{turn_id}/{n}",
+                snapshot.epoch,
+                snapshot.agent,
+                a.tool,
+                kn.call_class(a.tool, a.args),
+                "done",
+                None,
+                {**dict(a.args), "title": "Енот-механик", "style": "rock"},
+            )
+            for n, a in enumerate(actions)
+        ]
+
+    def say(self, turn_id, epoch, text, voice=None, emotion=None):
+        self.said.append(text)
+        return "sp"
+
+    def stage(self, turn_id, epoch, stage, status, reason="", **kwargs):
+        self.stages.append((stage, status, reason))
+
+    def cancel_speech(self, epoch, reason, boundary="as_requested"):
+        pass
+
+    def stop_perform(self, how):
+        return False
+
+    def intent(self, turn_id, epoch, kind):
+        pass
+
+
+def test_n707_speech_asked_after_a_query_is_pushed_and_the_model_speaks(caplog):
+    ports = _LibraryPorts()
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    with caplog.at_level(logging.WARNING):
+        agg = asyncio.run(engine.run(Addressed(N707, VOICE)))
+    # запрос + отказ + толчок с шапкой «данные уже получены»; на этой шапке двойник говорит
+    assert len(ports.asked) == 3
+    hinted = [
+        call
+        for call in ports.asked
+        if any(isinstance(m, dict) and "speech_asked" in str(m.get("content")) for m in call)
+    ]
+    assert len(hinted) == 1
+    assert "данные запроса уже получены" in str(hinted[0])
+    assert ports.executed == [[("music_library", {"action": "search", "query": "енот"})]]
+    heard = " ".join(ports.said)
+    assert "Енот-механик" in heard and "Рассказать не вышло" not in heard
+    assert agg.status == "finished"
+    assert all(status != "done" for _, status, _ in ports.stages)
+    assert not any("после query" in r.getMessage() or "query_fallback" in r.getMessage() for r in caplog.records)
+
+
+def test_n707_still_silent_after_pushes_closes_finished_not_done(caplog):
+    ports = _LibraryPorts(speak=False)
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    with caplog.at_level(logging.WARNING):
+        agg = asyncio.run(engine.run(Addressed(N707, VOICE)))
+    assert len(ports.asked) == 2 + kn.SPEECH_PUSHES_MAX
+    assert ports.executed == [[("music_library", {"action": "search", "query": "енот"})]]
+    assert agg.status == "finished"
+    assert all(status != "done" for _, status, _ in ports.stages)
+    assert "Енот-механик" in " ".join(ports.said)  # страховка по данным, не молчание
+    assert any("после query" in r.getMessage() for r in caplog.records)
+
+
+def test_a_bare_show_stays_a_silent_blink():
+    ports = _run(SHOW)
+    assert len(ports.asked) == 1  # говорить не просили — повтора за словами нет
+    assert ports.executed == [[("play_animation", {"animation": "happy"})]]
+    assert ports.said == []
+
+
+def test_speech_asked_phrase_is_in_the_catalog():
+    from rob_box_dialog import phrases
+
+    assert kn.SPEECH_ASKED_PHRASE in kn.PHRASE_KEYS
+    assert kn.INVALID_COMMAND_PHRASES[kn.VIOLATION_SPEECH_ASKED] == kn.SPEECH_ASKED_PHRASE
+    assert phrases.text(kn.SPEECH_ASKED_PHRASE) == "Рассказать не вышло. Скажи ещё раз?"
