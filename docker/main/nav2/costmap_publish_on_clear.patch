@@ -1,0 +1,56 @@
+--- a/nav2_costmap_2d/include/nav2_costmap_2d/costmap_2d_ros.hpp
++++ b/nav2_costmap_2d/include/nav2_costmap_2d/costmap_2d_ros.hpp
+@@ -180,6 +180,15 @@
+    * @brief Reset each individual layer
+    */
+   void resetLayers();
++
++  /**
++   * @brief #5101: publish the current costmap now, not on the next update
++   * cycle. clearEntirely resets the map in memory and returns the service
++   * response at once; costmap_raw is otherwise published only in the 5 Hz
++   * loop. behavior_server reads that topic at 10 Hz and would decide a
++   * collision on a copy up to 0.2 s old, still showing the wall just cleared.
++   */
++  void publishCostmapNow();
+
+   /** @brief Same as getLayeredCostmap()->isCurrent(). */
+   bool isCurrent()
+--- a/nav2_costmap_2d/src/costmap_2d_ros.cpp
++++ b/nav2_costmap_2d/src/costmap_2d_ros.cpp
+@@ -536,6 +536,23 @@
+   }
+ }
+
++void
++Costmap2DROS::publishCostmapNow()
++{
++  // #5101: the clear service returns before the 5 Hz loop publishes, so the
++  // subscriber keeps the pre-clear copy. Publish the reset map here, under the
++  // same lock the loop uses, so the next collision check reads the cleared map.
++  if (costmap_publisher_ == nullptr || !layered_costmap_->isInitialized()) {
++    return;
++  }
++  std::scoped_lock<std::mutex> lock(_dynamic_parameter_mutex);
++  unsigned int x0, y0, xn, yn;
++  layered_costmap_->getBounds(&x0, &xn, &y0, &yn);
++  costmap_publisher_->updateBounds(x0, xn, y0, yn);
++  costmap_publisher_->publishCostmap();
++  last_publish_ = now();
++}
++
+ void
+ Costmap2DROS::start()
+ {
+--- a/nav2_costmap_2d/src/clear_costmap_service.cpp
++++ b/nav2_costmap_2d/src/clear_costmap_service.cpp
+@@ -97,6 +97,9 @@
+     ("Received request to clear entirely the " + costmap_.getName()).c_str());
+
+   clearEntirely();
++  // #5101: publish the cleared map before the response, so a behavior that
++  // ticks within milliseconds reads the cleared map, not the wall it cleared.
++  costmap_.publishCostmapNow();
+ }
+
+ void ClearCostmapService::clearRegion(const double reset_distance, bool invert)
