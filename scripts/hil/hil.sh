@@ -283,6 +283,51 @@ sim_compose() {  # sim_compose <args compose>...
 sim_gazebo_state() {
     rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo") 2>/dev/null | grep . || echo 'absent -'"
 }
+# Сырьё гейта контроллера (#5138): снимается ДО sim_down, пока контейнер ещё есть.
+# Строка inspect + хвост логов + есть ли /odom и /clock. Пустой ответ поля — «?», не выдумка.
+sim_gate_evidence() {
+    local gz="$HIL_SIM_PREFIX-gazebo" line topics
+    line=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$gz")" 2>/dev/null | grep . || true)
+    printf 'сырьё gazebo inspect: %s\n' "${line:-inspect не ответил}" >&2
+    printf 'сырьё gazebo logs (tail 30):\n' >&2
+    rsh "$HIL_SANDBOX_HOST" "docker logs --tail 30 $(q "$gz")" >&2 2>&1 || printf 'docker logs не ответил\n' >&2
+    topics=$(rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$gz") /entrypoint.sh ros2 topic list 2>/dev/null" || true)
+    if [ -z "$topics" ]; then
+        printf 'сырьё sim: ros2 topic list пуст или не ответил (/odom нет, /clock нет, топиков 0)\n' >&2
+        return 0
+    fi
+    local n odom=нет clock=нет
+    n=$(printf '%s\n' "$topics" | grep -c .)
+    if printf '%s\n' "$topics" | grep -qx '/odom'; then odom=есть; fi
+    if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=есть; fi
+    printf 'сырьё sim: /odom %s, /clock %s, топиков %s\n' "$odom" "$clock" "$n" >&2
+}
+# Причина таймаута гейта — из сырья, не общая фраза. Код печатает одну строку.
+# (а) контейнер перезапускался или вышел с кодом; (б) жив, /odom нет;
+# (в) /odom есть, контроллера нет; иначе — прежнее сообщение.
+sim_cm_timeout_cause() {  # sim_cm_timeout_cause <inspect-строка> <topic-list>
+    local inspect="$1" topics="$2" status rc restart
+    status=$(printf '%s\n' "$inspect" | sed -n 's/.*Status=\([^ ]*\).*/\1/p' | head -n 1)
+    rc=$(printf '%s\n' "$inspect" | sed -n 's/.*ExitCode=\([^ ]*\).*/\1/p' | head -n 1)
+    restart=$(printf '%s\n' "$inspect" | sed -n 's/.*RestartCount=\([^ ]*\).*/\1/p' | head -n 1)
+    case "$restart" in
+        ''|*[!0-9]*) restart=0 ;;
+    esac
+    if [ "$restart" -gt 0 ] || { [ -n "$rc" ] && [ "$rc" != 0 ]; }; then
+        printf 'Gazebo перезапускался (RestartCount=%s, ExitCode=%s, Status=%s): смотри сырьё выше; hil.sh off' \
+            "${restart:-?}" "${rc:-?}" "${status:-?}"
+        return 0
+    fi
+    if [ "$status" = running ] && ! printf '%s\n' "$topics" | grep -qx '/odom'; then
+        printf 'Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись; hil.sh off'
+        return 0
+    fi
+    if printf '%s\n' "$topics" | grep -qx '/odom'; then
+        printf 'мир идёт, ros2_control не поднял контроллеры; hil.sh off'
+        return 0
+    fi
+    printf 'за %s с контроллер Gazebo не появился; hil.sh off' "$HIL_WAIT_CM_S"
+}
 # Число /controller_manager в графе — глазами сторожа внутри gazebo; «-» — gazebo не работает.
 sim_cm_count() {
     rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -" || echo -
@@ -565,11 +610,17 @@ cmd_on() {
             die "/controller_manager в графе: $cm (ждали 1) — Gazebo погашен; hil.sh off"
         fi
         if [ "$(date +%s)" -ge "$deadline" ]; then
-            sim_down
             if [ "$cm" = 1 ]; then
+                sim_gate_evidence
+                sim_down
                 die "за $HIL_WAIT_CM_S с у $CMD_VEL_UNSTAMPED не ровно 1 подписчик (сейчас ${subs:--}); hil.sh off"
             fi
-            die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"
+            # #5138: сырьё и причина — пока контейнер жив. sim_down после, иначе логи уже не снять.
+            _cm_inspect=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null | grep . || true)
+            _cm_topics=$(rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh ros2 topic list 2>/dev/null" || true)
+            sim_gate_evidence
+            sim_down
+            die "$(sim_cm_timeout_cause "${_cm_inspect:-}" "${_cm_topics:-}")"
         fi
         sleep 5
     done

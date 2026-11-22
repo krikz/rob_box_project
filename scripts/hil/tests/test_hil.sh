@@ -17,6 +17,8 @@
 #   5. on, если в графе два /controller_manager — сим гасится, выход 1;
 #   5b. on, если у /diff_drive_controller/cmd_vel_unstamped два подписчика (§5.1) —
 #      сим гасится, выход 1;
+#   5c. таймаут /controller_manager (#5138): три разные причины и сырьё в выводе —
+#      (а) контейнер перезапускался, (б) жив, но /odom нет, (в) /odom есть, контроллера нет;
 #   6. off: сим гаснет ДО возврата ros2-control; замок снимается последним;
 #   7. scripts/deploy/check_hil_lock.sh: свободно / замок / нет ответа;
 #   8. реестр карт и точек (#4392): on снимает снапшот боевого maps и пересоздаёт
@@ -94,6 +96,12 @@ case "$1" in
         case "$*" in
             *"State.Status}} {{.State.ExitCode"*)
                 [ -f "$S/$name" ] || { [ -n "${FAKE_INSPECT_BLANK:-}" ] && echo; exit 1; }; echo "$(cat "$S/$name") 0" ;;
+            *"RestartCount="*)
+                # #5138: сырьё гейта. FAKE_INSPECT_BLANK — inspect молчит (контейнер уже мёртв).
+                # FAKE_GZ_STATUS/EXIT/RESTART/STARTED перебивают файл состояния.
+                [ -n "${FAKE_INSPECT_BLANK:-}" ] && { echo; exit 1; }
+                [ -f "$S/$name" ] || { echo; exit 1; }
+                echo "Status=${FAKE_GZ_STATUS:-$(cat "$S/$name")} RestartCount=${FAKE_GZ_RESTART:-0} StartedAt=${FAKE_GZ_STARTED:-2026-11-22T19:36:19Z} ExitCode=${FAKE_GZ_EXIT:-0}" ;;
             *"State.Status"*) echo "$(st "$name")" ;;
             *"State.Running"*) [ "$(st "$name")" = running ] && echo true || echo false ;;
             *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"
@@ -103,7 +111,7 @@ case "$1" in
             *".Image"*) [ -f "$S/$name.image" ] && cat "$S/$name.image" || echo sha256:fake ;;
         esac ;;
     image) exit 0 ;;
-    logs) echo "fake logs" ;;
+    logs) printf '%s\n' "${FAKE_GZ_LOGS:-fake gazebo log line}" ;;
     exec)
         case "$*" in
             *"python3 -c"*)  # maps-dump: боевой maps — файл $FAKE_STATE/prod_maps; нет файла — sqlite падает
@@ -119,6 +127,12 @@ case "$1" in
                 [ -n "$out" ] || exit 9
                 case "$out" in *True*) printf true ;; *) printf false ;; esac ;;
             *"cat "*) [ -f "${FAKE_GAZEBO_SDF:-}" ] && cat "$FAKE_GAZEBO_SDF" || true ;;
+            *"topic list"*)  # #5138: список топиков сима (FAKE_TOPICS, по строке; __NONE__ — пусто)
+                case "${FAKE_TOPICS-__DEFAULT__}" in
+                    __DEFAULT__) printf '%s\n' /clock /odom ;;
+                    __NONE__) ;;
+                    *) printf '%s\n' "$FAKE_TOPICS" ;;
+                esac ;;
             *"topic info"*)  # §5.1: Subscription count cmd_vel_unstamped (FAKE_CMD_VEL_SUBS, умолч. 1)
                 [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
                 echo "Type: geometry_msgs/msg/Twist"
@@ -273,6 +287,48 @@ reset_state
 run_hil on FAKE_ZENOH_LOG=1 FAKE_CMD_VEL_SUBS=2 >/dev/null; rc=$?
 check "on: два подписчика cmd_vel_unstamped ловятся и при zenoh-логе (rc=$rc)" \
     '[ "$rc" -eq 1 ] && grep -q "cmd_vel_unstamped подписчиков: 2" "$WORK/out.log"'
+
+# ── 5c. таймаут гейта контроллера называет причину и оставляет сырьё (#5138) ──
+# FAKE_CM=0: счётчик не становится 1, за HIL_WAIT_CM_S=5 гейт истекает.
+# (а) контейнер перезапускался — RestartCount>0, код выхода в строке die.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_RESTART=2 FAKE_GZ_EXIT=137 FAKE_GZ_STATUS=running \
+    FAKE_GZ_LOGS='gzserver: killed' FAKE_TOPICS='/clock'; rc=$?
+check "гейт (а): перезапуск — ExitCode=137 в причине, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "Gazebo перезапускался (RestartCount=2, ExitCode=137, Status=running)" "$WORK/out.log" && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (а): сырьё inspect, лог и топики в выводе" \
+    'grep -q "сырьё gazebo inspect: Status=running RestartCount=2" "$WORK/out.log" && grep -q "gzserver: killed" "$WORK/out.log" && grep -q "сырьё sim: /odom нет, /clock есть, топиков 1" "$WORK/out.log"'
+# (б) контейнер жив, /odom нет — модель/плагин не поднялись.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/clock
+/rosout'; rc=$?
+check "гейт (б): жив без /odom — причина про модель/плагин, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (б): сырьё говорит /odom нет" \
+    'grep -q "сырьё gazebo inspect: Status=running RestartCount=0" "$WORK/out.log" && grep -q "сырьё sim: /odom нет, /clock есть, топиков 2" "$WORK/out.log"'
+# (в) /odom есть, контроллера нет — мир идёт, ros2_control не поднял контроллеры.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/clock
+/odom
+/joint_states'; rc=$?
+check "гейт (в): /odom есть, контроллера нет — причина про ros2_control, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "мир идёт, ros2_control не поднял контроллеры" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (в): сырьё говорит /odom есть и число топиков" \
+    'grep -q "сырьё sim: /odom есть, /clock есть, топиков 3" "$WORK/out.log" && grep -q "сырьё gazebo logs" "$WORK/out.log"'
+# (г) определить не удалось: inspect пуст, топиков нет — прежнее сообщение, сырьё честно пустое.
+reset_state
+run_hil on FAKE_CM=0 FAKE_INSPECT_BLANK=1 FAKE_TOPICS=__NONE__; rc=$?
+check "гейт (г): сырья нет — прежнее сообщение, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "за 5 с контроллер Gazebo не появился" "$WORK/out.log" && ! grep -q "модель/плагин" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (г): сырьё говорит, что inspect и topic list не ответили" \
+    'grep -q "сырьё gazebo inspect: inspect не ответил" "$WORK/out.log" && grep -q "ros2 topic list пуст или не ответил" "$WORK/out.log"'
+# Успешный путь не задет: контроллер есть — причины таймаута в выводе нет.
+reset_state
+run_hil on; rc=$?
+check "гейт: успешный on не печатает причину таймаута (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q "сырьё gazebo" "$WORK/out.log"'
 
 # ── 6. off ────────────────────────────────────────────────────────────────
 reset_state
