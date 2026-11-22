@@ -1303,6 +1303,12 @@ jobs:
             echo "main_healthy=false" >> $GITHUB_OUTPUT
             exit 1
           fi
+          # Приёмка #5118: гейт прошёл — main_healthy честно true. Раньше false
+          # из статуса (pending внутри start_period) оставался висеть, и
+          # Summary красил зелёный деплой. Статус сам дожидается окна, так что
+          # сюда healthy=false доходит только при провале; true здесь —
+          # страховка, что «гейт ok, а флаг false» не переживёт шаг.
+          echo "main_healthy=true" >> $GITHUB_OUTPUT
 
       - name: "[Vision Pi] Check Container Logs"
         if: '!inputs.dry_run'

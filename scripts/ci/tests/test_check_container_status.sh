@@ -74,11 +74,15 @@ calls_file="$FIXTURE_DIR/.calls"
 n="$( [ -f "$calls_file" ] && cat "$calls_file" || echo 0 )"
 n=$((n + 1))
 echo "$n" > "$calls_file"
-case "$n" in
-    1) sample_file="$FIXTURE_DIR/sample_1.txt" ;;
-    2) sample_file="$FIXTURE_DIR/sample_2.txt" ;;
-    *) sample_file="$FIXTURE_DIR/sample_2.txt" ;;  # защита от >2 (не должно быть)
-esac
+# Замеры 1 и 2 — пара двухзамерного подтверждения. Замер 3 и дальше —
+# перемер после ожидания конца start_period (issue #5114, приёмка #5118):
+# sample_N.txt, если есть, иначе последний заданный замер.
+sample_file="$FIXTURE_DIR/sample_${n}.txt"
+if [ ! -f "$sample_file" ]; then
+    # Последний заданный замер, не всегда sample_2: перемер (n>=3) без своей
+    # фикстуры повторяет то, что уже измерили, а не замер #2.
+    sample_file="$(ls -1 "$FIXTURE_DIR"/sample_*.txt 2>/dev/null | sort -V | tail -n 1)"
+fi
 if [ -f "$sample_file" ]; then
     cat "$sample_file"
 else
@@ -161,12 +165,20 @@ inspect() {  # $1=name $2=status $3=health $4=restarts $5=exitcode [$6=started_a
 #                     кейсы не знают про pending_start, issue #5114)
 run_case() {
     local expect_healthy="$1" expect_failed="$2" fix1="$3" fix2="$4" label="$5"
-    local expect_pending="${6:-}"
+    # ${7:-} в `local` нельзя: local — команда, и $? внутри подстановки
+    # становится её кодом, а не кодом предыдущей. Пустой $7 тогда всегда
+    # «задан», и sample_3 пишется пустым.
+    local expect_pending="${6-}" remeasure="${7-}"
 
     local fixture_dir
     fixture_dir="$(mktemp -d)"
     printf '%s\n' "$fix1" > "$fixture_dir/sample_1.txt"
     printf '%s\n' "$fix2" > "$fixture_dir/sample_2.txt"
+    # Третий замер — перемер после ожидания конца окна. Пусто = мок
+    # повторит sample_2 (старые кейсы ждут ровно два вызова).
+    if [ -n "$remeasure" ]; then
+        printf '%s\n' "$remeasure" > "$fixture_dir/sample_3.txt"
+    fi
 
     # Ускоряем CONFIRM_INTERVAL до 0 — тесту не нужны реальные 15s.
     local env_block=(
@@ -178,6 +190,11 @@ run_case() {
         "PI_SSH_OPTS=-o StrictHostKeyChecking=no"
         "FIXTURE_DIR=$fixture_dir"
         "CONFIRM_INTERVAL=0"
+        # Ожидание конца окна в тестах выключено: фикстуры либо уже вне
+        # окна, либо (кейсы P/Q) задают cap и третий замер отдельно.
+        "MAX_PENDING_WAIT_S=${MAX_PENDING_WAIT_S:-0}"
+        "PROBE_SLACK_S=${PROBE_SLACK_S:-0}"
+        "PENDING_POLL_S=${PENDING_POLL_S:-0}"
         "ENVIRONMENT=test"
         "SCOPE=vision"
         "SUMMARY_FILE=$(mktemp)"
@@ -310,12 +327,35 @@ NAV2_START_PERIOD_NS=90000000000  # 90s, как у nav2 (docker/main/docker-comp
 FIX1="$(inspect nav2 running starting 0 0 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
 run_case false 1 "$FIX1" "$FIX1" "O: starting on both samples, age 120s > start_period 90s → failed (issue #5114)" false
 
+# Кейс P (приёмка #5118): starting внутри окна — скрипт сам ждёт конца окна и
+# мерит снова. Третий замер уже healthy: к финальному JSON pending_start=false
+# и healthy=true. poll=0, чтобы не спать реальные секунды: дедлайн в будущем,
+# но ожидание режется до шага опроса.
 FIX1="$(inspect nav2 running starting 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
-run_case false 0 "$FIX1" "$FIX1" "P: starting on both samples, age 5s < start_period 90s → not healthy, not failed (issue #5114)" true
+FIX3="$(inspect nav2 running healthy 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
+MAX_PENDING_WAIT_S=120 PROBE_SLACK_S=0 PENDING_POLL_S=0 \
+    run_case true 0 "$FIX1" "$FIX1" "P: starting inside window, re-measure healthy → healthy=true, pending_start=false (issue #5114, приёмка #5118)" false "$FIX3"
+MAX_PENDING_WAIT_S="" PROBE_SLACK_S="" PENDING_POLL_S=""
 
-FIX1="$(inspect nav2 running healthy 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
-FIX2="$(inspect nav2 running starting 0 0 "$YOUNG_STARTED" "$NAV2_START_PERIOD_NS")"
-run_case false 0 "$FIX1" "$FIX2" "Q: starting only in sample #2 inside window → not healthy, not failed (issue #5114)" true
+# Окно с запасом против границы секунды: возраст считается строго меньше
+# start_period, и замер на стыке 90-й секунды уже «после окна».
+Q_PERIOD_NS=300000000000
+FIX1="$(inspect nav2 running healthy 0 0 "$YOUNG_STARTED" "$Q_PERIOD_NS")"
+FIX2="$(inspect nav2 running starting 0 0 "$YOUNG_STARTED" "$Q_PERIOD_NS")"
+FIX3="$(inspect nav2 running healthy 0 0 "$YOUNG_STARTED" "$Q_PERIOD_NS")"
+MAX_PENDING_WAIT_S=120 PROBE_SLACK_S=0 PENDING_POLL_S=0 \
+    run_case true 0 "$FIX1" "$FIX2" "Q: starting only in sample #2 inside window, re-measure healthy → healthy=true (issue #5114, приёмка #5118)" false "$FIX3"
+MAX_PENDING_WAIT_S="" PROBE_SLACK_S="" PENDING_POLL_S=""
+
+# Кейс T: ожидание упёрлось в cap, контейнер всё ещё starting внутри окна.
+# Вердикта нет — не здоровье (pending_start=true, failed_count=0) и не ложный
+# провал: окно ещё не кончилось, Docker не обязан был вынести его.
+# Окно длиннее cap: перемер за cap всё ещё внутри start_period, поэтому
+# starting остаётся pending, а не starting_after_start_period.
+FIX1="$(inspect nav2 running starting 0 0 "$YOUNG_STARTED" 600000000000)"
+MAX_PENDING_WAIT_S=2 PENDING_POLL_S=1 \
+    run_case false 0 "$FIX1" "$FIX1" "T: starting inside window, wait cap exhausted → not healthy, pending_start=true (issue #5114)" true
+MAX_PENDING_WAIT_S=""
 
 FIX1="$(inspect nav2 running starting 0 0)"
 run_case false 1 "$FIX1" "$FIX1" "R: starting with no start_period data → failed, no grace (issue #5114)" false

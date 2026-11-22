@@ -220,6 +220,10 @@ main = step("[Main Pi] Check Container Status")
 assert "scripts/ci/wait_nav2_active.sh" in main, "Main Pi step does not call wait_nav2_active.sh"
 assert "STATUS_JSON" in main, "Main Pi step does not pass STATUS_JSON to the nav2 gate"
 assert "exit 1" in main, "Main Pi step never exits 1: a dead nav2 would stay green"
+# Приёмка #5118: гейт ok=true обязан писать main_healthy=true. Иначе false из
+# статуса (pending внутри окна) висит до Summary и красит зелёный деплой.
+ok_arm = main.split('".ok"', 1)[-1]
+assert 'main_healthy=true' in ok_arm, "nav2 gate never writes main_healthy=true after ok"
 # Гейт — только про nav2. Vision/Sound шаги его не зовут.
 for other in ("[Vision Pi] Check Container Status", "[Sound Pi] Check Container Status"):
     assert "wait_nav2_active.sh" not in step(other), other
