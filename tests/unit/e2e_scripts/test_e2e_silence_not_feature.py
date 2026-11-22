@@ -133,6 +133,28 @@ class TestSilenceIsNotAFeature:
         assert rc == 0, (out, err)
         assert "FAIL_KIND=feature" in out and "E2E_FEATURE_FAIL" in out, (out, err)
 
+    def test_silent_ok_rc_zero_does_not_count_as_a_cycle(self):
+        """silent_ok даёт rc=0 без речи: такой шаг не подтверждённый цикл и не открывает feature."""
+        out, err, rc = run(
+            "\n".join(
+                [
+                    "E2E_CONFIRMED_CYCLES=0",
+                    "for _ in 1 2 3 4 5 6 7 8 9 10; do mark_fail_kind no_reaction; done",
+                    # Ход завершён без речи: rc=0, но робот не ответил (ветка silent_ok).
+                    "rc=0; _silent_ok=1",
+                    'if [ "$rc" = "0" ] && [ "${_silent_ok:-0}" != "1" ]; then',
+                    "    E2E_CONFIRMED_CYCLES=$((${E2E_CONFIRMED_CYCLES:-0} + 1))",
+                    "fi",
+                    'if [ "${E2E_CONFIRMED_CYCLES:-0}" -gt 0 ]; then mark_fail_kind feature; fi',
+                    'echo "CYCLES=${E2E_CONFIRMED_CYCLES}"',
+                ]
+            )
+        )
+        assert rc == 0, (out, err)
+        assert "CYCLES=0" in out, (out, err)
+        assert "E2E_NO_REACTION" in out and "E2E_FEATURE_FAIL" not in out, (out, err)
+        assert "FAIL_KIND=no_reaction" in out
+
 
 def test_gate1_fail_is_guarded_by_confirmed_cycles():
     """Развилка в самом скрипте: feature из GATE-1 стоит внутри проверки счётчика циклов."""
@@ -159,7 +181,8 @@ def test_confirmed_cycle_is_counted_where_both_judges_agree():
     counted = re.search(
         r'log "STEP \$\{label\}: ✅ ПОЛНЫЙ ЦИКЛ \(акцепт \+ LLM \+ TTS\)"\n'
         r"\s+reaction=1\n"
-        r"(?:[^\n]*\n){0,6}?"
+        r"(?:[^\n]*\n){0,8}?"
+        r'\s+if \[ "\$\{_silent_ok:-0\}" != "1" \]; then\n'
         r"\s+E2E_CONFIRMED_CYCLES=\$\(\(\$\{E2E_CONFIRMED_CYCLES:-0\} \+ 1\)\)",
         text,
     )

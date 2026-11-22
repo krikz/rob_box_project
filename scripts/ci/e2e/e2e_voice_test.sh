@@ -3003,6 +3003,10 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
     [ -n "${E2E_STT_MAX_ATTEMPTS:-}" ] || E2E_STT_MAX_ATTEMPTS="$(python3 "$(_events_py)" stt-retry --text "говори" --heard "колории" --attempt 1 --missing "говори" --allowed 1 | _ev_kv max)"
     reaction=0
     for attempt in $(seq 1 "$E2E_MAX_ATTEMPTS"); do
+        # silent_ok -- ход завершён без речи (rc=0 ниже, но робот не ответил). Флаг
+        # per-attempt: без сброса здесь протечёт на следующую попытку и спрячет
+        # настоящий ответ. Счётчик подтверждённых циклов такие шаги не считает.
+        _silent_ok=0
         if [ -n "$accepted_before" ]; then
             # ПРИНЯТО уже зафиксировано на предыдущей проверке этого шага —
             # НЕ переигрываем команду повторно (issue #2933: дубли на
@@ -3148,18 +3152,24 @@ run_step() {  # $1=text $2=voice $3=step_label $4=expect_kind(cycle|wake-gated|b
             if [ "$rc" != "0" ] && [ "$rc" != "2" ] && [ "${E2E_STEP_SILENT_OK:-0}" = "1" ] && [ "${E2E_REPLY_NO_SPEECH:-0}" = "1" ]; then
                 log "STEP ${label}: ход завершён без речи (📊 [turn] stage=done, SpeechEvent нет) -- шаг помечен silent_ok"
                 rc=0
+                # Речи не было: rc=0 здесь -- не ответ робота, счётчик подтверждённых
+                # циклов его не считает (иначе GATE-1 перекрасит молчание в feature).
+                _silent_ok=1
             fi
         fi
         log "STEP ${label}: reply_after=${E2E_REPLY_AFTER:-?}s, silence_after=${E2E_STEP_SILENCE_SEC:-0}s (wait=${E2E_WAIT_MODE})"
         if [ "$rc" = "0" ]; then
             log "STEP ${label}: ✅ ПОЛНЫЙ ЦИКЛ (акцепт + LLM + TTS)"
             reaction=1
-            # rc=0 -- цикл ПОДТВЕРЖДЁН обоими судьями (check_cycle v1 и e2e_events v2
-            # сходятся здесь). Считаем такие шаги: ноль к моменту GATE-1 не даёт
-            # агрегату перекрасить молчание акта в feature (run 44963710006).
-            # `${...:-0}` -- чтобы set -u не рвался, когда run_step зовут отдельно
-            # от главного скрипта (юнит-тесты харнесса).
-            E2E_CONFIRMED_CYCLES=$((${E2E_CONFIRMED_CYCLES:-0} + 1))
+            # rc=0 -- шаг, где робот реально ответил: полный цикл (оба судьи сходятся
+            # здесь) либо якорь barge_in (он невозможен без ПРИНЯТО, реакция была).
+            # silent_ok сюда тоже приходит с rc=0, но речи там не было -- такие шаги
+            # не считаем, иначе ноль настоящих ответов GATE-1 перекрасит в feature
+            # (run 44963710006). `${...:-0}` -- чтобы set -u не рвался, когда run_step
+            # зовут отдельно от главного скрипта (юнит-тесты харнесса).
+            if [ "${_silent_ok:-0}" != "1" ]; then
+                E2E_CONFIRMED_CYCLES=$((${E2E_CONFIRMED_CYCLES:-0} + 1))
+            fi
             break
         elif [ "$rc" = "2" ]; then
             log "STEP ${label}: ❌ LLM/TTS ERROR — тест красный, не чиним"
