@@ -876,6 +876,10 @@ jobs:
   # ============================================================================
   # Test Summary
   # ============================================================================
+  # #5116: сводка не выдаёт skipped Integration Tests за пройденные.
+  # Интеграция воротами PR не становится (решение Шифу 22.11.2026): её нет в
+  # needs, условие джобы по ref не трогаем, skipped не красит прогон. Текст
+  # строит scripts/ci/test_summary.py — на pull_request строка «не запускались».
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
@@ -883,32 +887,18 @@ jobs:
     if: always()
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
       - name: Generate summary
         run: |
-          echo "## 🧪 Test Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests (rob_box_mcp_tools) | ${{ needs.mcp-tools-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| E2E Contract Guards | ${{ needs.e2e-contract-guards.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| URDF sim-arg | ${{ needs.urdf-sim-arg.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ needs.unit-tests.result }}" != "success" ] \
-             || [ "${{ needs.mcp-tools-unit-tests.result }}" != "success" ] \
-             || [ "${{ needs.e2e-contract-guards.result }}" != "success" ] \
-             || [ "${{ needs.urdf-sim-arg.result }}" != "success" ]; then
-            echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔧 Quick Debug" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "# Run tests locally" >> $GITHUB_STEP_SUMMARY
-            echo "cd ~/voice_ws" >> $GITHUB_STEP_SUMMARY
-            echo "colcon test --packages-select rob_box_voice" >> $GITHUB_STEP_SUMMARY
-            echo "colcon test-result --verbose" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "✅ All tests passed!" >> $GITHUB_STEP_SUMMARY
-          fi
+          set -eo pipefail
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          python3 scripts/ci/test_summary.py \
+            --event "${{ github.event_name }}" \
+            --suite "Unit Tests=${{ needs.unit-tests.result }}" \
+            --suite "Unit Tests (rob_box_mcp_tools)=${{ needs.mcp-tools-unit-tests.result }}" \
+            --suite "E2E Contract Guards=${{ needs.e2e-contract-guards.result }}" \
+            --suite "URDF sim-arg=${{ needs.urdf-sim-arg.result }}" \
+            --integration-result "" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
