@@ -520,10 +520,11 @@ def speaks_aloud(snapshot: SessionSnapshot) -> bool:
     return agent_spec(snapshot.agent).sink == Sink.SPEAKERS and snapshot.top("Silence") is None
 
 
-def words_owed(snapshot: SessionSnapshot, text: str, cmd: Command) -> bool:
+def words_owed(snapshot: SessionSnapshot, text: str, cmd: Command, wake_words: Optional[Sequence[str]] = None) -> bool:
     """Команда модели не слышна, а человек ждёт слов: :func:`speaks_aloud` (и при подхвате бэклога), и
-    сама команда без слов (``tools_view.needs_words``: голая анимация, которую словами не просили)."""
-    return speaks_aloud(snapshot) and needs_words(text, cmd)
+    сама команда без слов (``tools_view.needs_words``: голая анимация, которую словами не просили). ``wake_words`` -
+    таблица вейков хода: ей снимают вейк перед разбором просьбы о тишине (#5105)."""
+    return speaks_aloud(snapshot) and needs_words(text, cmd, wake_words)
 
 
 def read_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
@@ -532,7 +533,8 @@ def read_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     ничего). Слов после чтения ждут от КАЖДОГО агента: у Личности это :func:`words_owed` (динамики), у оператора (шлем,
     чат) ``speaks_aloud`` ложно - без этого ход закрывался молча. Решает код по структуре хода и реплике человека
     (``tools_view.needs_words``), а не по тексту ответа."""
-    return bool(turn.queried) and not speaks_aloud(snapshot) and needs_words(turn.text, cmd)
+    return (bool(turn.queried) and not speaks_aloud(snapshot)
+            and needs_words(turn.text, cmd, turn.wake_words))
 
 
 def sound_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
@@ -543,7 +545,7 @@ def sound_owed(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command) -> bool:
     там же, где :func:`words_owed` (:func:`speaks_aloud`); лицо по просьбе (``tools_view.show_asked``) - не трогаем.
     Решает код по структуре команды и реплике человека, а не по тексту ответа модели (ADR-0148)."""
     asked = asks_question(turn.text, turn.wake_words)
-    if not turn.queried or not speaks_aloud(snapshot) or show_asked(turn.text) or not asked:
+    if not turn.queried or not speaks_aloud(snapshot) or show_asked(turn.text, turn.wake_words) or not asked:
         return False
     if cmd.speech or cmd.ask is not None or cmd.perform is not None or cmd.passed:
         return False
@@ -1316,7 +1318,8 @@ def answer_form(form: Form, turn: "_Turn", last: bool, snapshot: SessionSnapshot
     Слов ждут те же, кому их должен :func:`words_owed` (:func:`speaks_aloud`: динамики, не тишина; подхват бэклога
     голым «робот» - тоже), лицо без слов человек не просил (``tools_view.show_asked``). Путь пения решён кодом
     (``perform`` или тул пути обязательны) - не трогаем."""
-    owed = (last and bool(turn.queried) and not form.sing and speaks_aloud(snapshot) and not show_asked(turn.text))
+    owed = (last and bool(turn.queried) and not form.sing and speaks_aloud(snapshot)
+            and not show_asked(turn.text, turn.wake_words))
     return replace(form, speech_required=owed)
 
 
@@ -1764,7 +1767,8 @@ def owed_reason(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, names: C
     просьбу сделать роботом (:func:`robot_owed`), обращение к неподтверждённому собеседнику чужим именем (``names`` - ключи
     из :func:`foreign_keys`), «тишина» под играющей музыкой без стопа (:func:`stop_claim_false`) или утверждение о
     состоянии подсистемы робота без данных о ней (:func:`unbacked_claims`)."""
-    if words_owed(snapshot, turn.text, cmd) or read_owed(snapshot, turn, cmd):
+    silent = words_owed(snapshot, turn.text, cmd, turn.wake_words) or read_owed(snapshot, turn, cmd)
+    if silent:
         return kn.VIOLATION_SILENT_ANSWER
     if known_voice_registers(turn_speaker(snapshot, turn), turn.text, cmd.actions, wake_words=turn.wake_words):
         return kn.VIOLATION_KNOWN_VOICE_REGISTER
