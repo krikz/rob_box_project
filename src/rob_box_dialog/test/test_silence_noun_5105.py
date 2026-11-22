@@ -12,10 +12,13 @@ import asyncio
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Command, Expression
+from rob_box_dialog.command import Command, Expression, Invalid, ToolCall
+from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.tools_view import needs_words, silence_asked
 from rob_box_dialog.turn import Answer, TurnEngine, _Turn, owed_reason
+
+import rob_box_dialog.phrases as phrases
 
 #: Синтетические реплики (репо публичный: никаких данных людей).
 N_SILENCE = "Робот, тишина"
@@ -38,7 +41,8 @@ class Ports:
         return self.answers.pop(0)
 
     async def execute(self, actions, snapshot, turn_id):
-        return []
+        return [ActionResult(f"{turn_id}/{n}", snapshot.epoch, snapshot.agent, a.tool, kn.TOOL_CLASSES[a.tool],
+                             "done", None, dict(a.args)) for n, a in enumerate(actions)]
 
     def say(self, turn_id, epoch, text, voice=None, emotion=None):
         self.said.append(text)
@@ -128,3 +132,28 @@ def test_owed_reason_names_no_violation_for_a_silence_ask():
     session = Session("personality", wake_words=WAKE)
     assert owed_reason(session.snapshot, _turn(N_SILENCE), THINKING) == ""
     assert owed_reason(session.snapshot, _turn(N_VERSE), THINKING) == kn.VIOLATION_SILENT_ANSWER
+
+
+#: Спасение невалидной команды одним неслышимым тулом: успех ``play_animation`` молчит (``SILENT_DONE_TOOLS``),
+#: результат непуст — и ``_salvaged_phrase`` доходит до ``words_owed``, а не до фразы «исполнять нечего».
+BARE_SHOW = (ToolCall("play_animation", {"animation": "thinking"}),)
+
+
+def test_invalid_command_salvaged_by_a_bare_expression_stays_silent_on_a_silence_ask():
+    """Путь спасения (#5105): «Робот, тишина» + невалидная команда, спасение — одно неслышимое действие — код НЕ
+    говорит фразу нарушения. ``_salvaged_phrase`` снимает вейк той же таблицей хода, что и ``words_owed``."""
+    bare = Invalid("bad_json", salvage=BARE_SHOW)
+    ports = Ports([Answer(bare, "deepseek", calls=2)])
+    agg = _run(ports, N_SILENCE)
+    assert ports.said == [], "просьба о тишине — не долг слов, фразы нарушения нет"
+    assert (agg.stage, agg.status) == ("done", "done")
+
+
+def test_invalid_command_salvaged_by_a_bare_expression_still_speaks_on_a_mention():
+    """Контроль того же пути: «Робот, расскажи стих про тишину» — упоминание, не просьба, и код говорит фразу
+    нарушения, как и до #5105."""
+    bare = Invalid("bad_json", salvage=BARE_SHOW)
+    ports = Ports([Answer(bare, "deepseek", calls=2)])
+    agg = _run(ports, N_VERSE)
+    assert ports.said == [phrases.text(kn.INVALID_COMMAND_PHRASE)]
+    assert (agg.stage, agg.status) == ("done", "done")
