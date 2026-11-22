@@ -93,6 +93,7 @@ from rob_box_dialog import identity_ask
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import pickup_parties
+from rob_box_dialog import siren_ask
 from rob_box_dialog.voice_warmth import no_warm_voices
 from rob_box_dialog import state_claim
 from rob_box_dialog import theme_switch
@@ -1160,6 +1161,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     fresh = switched_theme(log, snapshot, turn, fresh)  # просьба сменить тему сета - действием кода (#4347)
     fresh = their_photos(engine, log, turn, fresh)  # «пришли их» без id (#4505)
     fresh = corrected_ambulance(log, turn, fresh)  # сирена/мигалка: ambulance → police_lights (#4694)
+    fresh = asked_siren(log, turn, fresh)  # названный звук и мигалка, которых модель не заказала (#5020)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
     fresh = unclaimed_without_retry(log, turn, fresh, snapshot.agent, last)
@@ -1254,6 +1256,18 @@ def corrected_ambulance(log: Any, turn: "_Turn", cmd: Command) -> Command:
         return cmd
     log.info(f"{LOG_MARK} сирена/мигалка: ambulance → police_lights turn={turn.turn_id}")
     return replace(cmd, actions=actions)
+
+
+def asked_siren(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Названный звук и сцена мигалки, которых в команде нет, — вызовами кода (#5020).
+
+    «Сирену и мигалку» модель закрывала одной анимацией: звук ``robot_alert`` не звучал, шаг
+    n903 краснел ``PATTERN_MISS`` на ``play_sound``. Слова модели не подменяются.
+    """
+    fresh, done = siren_ask.with_asked(turn.text, cmd, turn.acted)
+    if done:
+        log.info(f"{LOG_MARK} сирена/мигалка: код добавил {done} turn={turn.turn_id}")
+    return fresh
 
 
 def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
@@ -1655,6 +1669,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
         return None
     invalid = replace(invalid, salvage=theme_switch.salvage_with_switch(
         engine.session.snapshot.top("DJ") is not None, turn.text, invalid.salvage, turn.acted))
+    invalid = replace(invalid, salvage=siren_ask.salvage_with_asked(turn.text, invalid.salvage, turn.acted))
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
     if action_chain.runs_as_chain(invalid.salvage):  # повтор не помог - вереница с планом кода (ADR-0165 §3)
         start_chain(engine, turn, Command(expression=expression or Expression()), invalid.salvage, snap)

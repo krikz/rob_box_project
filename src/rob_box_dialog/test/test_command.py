@@ -193,12 +193,15 @@ def test_perform_shape():
 
 
 def test_quiet_actions_beside_speech_are_valid_loud_ones_are_not_3953():
-    """Шифу 23.10: ``memory_save``/``register_speaker``/``play_animation`` живут рядом со ``speech``; звук - нет."""
+    """Шифу 23.10: ``memory_save``/``register_speaker``/``play_animation`` живут рядом со ``speech``.
+    ``play_sound`` с #5020 тоже: звук слышен сам и слов модели не затирает. Громкое (движение) — нет."""
     fact = {"tool": "memory_save", "args": {"fact": "Пользователя зовут Саша"}}
     sound = {"tool": "play_sound", "args": {"sound": "robot_happy"}}
+    motion = {"tool": "stop_music", "args": {}}
     assert ok({"speech": "Привет, Саша!", "actions": [fact]}).speech == "Привет, Саша!"
     assert ok({"speech": "Привет!", "actions": [{"tool": "register_speaker", "args": {"name": "Борис"}}]}).speech
-    bad({"speech": "Привет, Саша! Вот звук", "actions": [fact, sound]}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
+    assert ok({"speech": "Привет, Саша! Вот звук", "actions": [fact, sound]}).speech == "Привет, Саша! Вот звук"
+    bad({"speech": "Еду на кухню", "actions": [motion]}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
 
 
 def test_invalid_command_offers_its_individually_valid_actions_for_salvage_3953():
@@ -221,10 +224,11 @@ def test_perform_beside_actions_follows_adr_and_excludes_speech():
 
 
 def test_speech_beside_actions_is_a_violation_with_a_hint_for_the_model():
-    """#3698 (решение Шифу 22.10): ``speech`` при actions не звучит - ответ по сути пропал бы молча; нарушение
-    идёт модели на повтор, подсказка различает «ответ по сути - в perform» и «слова про действие - убрать»."""
+    """#3698 (решение Шифу 22.10): ``speech`` при громких actions не звучит - ответ по сути пропал бы молча;
+    нарушение идёт модели на повтор. Звук с #5020 тихий: рядом с речью законен, подсказка — про громкое."""
     sound = [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]
-    res = bad({"speech": "Вот звук!", "actions": sound}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
+    loud = [{"tool": "stop_music", "args": {}}]
+    res = bad({"speech": "Еду!", "actions": loud}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
     note = cm.explain(res)
     assert "положи его в perform" in note and "убери speech" in note
     assert ok({"speech": "Привет!"}).speech == "Привет!"  # без действий речь законна

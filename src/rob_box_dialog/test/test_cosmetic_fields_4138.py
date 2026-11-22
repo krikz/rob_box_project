@@ -108,9 +108,9 @@ def test_4138_native_narrow_tool_call_gets_the_same_treatment():
 def test_4138_dropped_argument_does_not_hide_the_other_violations_and_the_salvage_is_clean():
     """Спасённое действие невалидной команды (#3953) тоже без выброшенного: исполнится так, как исполнилось бы в
     валидной команде."""
-    bell = {"tool": "play_sound", "args": {"sound": "ui_bell"}}
+    loud = {"tool": "stop_music", "args": {}}
     shown = {"tool": "play_animation", "args": {"animation": "sad", "animated": True}}
-    res = _bad({"speech": "Вот.", "actions": [bell, shown]}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
+    res = _bad({"speech": "Вот.", "actions": [loud, shown]}, kn.VIOLATION_SPEECH_WITH_ACTIONS)
     assert ToolCall("play_animation", {"animation": "sad"}) in res.salvage
 
 
