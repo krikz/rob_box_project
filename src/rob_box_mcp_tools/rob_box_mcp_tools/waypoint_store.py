@@ -15,6 +15,13 @@ Migration ``003_waypoints.sql`` is applied idempotently on first init.
 неизвестен (их писали из ``/odom``); данные не переписываются, трактовку
 выбирает потребитель (``navigation.NavigateToWaypointTool``).
 
+Путь базы места (#4346): колонка ``maps.db_path``. В DDL 003 её тоже нет —
+миграция уже на боевых БД, файл не правится. На существующей БД колонку
+добавляет :meth:`WaypointStore._ensure_db_path_column` тем же
+``ALTER TABLE``. Строки до колонки читаются с ``db_path is None``: путь
+не выдумывается задним числом и файл не трогается. Новая карта пишет путь
+(переданный или посчитанный из имени через ``map_places.place_db_path``).
+
 NOT on ``/data/harness_voice.db`` (issue #2000 / ADR-0055): the dialogue
 node's ``SQLiteVoiceMemory`` already creates its own ``waypoints`` table
 there with an incompatible schema (``name`` PRIMARY KEY, no ``map_id``).
@@ -47,6 +54,7 @@ from typing import Dict, List, Optional
 
 from rob_box_core import migrations as core_migrations
 from rob_box_core.tools_db import waypoint_db_path
+from rob_box_mcp_tools.map_places import PlacePathError, place_db_path
 
 #: Схема карт и точек - шаг потока миграций ядра (данные пакета ``rob_box_core.migrations``, ADR-0167 Ш1а).
 #: Раньше файл искался в корне чекаута (``parents[4]``), а на роботе его там не было - шла копия DDL в коде.
@@ -58,8 +66,32 @@ def map_name_key(name: Optional[str]) -> str:
     return (name or "").strip().casefold()
 
 
+def _map_db_path(name: Optional[str], db_path: Optional[str]) -> Optional[str]:
+    """Путь, который пишем в ``maps.db_path``: явный, из имени, или ``None``."""
+    if db_path is not None:
+        return db_path
+    if not name or not str(name).strip():
+        return None
+    try:
+        return place_db_path(name)
+    except PlacePathError:
+        return None
+
+
+def _map_row(row: sqlite3.Row) -> Dict:
+    """Строка ``maps`` наружу. ``db_path`` может быть ``NULL`` — это не ошибка."""
+    return {
+        "map_id": row["map_id"],
+        "name": row["name"],
+        "created_at": row["created_at"],
+        "db_path": row["db_path"],
+    }
+
+
 #: Колонка кадра точки (#4390); NULL — точка записана до неё, кадр неизвестен.
 _FRAME_ID_COLUMN = "frame_id"
+#: Колонка пути базы места (#4346); NULL — строка до колонки, путь неизвестен.
+_DB_PATH_COLUMN = "db_path"
 
 
 class WaypointStore:
@@ -92,34 +124,55 @@ class WaypointStore:
             cur.executescript(ddl)
             self._conn.commit()
         self._ensure_frame_id_column()
+        self._ensure_db_path_column()
 
     def _ensure_frame_id_column(self) -> None:
         """Добавить ``waypoints.frame_id`` (TEXT NULL), если её нет; старые строки не трогает."""
+        self._ensure_column("waypoints", _FRAME_ID_COLUMN)
+
+    def _ensure_db_path_column(self) -> None:
+        """Добавить ``maps.db_path`` (TEXT NULL), если её нет; старые строки не трогает (#4346)."""
+        self._ensure_column("maps", _DB_PATH_COLUMN)
+
+    def _ensure_column(self, table: str, column: str) -> None:
+        """``ALTER TABLE ... ADD COLUMN``, если колонки нет. Имена — константы модуля, не ввод."""
         with self._lock:
-            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(waypoints)")}
-            if _FRAME_ID_COLUMN not in columns:
-                self._conn.execute(f"ALTER TABLE waypoints ADD COLUMN {_FRAME_ID_COLUMN} TEXT")
+            columns = {
+                row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")
+            }
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
                 self._conn.commit()
 
     # ------------------------------------------------------------------
     # Map management
     # ------------------------------------------------------------------
 
-    def create_map(self, name: Optional[str] = None) -> str:
+    def create_map(
+        self, name: Optional[str] = None, db_path: Optional[str] = None
+    ) -> str:
         """Create a new map entry and make it the active map.
+
+        ``db_path`` — путь базы места (#4346). Не передан — считается из имени
+        через :func:`rob_box_mcp_tools.map_places.place_db_path`. Имени нет или
+        из него не выходит безопасный slug — в колонку пишется ``NULL`` (как у
+        строк до колонки), исключение наружу не лезет: картографирование без
+        имени места не должно падать из-за пути, который тулы ещё не читают.
+        Явно переданный путь пишется как есть (вызывающий уже выбрал файл).
 
         Returns the generated ``map_id`` (UUID4 string).
         """
         map_id = str(uuid.uuid4())
         now = time.time()
+        stored_path = _map_db_path(name, db_path)
 
         with self._lock:
             cur = self._conn.cursor()
             # Deactivate all previous maps
             cur.execute("UPDATE maps SET is_active = 0 WHERE is_active = 1")
             cur.execute(
-                "INSERT INTO maps (map_id, name, created_at, is_active) VALUES (?, ?, ?, 1)",
-                (map_id, name, now),
+                "INSERT INTO maps (map_id, name, created_at, is_active, db_path) VALUES (?, ?, ?, 1, ?)",
+                (map_id, name, now, stored_path),
             )
             self._conn.commit()
         return map_id
@@ -133,14 +186,19 @@ class WaypointStore:
         return row["map_id"] if row else None
 
     def get_active_map(self) -> Optional[Dict]:
-        """Return full row for the active map, or *None*."""
+        """Return full row for the active map, or *None*.
+
+        ``db_path`` — путь базы места или ``None`` у строк до колонки #4346
+        и у карт без безопасного имени. Ключ есть всегда: чтение старой строки
+        не падает и путь за неё не выдумывает.
+        """
         with self._lock:
             row = self._conn.execute(
-                "SELECT map_id, name, created_at FROM maps WHERE is_active = 1 LIMIT 1"
+                "SELECT map_id, name, created_at, db_path FROM maps WHERE is_active = 1 LIMIT 1"
             ).fetchone()
         if row is None:
             return None
-        return {"map_id": row["map_id"], "name": row["name"], "created_at": row["created_at"]}
+        return _map_row(row)
 
     def rename_map(self, map_id: str, name: str) -> bool:
         """Set a human-friendly name for a map.  Returns True if updated."""
@@ -168,7 +226,9 @@ class WaypointStore:
         if not wanted:
             return 0
         with self._lock:
-            rows = self._conn.execute("SELECT map_id, name FROM maps WHERE is_active = 0").fetchall()
+            rows = self._conn.execute(
+                "SELECT map_id, name FROM maps WHERE is_active = 0"
+            ).fetchall()
             doomed = [r["map_id"] for r in rows if map_name_key(r["name"]) == wanted]
             cur = self._conn.cursor()
             for map_id in doomed:
@@ -181,19 +241,22 @@ class WaypointStore:
         """Return all maps ordered by creation time (newest first)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT map_id, name, created_at, is_active FROM maps ORDER BY created_at DESC, id DESC"
+                "SELECT map_id, name, created_at, is_active, db_path "
+                "FROM maps ORDER BY created_at DESC, id DESC"
             ).fetchall()
-        return [
-            {"map_id": r["map_id"], "name": r["name"], "created_at": r["created_at"], "is_active": bool(r["is_active"])}
-            for r in rows
-        ]
+        return [{**_map_row(r), "is_active": bool(r["is_active"])} for r in rows]
 
     # ------------------------------------------------------------------
     # Waypoint CRUD
     # ------------------------------------------------------------------
 
     def save_waypoint(
-        self, name: str, x: float, y: float, theta: float = 0.0, frame_id: Optional[str] = None,
+        self,
+        name: str,
+        x: float,
+        y: float,
+        theta: float = 0.0,
+        frame_id: Optional[str] = None,
     ) -> bool:
         """Insert or update a waypoint on the active map.
 
@@ -240,7 +303,11 @@ class WaypointStore:
         if row is None:
             return None
         return {
-            "name": row["name"], "x": row["x"], "y": row["y"], "theta": row["theta"], "frame_id": row["frame_id"],
+            "name": row["name"],
+            "x": row["x"],
+            "y": row["y"],
+            "theta": row["theta"],
+            "frame_id": row["frame_id"],
         }
 
     def list_waypoints(self) -> List[Dict]:
@@ -255,7 +322,10 @@ class WaypointStore:
                 (map_id,),
             ).fetchall()
 
-        return [{"name": r["name"], "x": r["x"], "y": r["y"], "theta": r["theta"]} for r in rows]
+        return [
+            {"name": r["name"], "x": r["x"], "y": r["y"], "theta": r["theta"]}
+            for r in rows
+        ]
 
     def delete_waypoint(self, name: str) -> bool:
         """Delete a waypoint by name on the active map.  Returns True if deleted."""
