@@ -5,6 +5,8 @@ argument-hint: "What will the next session be used for?"
 disable-model-invocation: true
 ---
 
+# Handoff
+
 Write a handoff document summarising the current conversation so a fresh agent can continue the work. Save it to `docs/plans/YYYY-MM-DD-<slug>-handoff.md` in the repo (Rob Box convention: handoff-файлы живут в репо, а не в temp-каталоге ОС).
 
 Include a "suggested skills" section in the document, naming which skills the next agent should call the Skill tool for.
