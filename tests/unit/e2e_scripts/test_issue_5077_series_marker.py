@@ -54,7 +54,8 @@ FAKE_ROBOT_SSH = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
 TTL = 10800
 
 
-def decide(marker: Path | None, ttl: int = TTL, series_id: str = "night_20261122_010000"):
+def decide(marker: Path | None, ttl: int = TTL, series_id: str = "night_20261122_010000",
+           phase: str = ""):
     """Решение настоящей функции: 'delete' | 'keep'.
 
     ``series_id`` — id текущей серии (третий аргумент). По умолчанию совпадает
@@ -66,7 +67,7 @@ def decide(marker: Path | None, ttl: int = TTL, series_id: str = "night_20261122
         [
             "set -u",
             f'. "{MARKER_SH}"',
-            f'e2e_series_should_delete "{path}" "{ttl}" "{series_id}"',
+            f'e2e_series_should_delete "{path}" "{ttl}" "{series_id}" "{phase}"',
         ]
     )
     p = subprocess.run([BASH, "-s"], input=script.encode("utf-8"), capture_output=True, timeout=60)
@@ -271,7 +272,7 @@ class TestHarnessHonorsDecision:
         _seed(speakers, 2)
         before = speakers.read_bytes()
         marker = tmp_path / "series.id"
-        marker.write_text("night_live\n", encoding="utf-8")
+        marker.write_text("night_live\nopened\n", encoding="utf-8")
 
         proc = _run(
             tmp_path, "--e2e-marathon-phase", "first",
@@ -327,6 +328,40 @@ class TestHarnessHonorsDecision:
         assert not speakers.exists()
         assert not marker.exists(), "прогон без серии не должен писать маркер"
 
+    def test_same_series_rerun_after_aborted_first_wipes_before_the_guard(self, tmp_path):
+        """Повтор той же серии после оборванного first стирает хвост ДО гарда.
+
+        Инцидент 22.11, но без смены id: раннер берёт E2E_SERIES_ID один раз
+        на серию (run_night_marathon.sh), и повтор той же серии приносит тот же
+        id. Маркер пишет только marathon_e2e_mode, а до него оборванный first
+        не дошёл — mtime остался от прошлого прогона и свежий. Один TTL это не
+        ловит (повтор через 2 ч 04 мин < 10800 с), сравнение id тоже: id тот же.
+        Без решения «серия не дошла до first» следующий first получает keep и
+        падает на гарде, как run 44973642247.
+        """
+        speakers = tmp_path / "speakers.e2e.db"
+        _seed(speakers, 1)
+        marker = tmp_path / "series.id"
+        marker.write_text("night_same\n", encoding="utf-8")
+        # Прошлый прогон обновил маркер и умер на first, не дойдя до
+        # marathon_e2e_mode. 2 ч 04 мин — как между run 44963710006 и 44973642247.
+        stalled = time.time() - (2 * 3600 + 4 * 60)
+        os.utime(marker, (stalled, stalled))
+
+        proc = _run(
+            tmp_path, "--e2e-marathon-phase", "first",
+            env_extra={
+                "E2E_SPEAKERS_DB": str(speakers),
+                "E2E_SERIES_MARKER": str(marker),
+                "E2E_SERIES_ID": "night_same",
+            },
+        )
+
+        assert "E2E_SERIES delete" in proc.stdout, proc.stdout + proc.stderr
+        assert not speakers.exists(), "оборванный first той же серии оставил каст"
+        assert "GUARD_DONE" in proc.stdout, proc.stderr
+        assert proc.returncode == 0, proc.stderr
+
     def test_single_run_deletes_a_fresh_foreign_marker(self, tmp_path):
         """Одиночный прогон (E2E_SERIES_ID пуст) каст не держит: свежий маркер
         чужой серии не повод оставить e2e-БД. Удаление — на старте, до гарда."""
@@ -346,6 +381,18 @@ class TestHarnessHonorsDecision:
 
         assert "E2E_SERIES delete" in proc.stdout, proc.stderr
         assert not speakers.exists(), "одиночный прогон оставил чужой каст"
+
+
+def test_opened_is_written_only_by_the_act_that_passed_the_guard():
+    """«opened» пишет marathon_e2e_mode, а не код до гарда.
+
+    Запись до гарда объявила бы живой серию, которая до гарда не дошла:
+    оборванный first освежил бы маркер и спрятал свой хвост от повтора.
+    """
+    src = E2E_SCRIPT.read_text(encoding="utf-8")
+    guard = src.index("\nrefuse_first_mid_series\n")
+    opened = src.index("e2e_series_marker_opened ")
+    assert guard < opened, "«opened» пишется до гарда — оборванный first объявит серию живой"
 
 
 def test_marker_file_is_deployed_with_the_harness():

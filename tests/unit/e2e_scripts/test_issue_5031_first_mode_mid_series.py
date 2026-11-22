@@ -235,7 +235,10 @@ def test_profiles_are_counted_inside_the_container_read_only(tmp_path):
     container_db.write_bytes(speakers.read_bytes())
 
     marker = tmp_path / "series.id"
-    marker.write_text("night_live\n", encoding="utf-8")
+    # «opened» — серия прошла гард. Без второй строки first видит оборванный
+    # прогон той же серии и стирает хвост до гарда (issue #5077), и до чтения
+    # профилей дело не доходит.
+    marker.write_text("night_live\nopened\n", encoding="utf-8")
     proc = _run_harness(
         tmp_path, "--e2e-marathon-phase", "first",
         robot="fake", container_db=container_db, stop_after_guard=True,
