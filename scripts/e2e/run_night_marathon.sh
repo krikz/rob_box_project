@@ -99,6 +99,11 @@ fi
 
 RUN_TS="$(date -u +%Y%m%d_%H%M%S)"
 REPORT="${REPORT:-$ROOT/tests/e2e/_artifacts/night_${RUN_TS}}"
+# #5077: id серии. Харнесс пишет marker-файл на машине прогона (249) и по его
+# mtime решает, удалять ли e2e-БД при снятии режима. Раннер и харнесс на разных
+# машинах, поэтому раннер передаёт только id, а не путь к файлу. Пустой id —
+# прогон без серии, и снятие режима e2e-БД удалит (одиночный прогон каст не держит).
+E2E_SERIES_ID="${E2E_SERIES_ID:-night_${RUN_TS}}"
 mkdir -p "$REPORT"
 SUMMARY="$REPORT/summary.tsv"
 # #3989: recovered — шагов, прошедших после восстановления харнессом (не чистый PASS); act_recover — что харнесс
@@ -344,7 +349,7 @@ while IFS=$'\t' read -r a_n a_title a_stab a_steps a_scn a_acc a_phase a_hold; d
             scenario_file="$a_scn" \
             acceptance_file="$a_acc" \
             triggered_by_script="run_night_marathon.sh" \
-            triggered_by_reason="night marathon act $a_n: $a_title" \
+            triggered_by_reason="night marathon act $a_n: $a_title${E2E_SERIES_ID:+ series=$E2E_SERIES_ID}" \
             ${PRIOR_STEPS:+prior_steps="$PRIOR_STEPS"} \
             ${TTS_PROVIDER:+tts_provider="$TTS_PROVIDER"} \
             ${HOLD_VALUES[@]+"${HOLD_VALUES[@]}"} \

@@ -286,12 +286,14 @@ jobs:
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_voice_test.sh ros2@10.1.1.249:/tmp/e2e_voice_test.sh
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_voice_lib.sh ros2@10.1.1.249:/tmp/e2e_voice_lib.sh
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_voice_wake_gate.sh ros2@10.1.1.249:/tmp/e2e_voice_wake_gate.sh
+          # #5077: решение «удалять ли e2e-БД» — функция в отдельном файле, харнесс её source'ит.
+          sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_series_marker.sh ros2@10.1.1.249:/tmp/e2e_series_marker.sh
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_tool_match.py ros2@10.1.1.249:/tmp/e2e_tool_match.py
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_audio_metrics.py ros2@10.1.1.249:/tmp/e2e_audio_metrics.py
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_baseline_diff.py ros2@10.1.1.249:/tmp/e2e_baseline_diff.py
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/e2e_events.py ros2@10.1.1.249:/tmp/e2e_events.py
           sshpass -e scp -o StrictHostKeyChecking=no scripts/ci/e2e/dialog_db_summary.py ros2@10.1.1.249:/tmp/dialog_db_summary.py
-          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py /tmp/dialog_db_summary.py && echo HARNESS_PUSHED"
+          sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 "ls -la /tmp/e2e_voice_test.sh /tmp/e2e_voice_lib.sh /tmp/e2e_voice_wake_gate.sh /tmp/e2e_series_marker.sh /tmp/e2e_tool_match.py /tmp/e2e_audio_metrics.py /tmp/e2e_baseline_diff.py /tmp/e2e_events.py /tmp/dialog_db_summary.py && echo HARNESS_PUSHED"
           # CRLF sanitization (single-line): отрезаем \r и \n от начала/конца.
           # Внутри значения CR/LF недопустимы для имён файлов/путей.
           SCENARIO_FILE_CLEAN=$(printf '%s' "$SCENARIO_FILE" | tr -d '\r\n')
@@ -335,6 +337,7 @@ jobs:
           E2E_HOLD_FOR_NEXT_ACT: ${{ inputs.e2e_hold_for_next_act }}
           E2E_MARATHON_PHASE: ${{ inputs.e2e_marathon_phase }}
           E2E_PRIOR_STEPS_IN: ${{ inputs.prior_steps }}
+          TRIGGERED_BY_REASON: ${{ inputs.triggered_by_reason }}
         run: |
           RID="${{ github.run_id }}"
           YKEY="$(cat "$YKEY_LOCAL" 2>/dev/null || true)"
@@ -397,6 +400,12 @@ jobs:
             *) echo "E2E_FATAL: e2e_marathon_phase='$E2E_PHASE_CLEAN' — ожидается first|middle|last" >&2; exit 2 ;;
           esac
 
+          # Issue #5077 — id серии. Отдельного input нет: у workflow_dispatch потолок
+          # 25 inputs (тест #3972), и он уже занят. Id едет в triggered_by_reason
+          # маркером series=<id>, который ставит только run_night_marathon.sh.
+          # Берём первое совпадение и режем до букв, цифр, _ и -, чтобы значение
+          # не попало в shell на 249 как код. Нет маркера — прогон без серии.
+          SERIES_CLEAN=$(printf '%s' "$TRIGGERED_BY_REASON" | grep -o 'series=[A-Za-z0-9_-]*' | head -1 | cut -d= -f2)
           # Issue #4077 П4 — итоги шагов прошлых актов (только label=СТАТУС,…).
           PRIOR_CLEAN=$(printf '%s' "$E2E_PRIOR_STEPS_IN" | tr -cd 'A-Za-z0-9_=,')
           if [ -n "$PRIOR_CLEAN" ]; then
@@ -411,7 +420,7 @@ jobs:
           # каталоги (e2e_v2_20260813_031333 и т.п.) → в звуковой артефакт попадало
           # «что-то левое» (ретро 22.08 t_944df2c5, issue #1506).
           sshpass -e ssh -o StrictHostKeyChecking=no ros2@10.1.1.249 \
-            "export YANDEX_API_KEY='${YKEY}'; export MINIMAX_API_KEY='${MMKEY}'; export ROBOT_HOST=10.1.1.22; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; \
+            "export YANDEX_API_KEY='${YKEY}'; export MINIMAX_API_KEY='${MMKEY}'; export ROBOT_HOST=10.1.1.22; export SSHPASS='open'; export GITHUB_RUN_ID='${RID}'; export E2E_SERIES_ID='${SERIES_CLEAN}'; \
              ${CMD} 2>&1 | tee /tmp/e2e_atomic_out.log"
 
           echo "=== E2E stdout ==="
