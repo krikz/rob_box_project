@@ -457,15 +457,19 @@ def test_4694_explicit_ambulance_stays_ambulance(text):
     assert ports.executed == [[("play_animation", {"animation": "ambulance"})]]
 
 
-@pytest.mark.parametrize("text", [
-    "включи сирену и ускорься",
-    "мигалку, скорее",
-])
-def test_4694_speed_words_do_not_block_police_lights_remap(text):
-    """``скорость``/``скорее`` не содержат форм скорой помощи — remap в ``police_lights`` работает."""
+def test_4694_speed_words_do_not_block_police_lights_remap():
+    """``скорее`` не форма скорой помощи — remap в ``police_lights`` работает, звука сирены нет."""
     ports = Ports([Answer(Command(speech="Включаю!", actions=(AMBULANCE_CALL,)), "deepseek")])
-    _run(ports, text)
+    _run(ports, "мигалку, скорее")
     assert ports.executed == [[("play_animation", {"animation": "police_lights"})]]
+
+
+def test_4694_siren_and_speed_still_remaps_and_adds_the_named_sound():
+    """«Включи сирену и ускорься»: ``ambulance`` → ``police_lights``, звук ``robot_alert`` добавляет код (#5020)."""
+    ports = Ports([Answer(Command(speech="Включаю!", actions=(AMBULANCE_CALL,)), "deepseek")])
+    _run(ports, "включи сирену и ускорься")
+    assert ports.executed == [[("play_animation", {"animation": "police_lights"}),
+                               ("play_sound", {"sound": "robot_alert"})]]
 
 
 def test_4694_n903_police_lights_sound_and_scene_stay_intact():
