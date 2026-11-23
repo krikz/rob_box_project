@@ -15,15 +15,26 @@ from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from rob_box_music import knowledge as kn
-from rob_box_music.source import CACHE, GENERATE, Route, SourceAsk, gen_kind
+from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, Route, SourceAsk, gen_kind
 
 from .gen.gen_session import bridge_style
 from .gen.instrumental import BUSY_TEXT, InstrumentalResult, failed_text, ready_text, wait_text
-from .song_order import DECLINED, bridge_hold
+from .gen.kie_suno import SINGS_SUPPLIED_WORDS
+from .song_order import DECLINED, bridge_hold, song_request
 from .theme_grounding import order_theme
 
 _LOG = logging.getLogger(__name__)
 WHAT = "музыка не заиграла"
+
+
+def supplied_lyrics_refusal(args: Tuple[Any, ...], genre: str) -> str:
+    """Фраза отказа, если в аргументах уже лежат дословные слова, или «».
+
+    Инструментал их не поёт (:data:`SINGS_SUPPLIED_WORDS`): заказ не уходит, тема не подменяется
+    (#4973, ADR-0148). Пустая строка — слов нет, путь как был."""
+    if "instrumental" in SINGS_SUPPLIED_WORDS or not song_request(args, genre).lyrics.strip():
+        return ""
+    return f"Сгенерировать не вышло: {REASON_WORDS['no_lyrics_path']}."
 
 
 def bridge_label(data: Dict[str, Any]) -> str:
@@ -50,6 +61,9 @@ class InstrumentalOrder:
               wrap: Callable[..., Any]) -> Any:
         """``args`` — ``(intent, text, mood, genre, turn_id, heard_text)``; ``wrap`` — ``engine_tools.tool_result``."""
         maker, model, turn = self._maker, route.id.rsplit(":", 1)[-1], args[4]
+        refusal = supplied_lyrics_refusal(args, ask.genre)
+        if refusal:  # слова уже поданы, а этот вид их не поёт: до launch, кредиты целы (#4973)
+            return wrap({"ok": False, "reason": DECLINED, "message": refusal}, WHAT)
         theme = order_theme(args[1], args[5])  # тема просьбы — в заказ Suno и во фразы (#3775)
         if maker.ordered_in(turn):  # тот же ход: трек уже пишется, ответ тот же, что у первого вызова
             return wrap({"ok": True, "pending": "instrumental",
@@ -101,4 +115,4 @@ class InstrumentalOrder:
                 self._log().warning(f"🎛️ [gen instr] реплика не сказана: {type(exc).__name__}: {exc}")
 
 
-__all__ = ["InstrumentalOrder", "bridge_label"]
+__all__ = ["InstrumentalOrder", "bridge_label", "supplied_lyrics_refusal"]

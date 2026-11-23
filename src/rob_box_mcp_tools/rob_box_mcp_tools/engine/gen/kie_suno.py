@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from rob_box_music.knowledge import GEN_MODELS
 
-from .provider import (
+from .provider import (  # isort: skip
     DEFAULT_MODEL,
     GEN_HEALTH,
     GenJob,
@@ -36,6 +36,12 @@ from .provider import (
     GenTrack,
     GenUnavailable,
 )
+
+#: Виды заказа, которые поют поданные слова. ``robot_song`` — add-instrumental на уже
+#: спетом вокале: слова едут вместе с файлом. ``instrumental`` и ``cover`` поля слов не
+#: несут (generate/upload-and-cover, instrumental=True). Вида «Suno поёт текст сам»
+#: в замерах ADR-0158 нет — kind ``song`` отклоняется в :meth:`KieSunoProvider.submit`.
+SINGS_SUPPLIED_WORDS = frozenset({"robot_song"})
 
 API_BASE = "https://api.kie.ai"
 UPLOAD_URL = "https://kieai.redpandaai.co/api/file-stream-upload"
@@ -248,6 +254,9 @@ class KieSunoProvider:
         model = _KIND_MODEL.get(job.kind)
         if model is None:
             raise GenUnavailable("rejected", f"kind {job.kind!r} не поддержан (песня — ADR-0158 PR-7)")
+        if job.lyrics.strip() and job.kind not in SINGS_SUPPLIED_WORDS:
+            # заказ с поданными словами в вид без поля слов не уходит: подменять тему молча нельзя (#4973)
+            raise GenUnavailable("rejected", f"kind {job.kind!r} не поёт поданные слова")
         if job.model not in GEN_MODELS:
             raise GenUnavailable("rejected", f"неизвестная модель {job.model!r}")
         upload_url = ""
