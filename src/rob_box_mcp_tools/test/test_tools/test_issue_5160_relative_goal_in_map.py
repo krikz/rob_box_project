@@ -37,8 +37,15 @@ _PKG = Path(__file__).resolve().parents[2] / "rob_box_mcp_tools"
 @pytest.fixture
 def nav(monkeypatch):
     for name in (
-        "rclpy", "rclpy.action", "geometry_msgs", "geometry_msgs.msg", "nav2_msgs", "nav2_msgs.action",
-        "action_msgs", "action_msgs.srv", "action_msgs.msg",
+        "rclpy",
+        "rclpy.action",
+        "geometry_msgs",
+        "geometry_msgs.msg",
+        "nav2_msgs",
+        "nav2_msgs.action",
+        "action_msgs",
+        "action_msgs.srv",
+        "action_msgs.msg",
     ):
         monkeypatch.setitem(sys.modules, name, MagicMock())
     tools_pkg = types.ModuleType("rob_box_mcp_tools.tools")
@@ -228,3 +235,80 @@ def test_no_transform_is_a_tool_error_and_sends_nothing(nav):
     assert "map" in result.error
     assert result.message, "фразу строит код (ADR-0148)"
     assert "Не поехал" in result.message
+
+
+# ---------------------------------------------------------------- фейковый TF: штамп цели
+# Зеркало правила tf2::BufferCore, только для сценария. В бою этого буфера нет:
+# MoveDirectionTool считает точку один раз (relative_goal_in_map), перепланирование
+# делает Nav2 сам. Предмет теста — настоящая функция, фейк только показывает,
+# почему кадр base_footprint на старый штамп падает, а точка map — нет.
+
+
+class _Extrapolation(LookupError):
+    """Текст как у tf2 в живом прогоне 23.11, не класс продакшена."""
+
+
+class _TfHistory:
+    """Окно истории: кадр старше cache_time вытесняется, lookup на старый штамп падает."""
+
+    def __init__(self, cache_time_sec: float = 10.0) -> None:
+        self.cache_time_sec = cache_time_sec
+        self._frames = []
+
+    def set_transform(self, stamp_sec: float, x: float, y: float, yaw: float) -> None:
+        self._frames.append((stamp_sec, (x, y, yaw)))
+        self._frames.sort(key=lambda frame: frame[0])
+        latest = self._frames[-1][0]
+        self._frames = [frame for frame in self._frames if frame[0] >= latest - self.cache_time_sec]
+
+    def lookup(self, stamp_sec: float):
+        if not self._frames:
+            raise _Extrapolation("Lookup would require extrapolation: buffer is empty")
+        earliest, latest = self._frames[0][0], self._frames[-1][0]
+        if stamp_sec < earliest or stamp_sec > latest:
+            raise _Extrapolation(
+                "Lookup would require extrapolation into the past. "
+                f"Requested time {stamp_sec} but the earliest data is at time {earliest}, "
+                "when looking up transform from frame [base_footprint] to frame [map]"
+            )
+        return min(self._frames, key=lambda frame: abs(frame[0] - stamp_sec))[1]
+
+
+_SEND = 1795423727.5
+_REPLAN = _SEND + 18.4  # живой прогон: планировщик приступил через 18,4 с
+_ROBOT = (1.80, 0.06, 0.0)
+
+
+def _aged_history():
+    """Кадр отправки уже вытеснен: в окне 10 с остался только кадр перепланирования."""
+    history = _TfHistory(cache_time_sec=10.0)
+    history.set_transform(_SEND, *_ROBOT)
+    history.set_transform(_REPLAN, *_ROBOT)
+    return history
+
+
+@pytest.mark.unit
+def test_stale_base_stamp_extrapolates_map_goal_does_not(nav):
+    """Старый путь падает на фейковом буфере; предмет — relative_goal_in_map.
+
+    Кадр ``base_footprint`` со штампом отправки к перепланированию (+18,4 с,
+    буфер 10 с) вне окна → Extrapolation с текстом живого лога. Свежий штамп
+    находится. Точка мира от штампа не зависит: ``relative_goal_in_map`` даёт
+    кадр ``map`` и (2.80, 0.06), lookup на момент перепланирования её не двигает.
+    """
+    history = _aged_history()
+
+    with pytest.raises(_Extrapolation, match="extrapolation into the past") as caught:
+        history.lookup(_SEND)
+    message = str(caught.value)
+    assert "base_footprint" in message and "map" in message
+    assert f"Requested time {_SEND}" in message
+    assert f"earliest data is at time {_REPLAN}" in message
+
+    assert history.lookup(_REPLAN) == _ROBOT
+
+    world = nav.relative_goal_in_map(lambda: _pose(*_ROBOT), 1.0, 0.0, 0.0)
+    assert world[3] == "map"
+    assert world[0:2] == pytest.approx((2.80, 0.06))
+    assert not hasattr(nav, "TfHistory")
+    assert not hasattr(nav, "relative_goal_at_replan")

@@ -20,6 +20,7 @@
 #                   Не nav_aborted: без принятого FollowPath вердикт NOT_TRIGGERED.
 #   client_kill     #4435  цель принята, процесс пробы убит (SIGTERM) без cancel_goal. Робот должен встать.
 #   host_cancel     #4435  ros2 action cancel /navigate_to_pose с хоста (нулевой GoalInfo), не наш тул.
+#   move_ahead      #5160  «Робот, вперёд на метр»: цель создаёт move_direction, проба только мерит TRACK.
 #
 # Предусловия проверяет сам и честно отказывает (выход 3): stand.lock начинается с HIL_CHECKS_OWNER (замок берёт тот,
 # кто запускает, скрипт его не трогает), hil.sh status = HIL on и один /controller_manager, нужные контейнеры running,
@@ -60,12 +61,15 @@ fi
 # #4770: боевой movement_time_allowance (nav2_params.yaml). Сценарий его не укорачивает.
 : "${PROGRESS_ALLOWANCE_S:=30}"
 : "${HOLD_AHEAD_M:=1.5}"
+# #5160: реплика, которая должна вызвать move_direction, не цель пробы.
+: "${MOVE_AHEAD_PHRASE:=Робот, вперёд на метр.}"
+: "${MOVE_AHEAD_WAIT_S:=90}"
 
 OUT="$HIL_CHECKS_OUT"
 GZ="$HIL_SIM_PREFIX-gazebo"
 REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-ALL=(orphan zone guard_off corner doorway nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel)
+ALL=(orphan zone guard_off corner doorway nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel move_ahead)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
 GUARD_SOUND_CHANGED=0
 
@@ -129,7 +133,7 @@ needs_for() {  # контейнеры, без которых выбранные 
                 need+=(followpath-watchdog) ;;
         esac
         case "$sc" in
-            zone | guard_off | nav_aborted | stop_idle | stop_active) need+=(voice-assistant) ;;
+            zone | guard_off | nav_aborted | stop_idle | stop_active | move_ahead) need+=(voice-assistant) ;;
         esac
     done
     printf '%s\n' "${need[@]}" | awk '!seen[$0]++' | tr '\n' ' '
@@ -259,6 +263,27 @@ sc_doorway() {
     hi=${DOOR_OPENING#*,}
     verdict doorway "$d" --opening-lo "$lo" --opening-hi "$hi"
 }
+sc_move_ahead() {
+    # #5160: реплика в диалог, цель создаёт move_direction. Проба только слушает TRACK
+    # (watch не шлёт NavigateToPose). Вердикт читает лог тула и сдвиг правды Gazebo.
+    local d="$OUT/move_ahead" t0 ppid
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" watch --secs $((MOVE_AHEAD_WAIT_S + 30)) &
+    ppid=$!
+    sleep 5
+    inject "$MOVE_AHEAD_PHRASE" "$d/inject.txt"
+    wait_log "$HIL_SOUND_HOST" voice-assistant "$t0" \
+        "Инструмент move_direction (завершился|выполнен успешно)|✅ Движение " \
+        "$MOVE_AHEAD_WAIT_S" || log "⚠️  move_direction не завершился за $MOVE_AHEAD_WAIT_S с"
+    sleep 5
+    probe_stop
+    wait "$ppid" || true
+    dlogs "$HIL_SOUND_HOST" voice-assistant "$t0" "$d/voice.log"
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    verdict move_ahead "$d"
+}
+
 sc_nav_aborted() {
     local d="$OUT/nav_aborted" t0 ppid
     mkdir -p "$d"

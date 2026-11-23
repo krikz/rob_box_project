@@ -316,6 +316,10 @@ def _drive_to_goal(
     goal = NavigateToPose.Goal()
     goal.pose.header.frame_id = frame_id
     goal.pose.header.stamp = node.get_clock().now().to_msg()
+    # #5160: кадр цели в лог — HIL-вердикт читает эту строку, не угадывает map.
+    node.get_logger().info(
+        f"[navigate_to_pose] цель: frame_id={frame_id} x={x:.3f} y={y:.3f} theta={theta:.3f}"
+    )
     goal.pose.pose.position.x = x
     goal.pose.pose.position.y = y
     goal.pose.pose.position.z = 0.0
