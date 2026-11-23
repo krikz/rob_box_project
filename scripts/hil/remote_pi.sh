@@ -10,6 +10,8 @@
 #                                            сервисов compose-проекта этого каталога
 #   remote_pi.sh stop <контейнер>...         docker stop; проверка, что не работает
 #   remote_pi.sh state <контейнер>...        «имя running|exited|absent USE_SIM_TIME=…»
+#   remote_pi.sh health <контейнер>          docker inspect JSON (State) на stdout;
+#                                            нет контейнера — объект Status=absent, код 0
 #   remote_pi.sh compose <каталог> <args>... docker compose в каталоге
 #   remote_pi.sh env <контейнер> <ПЕРЕМЕННАЯ> значение env контейнера или «unset»
 #   remote_pi.sh maps-dump <контейнер> <БД>  SELECT * FROM maps ORDER BY id (строки a|b|c)
@@ -32,6 +34,18 @@ state_of() {
             | sed -n 's/^USE_SIM_TIME=//p' | tail -n 1)
     fi
     echo "$name $st USE_SIM_TIME=${simt:-unset}"
+}
+
+# Health контейнера целиком: hil.sh off судит готовность по свежему Health.Log
+# этого запуска, не по одному слову Status (#5170). Контейнера нет — absent.
+health_of() {
+    local name="$1" raw
+    raw=$(docker inspect "$name" 2>/dev/null) || raw=""
+    if [ -z "$raw" ] || [ "$raw" = "[]" ]; then
+        printf '%s\n' '{"Name":"'"$name"'","State":{"Status":"absent"}}'
+        return 0
+    fi
+    printf '%s\n' "$raw"
 }
 
 case "$cmd" in
@@ -82,6 +96,10 @@ case "$cmd" in
         ;;
     state)
         for name in "$@"; do state_of "$name"; done
+        ;;
+    health)
+        [ "$#" -eq 1 ] || { echo "health: нужно ровно одно имя контейнера" >&2; exit 2; }
+        health_of "$1"
         ;;
     compose)
         dir="$1"; shift
