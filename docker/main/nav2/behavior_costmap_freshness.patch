@@ -95,9 +95,9 @@ diff -ruN a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp b
     * @brief Loop function to run behavior
     * @return Status of behavior
     */
-+  // #5003: defined in this plugin's .cpp so its library asks the behavior
-+  // server. The body is not in this header: the recovery plugin compiles the
-+  // header into its own library and defines its own override.
++  // #5003: the weak body is at the end of this header, not in this plugin's
++  // .cpp. The recovery plugin compiles the header, so it emits the definition
++  // too; a body only in the .cpp leaves DriveOnHeading<BackUp> undefined.
 +  // nav2_behaviors::DriveOnHeading
 +  Status costmapTickStatus() const override;
 +

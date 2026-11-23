@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from rob_box_teleop.backup_costmap_tick import CHECK, FAIL, MAX_STALE_COSTMAP_SKIPS, SKIP, CostmapTickGate, backup_tick
+from rob_box_teleop.backup_costmap_tick import (
+    CHECK,
+    FAIL,
+    MAX_STALE_COSTMAP_SKIPS,
+    SKIP,
+    CostmapTickGate,
+    backup_tick,
+)
 
 REPO = Path(__file__).resolve().parents[3]
 PATCH = REPO / "docker" / "main" / "nav2" / "behavior_costmap_freshness.patch"
@@ -66,30 +73,61 @@ def test_fail_closed_does_not_drive_on_an_empty_stale_copy():
     assert backup_tick(FAIL, collision_ahead=False) == "failed"
 
 
-def _added(text: str) -> str:
-    return "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
+def _added_by_file(text: str) -> dict[str, str]:
+    """Добавленные строки патча, разобранные по файлу (``diff -ruN a/... b/...``)."""
+    files: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("diff -ruN "):
+            current = line.split()[-1]
+            if current.startswith("b/"):
+                current = current[2:]
+            files.setdefault(current, [])
+            continue
+        if current is None or line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+            continue
+        if line.startswith("+"):
+            files[current].append(line[1:])
+    return {path: "\n".join(lines) for path, lines in files.items()}
 
 
 def test_patch_puts_the_decision_in_the_server_both_plugins_call():
-    """Решение в behavior_server, не в заголовке DriveOnHeading.
+    """Решение в behavior_server. Тело шаблона — в заголовке, чтобы TU BackUp его эмитил.
 
-    BackUp собирается в libnav2_back_up_behavior.so и включает
-    drive_on_heading.hpp сам. Правка этого заголовка в его .so не попадает,
-    поэтому HIL не увидел «Costmap copy stale» ни разу. Оба плагина зовут
-    behavior_server через node_.
+    ``plugins/drive_on_heading.cpp`` инстанцирует только
+    ``DriveOnHeading<DriveOnHeading>``. Тело там оставляет
+    ``DriveOnHeading<BackUp>::costmapTickStatus`` неопределённым, и dlopen падает.
+    Оба плагина зовут behavior_server через ``costmapTickStatusFor``.
     """
-    added = _added(PATCH.read_text(encoding="utf-8"))
-    assert "bool costmapCopyFresh() const;" in added
-    assert "Status costmapTickStatus() const;" in added
-    assert "Costmap copy stale - skipping collision tick" in added
-    # Заголовок плагина патч не трогает: иначе BackUp снова останется без правки.
-    assert "drive_on_heading.hpp" not in added
+    by_file = _added_by_file(PATCH.read_text(encoding="utf-8"))
+    server_hpp = by_file["nav2_behaviors/include/nav2_behaviors/behavior_server.hpp"]
+    server_cpp = by_file["nav2_behaviors/src/behavior_server.cpp"]
+    loop = by_file["nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp"]
+    heading = by_file["nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp"]
+    backup_cpp = by_file["nav2_behaviors/plugins/back_up.cpp"]
+    # Решение — в сервере, не в плагине.
+    assert "bool costmapCopyFresh() const;" in server_hpp
+    assert "costmapTickStatusFor" in server_hpp
+    assert "costmapCopyFresh" in server_cpp
+    assert "costmapTickStatusFor" in server_cpp
+    assert "Costmap copy stale" in loop
+    assert "dynamic_cast<BehaviorServer" in server_cpp
     # Каст живёт в сервере. Плагин только спрашивает costmapTickStatusFor.
-    assert "dynamic_cast<behavior_server::BehaviorServer" not in added
-    assert "costmapTickStatusFor" in added
-    # Оба плагина, которые behavior_server грузит по умолчанию, ходят в сервер.
-    assert "nav2_behaviors::BackUp" in added
-    assert "nav2_behaviors::DriveOnHeading" in added
+    for path, added in by_file.items():
+        if path == "nav2_behaviors/src/behavior_server.cpp":
+            continue
+        assert "dynamic_cast<" not in added, path
+    # В заголовке плагина — объявление override и слабое тело шаблона, не решение.
+    assert "Status costmapTickStatus() const override;" in heading
+    assert "template<typename ActionT>" in heading
+    assert "Status DriveOnHeading<ActionT>::costmapTickStatus() const" in heading
+    assert "costmapCopyFresh" not in heading
+    assert "Costmap copy stale" not in heading
+    # Оба плагина ходят в сервер.
+    assert "costmapTickStatusFor" in heading
+    assert "costmapTickStatusFor" in backup_cpp
+    assert "nav2_behaviors::BackUp" in by_file["nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp"]
+    assert "nav2_behaviors::DriveOnHeading" in heading
 
 
 def test_image_ships_the_backup_library_not_only_drive_on_heading():
@@ -132,11 +170,15 @@ def test_patch_applies_and_backup_sees_the_server_hook(tmp_path: Path):
     )
     assert result.returncode == 0, f"{result.stdout}{result.stderr}"
     backup = (src / "nav2_behaviors/plugins/back_up.cpp").read_text(encoding="utf-8")
-    heading = (src / "nav2_behaviors/plugins/drive_on_heading.cpp").read_text(encoding="utf-8")
-    assert "costmapTickStatusFor" in backup
-    assert "costmapTickStatusFor" in heading
-    # Тело решения не в заголовке плагина: там только объявление override.
+    # Тело шаблона — в заголовке. В .cpp его нет: тот файл инстанцирует только
+    # DriveOnHeading<DriveOnHeading>, и тело там снова оставит BackUp без символа.
+    heading_cpp = (src / "nav2_behaviors/plugins/drive_on_heading.cpp").read_text(encoding="utf-8")
+    assert "costmapTickStatusFor" not in heading_cpp
     header = (src / "nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp").read_text(encoding="utf-8")
     assert "costmapTickStatus() const override;" in header
-    assert "costmapTickStatusFor" not in header
-    assert "costmapCopyFresh" not in header
+    assert "template<typename ActionT>" in header
+    assert "Status DriveOnHeading<ActionT>::costmapTickStatus() const" in header
+    assert "costmapTickStatusFor" in header
+    assert '#include "nav2_behaviors/behavior_server.hpp"' in header
+    assert "BackUp::costmapTickStatus" in backup
+    assert "costmapTickStatusFor" in backup
