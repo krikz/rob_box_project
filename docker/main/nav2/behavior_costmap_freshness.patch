@@ -140,7 +140,17 @@
  {
 --- a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp
 +++ b/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp
-@@ -162,6 +162,24 @@
+@@ -20,8 +20,9 @@
+ #include <memory>
+ #include <utility>
+ #include <limits>
+ 
+ #include "nav2_behaviors/timed_behavior.hpp"
++#include "nav2_behaviors/behavior_server.hpp"
+ #include "nav2_msgs/action/drive_on_heading.hpp"
+ #include "nav2_msgs/action/back_up.hpp"
+ #include "nav2_util/node_utils.hpp"
+@@ -162,6 +163,24 @@
      pose2d.y = current_pose.pose.position.y;
      pose2d.theta = tf2::getYaw(current_pose.pose.orientation);
  
