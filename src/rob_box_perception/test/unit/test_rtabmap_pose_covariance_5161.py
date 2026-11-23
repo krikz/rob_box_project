@@ -7,11 +7,27 @@
 
 from rob_box_perception.rtabmap_pose_covariance import (
     NOT_LOCALIZED,
+    REASON_MARGINAL,
+    REASON_NOT_LOCALIZED,
+    REASON_UNOBSERVABLE,
     SLAM2D_ANGULAR_EPSILON,
     SLAM2D_LINEAR_EPSILON,
+    UNAVAILABLE,
     covariance_unavailable_reason,
     health_line,
 )
+
+#: Живая матрица /rtabmap/localization_pose, issue #5201, row-major 6x6.
+#: Образ perception-humble-dev-f38fc04. Ранг 1, corr(x,y/yaw) = ±1, σ в сотни км.
+#: Диагональ: x, y, z=1e-8, roll=3e-8, pitch=3e-8, yaw.
+_LIVE_UNOBSERVABLE = [
+    1.34935804e08, -5.99301356e09, 0.0, 0.0, 0.0, 4.79197337e09,
+    -5.99301356e09, 2.66172585e11, 0.0, 0.0, 0.0, -2.12829810e11,
+    0.0, 0.0, 1.00000000e-08, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 3.00000000e-08, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 3.00000000e-08, 0.0,
+    4.79197337e09, -2.12829810e11, 0.0, 0.0, 0.0, 1.70177285e11,
+]
 
 
 def _eye():
@@ -80,3 +96,36 @@ def test_off_diagonal_one_is_not_the_default():
     cov = _slam2d_default()
     cov[1] = 1.0
     assert covariance_unavailable_reason(cov) is None
+
+
+def test_live_rank1_matrix_is_unobservable_not_a_measurement():
+    """36 чисел с провода (#5201): σ сотни км, corr ±1. Это не дисперсия позы."""
+    assert len(_LIVE_UNOBSERVABLE) == 36
+    assert _LIVE_UNOBSERVABLE[0] == 1.34935804e08
+    assert _LIVE_UNOBSERVABLE[7] == 2.66172585e11
+    assert _LIVE_UNOBSERVABLE[14] == 1.00000000e-08
+    assert _LIVE_UNOBSERVABLE[21] == 3.00000000e-08
+    assert _LIVE_UNOBSERVABLE[28] == 3.00000000e-08
+    assert _LIVE_UNOBSERVABLE[35] == 1.70177285e11
+    assert covariance_unavailable_reason(_LIVE_UNOBSERVABLE) is REASON_UNOBSERVABLE
+
+
+def test_room_scale_covariance_is_a_measurement():
+    """Честная ошибка комнаты: diag 0.01/0.01/0.0001, вне диагонали нули. Не трогаем."""
+    cov = [0.0] * 36
+    cov[0] = 0.01
+    cov[7] = 0.01
+    cov[35] = 0.0001
+    assert covariance_unavailable_reason(cov) is None
+
+
+def test_identity_stays_marginal_and_9999_stays_not_localized():
+    """Новая ветка не перехватывает две старые формы."""
+    assert covariance_unavailable_reason(_eye()) is REASON_MARGINAL
+    assert covariance_unavailable_reason(_not_localized()) is REASON_NOT_LOCALIZED
+
+
+def test_unobservable_health_line_is_one_unavailable_line():
+    line = health_line(REASON_UNOBSERVABLE)
+    assert line == [f'{UNAVAILABLE}: {REASON_UNOBSERVABLE}']
+    assert line[0].startswith(UNAVAILABLE)
