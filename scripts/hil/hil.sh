@@ -32,10 +32,16 @@
 #   восстановление пересоздаёт voice-assistant — активный e2e_mode сбросится: громкое
 #   предупреждение в логе, сам off не блокируем (restore возвращает моторы, #4686);
 #   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
-#   Состояние «до»: сразу после замка on пишет running|restarting|exited|absent каждого затрагиваемого
-#   сервиса в HIL_PRE_STATE (Main Pi). off сверяет с ним: сервис был нерабочим до on и таким остался —
-#   предупреждение, не провал; провал только у сервиса, который до on работал, а после off нет.
-#   Сверка реестра идёт всегда; замок снимается, если не провалился ни один бывший рабочий сервис.
+#   Состояние «до»: сразу после замка on пишет «имя status:health» каждого затрагиваемого
+#   сервиса в HIL_PRE_STATE (Main Pi). health — healthy|unhealthy|starting|none|absent
+#   (none = у контейнера нет HEALTHCHECK). off сверяет с ним: сервис был нерабочим до on
+#   и таким остался — предупреждение, не провал. Сервис с HEALTHCHECK вернулся не по
+#   running, а по свежему Health.Status этого запуска (#5170): до on был healthy, а за
+#   окно старта (HIL_OFF_READY_S, до 3 минут) не вышел в healthy — провал, замок не
+#   снимается, «робот в боевом режиме» не печатается. Старый PRE_STATE без поля health
+#   (файл прошлой версии) — готовность до HIL неизвестна: не PASS.
+#   Сверка реестра идёт всегда; замок снимается, если не провалился ни один бывший рабочий
+#   и ни один бывший healthy сервис.
 #
 # Настройки — scripts/hil/hil.conf (переопределяются переменными окружения или HIL_CONF).
 # Пароли не используются: ssh -o BatchMode=yes, нужен ключ в authorized_keys.
@@ -53,6 +59,12 @@ fi
 
 HIL_SSH="${HIL_SSH:-ssh}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+# Окно старта после off, с: свежий healthcheck этого запуска, не запись прошлой жизни (#5170).
+# 3 минуты — слово товарища Шифу (бриф #5170): нормальный подъём nav2. Дольше не ждём.
+: "${HIL_OFF_READY_S:=180}"
+# Пауза между пробами Health.Status. Короче interval healthcheck nav2 (15 с) смысла нет,
+# но 5 с ловит healthy раньше, если проба уже легла в Health.Log.
+: "${HIL_OFF_READY_POLL_S:=5}"
 
 MAIN_STOP=(ros2-control lslidar)
 VISION_STOP=(oak-d ceiling-camera)
@@ -136,36 +148,68 @@ e2e_guard() {  # $1 = abort|warn
 
 # ── Состояние сервисов «до on» (решение «сломан до on → предупреждение» принимает код) ──
 
-# Снимок «имя статус» для всех сервисов, которые HIL останавливает или пересоздаёт.
+# Снимок «имя status:health» для всех сервисов, которые HIL останавливает или пересоздаёт.
+# health читает код (off_ready.py --readiness) из docker inspect, не shell: у контейнера
+# без HEALTHCHECK слово none, и off судит его по running, как раньше.
 pre_state_snapshot() {
-    local line n st
-    {
-        rpi "$HIL_MAIN_HOST" state "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}"
-        rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}"
-        rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}"
-    } | while read -r line; do
-        [ -n "$line" ] || continue
-        # «имя статус USE_SIM_TIME=…» → «имя статус»
-        read -r n st _ <<<"$line"
-        printf '%s %s
-' "$n" "$st"
+    local line n st host ready
+    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST"; do
+        case "$host" in
+            "$HIL_MAIN_HOST") rpi "$host" state "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}" ;;
+            "$HIL_VISION_HOST") rpi "$host" state "${VISION_STOP[@]}" ;;
+            *) rpi "$host" state "${SOUND_SWITCH[@]}" ;;
+        esac | while read -r line; do
+            [ -n "$line" ] || continue
+            read -r n st _ <<<"$line"
+            ready=$(svc_ready_word "$host" "$n")
+            printf '%s %s:%s\n' "$n" "$st" "$ready"
+        done
     done
 }
 
-# PRE_STATE (текст «имя статус») → статус сервиса до on; нет записи — running (старое поведение: ждём работающим).
-pre_status_of() {
-    local name="$1" st
-    st=$(printf '%s
-' "${PRE_STATE:-}" | awk -v n="$name" '$1 == n { print $2; exit }')
-    printf '%s' "${st:-running}"
+# PRE_STATE (текст «имя status:health») → поле сервиса до on.
+# Нет записи — running:- (старое поведение: ждём работающим; готовность неизвестна).
+pre_field_of() {
+    local name="$1" field
+    field=$(printf '%s\n' "${PRE_STATE:-}" | awk -v n="$name" '$1 == n { print $2; exit }')
+    printf '%s' "${field:-running:-}"
 }
 
-# svc_verdict <имя> <статус после off>: ok — работает; warn — не работает, но не работал и до on; fail — иначе.
+# Статус контейнера до on (первое поле). Старый файл без «:» — вся строка и есть статус.
+pre_status_of() {
+    local field before
+    field=$(pre_field_of "$1")
+    before="${field%%:*}"
+    printf '%s' "${before:-running}"
+}
+
+# Готовность до on. «-» и отсутствие поля — неизвестна (старый PRE_STATE).
+pre_ready_of() {
+    local field
+    field=$(pre_field_of "$1")
+    case "$field" in
+        *:*) printf '%s' "${field#*:}" ;;
+        *) printf '%s' "-" ;;
+    esac
+}
+
+# svc_verdict <имя> <статус после off> [готовность после off].
+# ok — running и (healthy|none); warn — не работает, но и до on не работал и не был healthy;
+# fail — иначе, в том числе running+unhealthy. Готовность не передана — none (старые вызовы).
 svc_verdict() {
-    local name="$1" after="$2" before
-    if [ "$after" = running ]; then echo ok; return 0; fi
+    local name="$1" after="$2" ready="${3:-none}" before prior
+    if [ "$after" = running ] && { [ "$ready" = healthy ] || [ "$ready" = none ]; }; then
+        echo ok
+        return 0
+    fi
+    if [ "$ready" = starting ]; then echo wait; return 0; fi
     before=$(pre_status_of "$name")
-    if [ "$before" = running ]; then echo fail; else echo warn; fi
+    prior=$(pre_ready_of "$name")
+    if [ "$after" != running ] && [ "$before" != running ] && [ "$prior" != healthy ]; then
+        echo warn
+    else
+        echo fail
+    fi
 }
 
 # ── Проверки настроек (до любого действия) ────────────────────────────────
@@ -748,6 +792,97 @@ cmd_restart() {
     rpi "$HIL_MAIN_HOST" state "$@"
 }
 
+# Готовность одного контейнера словом кода (off_ready.py --readiness).
+# Пустой/битый inspect — starting, не healthy: молчание docker не выдаём за готовность.
+svc_ready_word() {  # svc_ready_word <host> <контейнер>
+    local raw word
+    raw=$(rpi "$1" health "$2" 2>/dev/null) || raw=""
+    word=$(printf '%s\n' "$raw" | python3 -X utf8 "$HERE/checks/off_ready.py" --readiness --inspect - 2>/dev/null) || word=""
+    case "$word" in
+        healthy|unhealthy|starting|none|absent) printf '%s' "$word" ;;
+        *) printf '%s' starting ;;
+    esac
+}
+
+# off ждёт готовности: свежий Health.Status этого запуска, окно HIL_OFF_READY_S.
+# Пишет в OFF_READY_FAIL строки «имя<TAB>причина». Пусто — каждый сервис с HEALTHCHECK
+# вышел в healthy (или HEALTHCHECK нет и контейнер running). starting на границе окна —
+# ещё не готовность: последняя проба допишет fail.
+# set -- здесь нельзя: затрёт позиционные параметры off.
+off_wait_ready() {  # off_wait_ready <момент возврата RFC3339>
+    local returned="$1" deadline now host name line reason waiting names
+    OFF_READY_FAIL=""
+    deadline=$(( $(date +%s) + HIL_OFF_READY_S ))
+    while :; do
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        OFF_READY_FAIL=""
+        waiting=0
+        for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST"; do
+            case "$host" in
+                "$HIL_MAIN_HOST") names="${MAIN_STOP[*]} ${MAIN_SIM_TIME[*]}" ;;
+                "$HIL_VISION_HOST") names="${VISION_STOP[*]}" ;;
+                *) names="${SOUND_SWITCH[*]}" ;;
+            esac
+            for name in $names; do
+                line=$(off_ready_one "$host" "$name" "$returned" "$now") || true
+                case "$line" in
+                    wait) waiting=1 ;;
+                    fail*|unknown*)
+                        reason=${line#*$'\t'}
+                        OFF_READY_FAIL="${OFF_READY_FAIL}${name}"$'\t'"${reason}"$'\n' ;;
+                esac
+            done
+        done
+        [ "$waiting" = 1 ] || return 0
+        [ "$(date +%s)" -ge "$deadline" ] && return 0
+        sleep "$HIL_OFF_READY_POLL_S"
+    done
+}
+
+# Поле готовности из OFF_READY_FAIL (его пишет off_wait_ready). Нет строки — none:
+# сервис без HEALTHCHECK, либо свежий healthy (оба для svc_verdict — ok при running).
+# Слово healthy без пробы не печатаем: это была бы ложь (ADR-0018).
+off_fail_ready_of() {  # off_fail_ready_of <имя>
+    local name="$1" row ready
+    row=$(printf '%s\n' "$OFF_READY_FAIL" | awk -F '\t' -v n="$name" '$1 == n { print; exit }')
+    if [ -z "$row" ]; then
+        # Нет строки FAIL. С HEALTHCHECK и свежим healthy модуль сказал ready —
+        # печатаем healthy. Без HEALTHCHECK (до on none) — none. Не угадываем.
+        case "$(pre_ready_of "$name")" in
+            healthy) printf '%s' healthy ;;
+            *) printf '%s' none ;;
+        esac
+        return 0
+    fi
+    ready=$(printf '%s\n' "$row" | sed -n 's|.*/\([a-z]*\); healthcheck:.*|\1|p')
+    case "$ready" in
+        healthy|unhealthy|starting|none|absent) printf '%s' "$ready" ;;
+        *) printf '%s' unhealthy ;;
+    esac
+}
+
+off_fail_reason_of() {  # off_fail_reason_of <имя> <статус> <готовность>
+    local name="$1" st="$2" ready="$3" row reason prior
+    row=$(printf '%s\n' "$OFF_READY_FAIL" | awk -F '\t' -v n="$name" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }')
+    prior=$(pre_field_of "$name")
+    if [ -n "$row" ]; then
+        printf '%s' "$row"
+        return 0
+    fi
+    reason="до on было: ${prior}, после off — ${st}/${ready}"
+    printf '%s' "$reason"
+}
+
+# Одна проба: stdout — ready | warn | wait | fail<TAB>причина | unknown<TAB>причина.
+off_ready_one() {  # off_ready_one <host> <контейнер> <returned-at> <now>
+    local host="$1" name="$2" returned="$3" now="$4" raw before
+    raw=$(rpi "$host" health "$name" 2>/dev/null) || raw=""
+    before=$(pre_field_of "$name")
+    printf '%s\n' "$raw" | python3 -X utf8 "$HERE/checks/off_ready.py" \
+        --inspect - --before "$before" --returned-at "$returned" --now "$now" \
+        | awk 'NR==1 { w=$0; next } { printf "%s\t%s\n", w, $0; found=1 } END { if (!found) print w }'
+}
+
 cmd_off() {
     check_hil_off_owner
     check_net
@@ -782,17 +917,27 @@ cmd_off() {
     rpi "$HIL_SOUND_HOST" compose "$HIL_SOUND_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/sound.images.yaml" \
         up -d --no-deps --pull never "${SOUND_SWITCH[@]}"
 
+    # Момент возврата — до первой пробы health. Health.Log старше этого момента
+    # принадлежит прошлой жизни контейнера и готовностью не считается (#5170).
+    local returned_at
+    returned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
     # Каждый сервис: работает и без sim time. Строк должно прийти ровно столько, сколько сервисов.
     # Нерабочий сервис, который не работал и до on (PRE_STATE), — предупреждение, не провал.
-    local bad=0 warn=0 line n=0 main_state vision_state sound_state wpdb name st verdict
+    # Сервис с HEALTHCHECK — ещё и healthy по свежей пробе этого запуска.
+    local bad=0 warn=0 line n=0 main_state vision_state sound_state wpdb name st verdict ready
     PRE_STATE=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_PRE_STATE") 2>/dev/null" || true)
     if [ -n "$PRE_STATE" ]; then
         log "состояние до on (из $HIL_MAIN_HOST:$HIL_PRE_STATE):"
         printf '%s
 ' "$PRE_STATE" | sed 's/^/    до on  /'
     else
-        log "⚠️  $HIL_MAIN_HOST:$HIL_PRE_STATE нет (on не доходил до записи?) — все сервисы ждём работающими"
+        log "⚠️  $HIL_MAIN_HOST:$HIL_PRE_STATE нет (on не доходил до записи?) — готовность до HIL неизвестна, «в боевом режиме» не объявляю"
     fi
+    # Окно старта: nav2 (и любой сервис с HEALTHCHECK) должен дать свежий healthy
+    # этого запуска. starting внутри окна — ждём; unhealthy — сразу fail, не ждём.
+    log "жду готовность (свежий healthcheck этого запуска), до ${HIL_OFF_READY_S} с"
+    off_wait_ready "$returned_at"
     main_state=$(rpi "$HIL_MAIN_HOST" state "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}") || bad=1
     vision_state=$(rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}") || bad=1
     sound_state=$(rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}") || bad=1
@@ -802,20 +947,24 @@ cmd_off() {
         local label="$1" l="$2" kind="$3"
         read -r name st _ <<<"$l"
         n=$((n + 1))
-        verdict=$(svc_verdict "$name" "$st")
+        ready=$(off_fail_ready_of "$name")
+        verdict=$(svc_verdict "$name" "$st" "$ready")
         case "$verdict" in
             ok)
-                echo "  $label $l"
+                case "$ready" in
+                    none) echo "  $label $l  ready=none" ;;
+                    *) echo "  $label $l  ready=healthy" ;;
+                esac
                 case "$kind" in
                     sim) case "$l" in *" running USE_SIM_TIME=unset" | *" running USE_SIM_TIME=false") ;; *) bad=1 ;; esac ;;
                     wpdb) [ "$wpdb" = unset ] || bad=1 ;;
                 esac ;;
             warn)
                 warn=$((warn + 1))
-                echo "  $label $l  ⚠️  до on было: $(pre_status_of "$name"), не работает и сейчас — не провал off" ;;
+                echo "  $label $l  ⚠️  до on было: $(pre_field_of "$name"), не работает и сейчас — не провал off" ;;
             *)
                 bad=1
-                echo "  $label $l  ❌ до on работал (running), после off — $st" ;;
+                echo "  $label $l  ❌ $(off_fail_reason_of "$name" "$st" "$ready")" ;;
         esac
     }
     while read -r line; do
@@ -836,6 +985,8 @@ cmd_off() {
     local reg=0
     sound_verify_maps || reg=$?
     if [ "$bad" != 0 ]; then
+        log "❌ возврат не готов — замок $HIL_LOCK НЕ снимаю"
+        printf '%s\n' "$OFF_READY_FAIL" | sed '/^$/d; s/^/    /' >&2 || true
         die "не всё вернулось (см. выше: ❌) — замок $HIL_LOCK оставлен"
     fi
     check_hil_off_owner

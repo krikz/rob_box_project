@@ -26,6 +26,12 @@
 #   docker build -f docker/sim/Dockerfile -t rob_box_sim:local .
 #   SIM_DRI_CARD=/dev/dri/card1 docker compose -f docker/sim/compose.yaml up -d --no-build
 #
+# Контрольный прогон P0 (#5180) — N стартов, штатный healthcheck трёх узлов,
+# чистое down: scripts/hil/stand/run_p0_stand.sh. Ступень B (боевой arm64 nav2
+# в той же сети) — оверлей docker/sim/compose.prod-nav2.yaml, образ задаётся
+# NAV2_IMAGE=тег@sha256, не плавающим тегом. Стенд x86_64; SIGILL на нём не
+# доказывается и не опровергается.
+#
 # Переменные (все необязательные):
 #   SIM_IMAGE          тег образа                  (rob_box_sim:local)
 #   RTABMAP_IMU_TOPIC  IMU в rtabmap (в симе по умолчанию /imu/data — madgwick; пусто — без IMU)
