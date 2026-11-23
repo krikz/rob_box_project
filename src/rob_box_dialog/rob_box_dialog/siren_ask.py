@@ -8,6 +8,11 @@
 Сирену называет основа ``сирен*`` (триггер каталога ``robot_alert``). «Мигалка» — сцена лица
 ``police_lights``, не звук: «покажи мигалку» звука не заказывает. Явная скорая помощь
 (``скорая``/``амбуланс``) остаётся ``ambulance`` — туда сирену код не подкладывает.
+
+Живой n903 (21.11 run 44916929470 и 22.11 run 44999727503): STT слышит «сирену» как «сериал».
+Основа ``сирен*`` такое слово не ловит, ``heard.repair`` чинит только начало команды. Оговорка
+целым словом — :data:`knowledge.SOUND_MISHEARS_RU`. Читается она только рядом с «мигалку»: голое «включи сериал» звук не
+заказывает, «сериал и мигалку» — заказывает.
 Модуль чистый: без ROS и I/O.
 """
 
@@ -19,11 +24,25 @@ from typing import Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Command, ToolCall
-from rob_box_dialog.words import has_word
+from rob_box_dialog.words import has_word, name_tokens
 
 #: Что код сделал с командой: добавил звук, сцену или оба; пусто — команда как есть.
 ADDED_SOUND = "sound"
 ADDED_SCENE = "scene"
+
+
+def misheard_stems(text: str) -> Tuple[str, ...]:
+    """Основы из ``SOUND_MISHEARS_RU``, которые назвали целые слова реплики, или пусто.
+
+    Живой промах n903 — «сериал» рядом с «мигалку», не голое «сериал». Поэтому оговорка
+    читается только при ``мигалк*`` и не при скорой помощи: «включи сериал» и «звонок и сериал»
+    звук сирены не заказывают, названный звонок не подменяется. Сверка — форма целиком
+    (``name_tokens``), не начало слова: «сериалы» в таблице, «серия» — нет.
+    """
+    if not has_word(text, ("мигалк",)) or has_word(text, kn.AMBULANCE_EXCLUDE_STEMS):
+        return ()
+    heard = set(name_tokens(text))
+    return tuple(dict.fromkeys(stem for word, stem in kn.SOUND_MISHEARS_RU if word in heard))
 
 
 def named_sound(text: str) -> Optional[str]:
@@ -31,9 +50,11 @@ def named_sound(text: str) -> Optional[str]:
 
     Первая совпавшая строка таблицы. Несколько триггеров в строке («клик» → четыре ui-звука) —
     первый: код не угадывает, какой из синонимов каталога человек имел в виду.
+    Оговорка STT (:func:`misheard_stems`) читается тем же списком основ.
     """
+    extra = misheard_stems(text)
     for triggers, stems in kn.SOUND_ALIASES_RU:
-        if has_word(text, stems):
+        if has_word(text, stems) or any(stem in extra for stem in stems):
             return triggers[0]
     return None
 
@@ -41,6 +62,17 @@ def named_sound(text: str) -> Optional[str]:
 def asks_flasher(text: str) -> bool:
     """Человек просит мигалку (``мигалк*``) и не называет скорую помощь."""
     return has_word(text, ("мигалк",)) and not has_word(text, kn.AMBULANCE_EXCLUDE_STEMS)
+
+
+def asks_police_lights(text: str) -> bool:
+    """Реплика про сирену или мигалку: основа ``POLICE_LIGHTS_STEMS`` либо оговорка STT той же основы.
+
+    «Сериал и мигалку» без этого остаётся ``ambulance``: #4694 смотрит только ``сирен*``/``мигалк*``.
+    Скорая помощь (``AMBULANCE_EXCLUDE_STEMS``) не переписывается.
+    """
+    if has_word(text, kn.AMBULANCE_EXCLUDE_STEMS):
+        return False
+    return has_word(text, kn.POLICE_LIGHTS_STEMS) or bool(misheard_stems(text))
 
 
 def _sound_arg(call: ToolCall) -> str:
