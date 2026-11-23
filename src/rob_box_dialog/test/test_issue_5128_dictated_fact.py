@@ -109,6 +109,18 @@ def test_remember_me_as_is_an_introduction_not_a_fact():
     assert fact_dictation.dictated_fact("запомни меня как Саша") is None
 
 
+def test_remember_me_without_a_fact_is_a_registration_not_a_dictation():
+    """«Запомни меня» — просьба запомнить человека (#4184), не факт «меня».
+
+    Имени в реплике нет: его называет ``register_speaker`` команды. Хвост «меня»
+    фактом не становится — иначе фраза успеха диктовки глушит имя регистрации.
+    «Запомни меня навсегда» — уже факт: хвост не одно слово «меня».
+    """
+    assert fact_dictation.dictated_fact("запомни меня") is None
+    assert fact_dictation.dictated_fact("робот, запомни меня") is None
+    assert fact_dictation.dictated_fact("запомни меня навсегда") == "меня навсегда"
+
+
 def test_past_tense_remembered_is_an_answer_not_a_command():
     """«Запомнил, тебя зовут Саша» — прошедшее, ответ робота, не команда человека."""
     assert fact_dictation.dictated_fact("запомнил, тебя зовут Саша") is None
