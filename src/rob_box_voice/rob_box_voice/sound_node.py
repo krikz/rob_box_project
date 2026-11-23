@@ -26,6 +26,8 @@ from std_msgs.msg import String
 
 from rob_box_dialog import expression
 from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SoundEvent
+from rob_box_mcp_tools.chimera_package import package_dir as chimera_package_dir
+from rob_box_mcp_tools.chimera_package import verified_clip
 
 from .audio_playback_manager import AudioPlaybackManager
 from .core.sound_answer import (
@@ -128,7 +130,7 @@ def load_chimera_clips(node, directory: str) -> int:
         return 0
     loaded = 0
     for filename in sorted(os.listdir(directory)):
-        if not filename.endswith(".wav"):
+        if not filename.endswith(".wav") or not verified_clip(directory, filename):
             continue
         path = os.path.join(directory, filename)
         try:
@@ -276,6 +278,7 @@ class SoundNode(SoundRequestsMixin, Node):
 
     def load_sounds(self):
         """Загрузка всех звуковых файлов из sound_pack/."""
+        load_chimera_clips(self, chimera_package_dir())
         if not os.path.exists(self.sound_pack_dir):
             self.get_logger().error(f"❌ Директория sound_pack не найдена: {self.sound_pack_dir}")
             self.publish_state("error_no_dir")
@@ -306,10 +309,8 @@ class SoundNode(SoundRequestsMixin, Node):
         else:
             self.get_logger().warn(f"⚠️ Файл catalog.json не найден: {catalog_path}")
 
-        # Загрузить все mp3 файлы и WAV поставки Химеры (ADR-0175 шаг 1.1, #5152).
+        # mp3 эффектов. Клипы Химеры уже загружены из package_dir() в начале метода.
         loaded_count = 0
-        chimera_dir = os.path.join(self.sound_pack_dir, "chimera")
-        loaded_count += load_chimera_clips(self, chimera_dir)
         for filename in os.listdir(self.sound_pack_dir):
             if filename.endswith(".mp3"):
                 sound_name = filename.replace(".mp3", "")

@@ -17,9 +17,10 @@ from ._ros_stubs import RosStubs
 
 _ros = RosStubs()
 with _ros:
+    from rob_box_mcp_tools import chimera_package as package
     from rob_box_mcp_tools.tools import chimera_decide as decide
     from rob_box_mcp_tools.tools import chimera_delivery as delivery
-    from rob_box_mcp_tools.tools.chimera import ACTIONS, ChimeraHostPort, ChimeraPerformTool
+    from rob_box_mcp_tools.tools.chimera import ChimeraHostPort, ChimeraPerformTool
 _ros.fixture()
 
 BIRD = "bird_chirps_16k_notail.wav"
@@ -194,8 +195,17 @@ def test_missing_package_falls_back_to_the_stub(tmp_path):
     profile = delivery.load_delivery(str(tmp_path / "нет-такого"))
     assert profile.stub is True and delivery.advertised_calls(profile) == ()
     schema = {p.name: p for p in ChimeraPerformTool(_Node(), host=_Host(None), profile=profile).parameters}
-    assert schema["action"].enum == list(ACTIONS)
+    assert schema["action"].enum == list(decide.stub_profile().actions)
     assert schema["call"].enum is None  # заглушка не объявляет вызовов: файла нет
+
+
+def test_delivery_enums_come_from_the_same_package_reader(tmp_path):
+    """Схема тула и сверка файла — один читатель. Нода зовёт его же (voice/test/unit/sound)."""
+    root = tmp_path / "chimera"
+    shutil.copytree(REPO_CLIPS, root)
+    assert delivery.delivery_enums(str(root))[0] == ("call",)
+    assert package.verified_clip(str(root), BIRD) is True
+    assert package.PACKAGE_DIR == "/ws/sound_pack/chimera"
 
 
 def test_finished_phrase_comes_from_the_outcome_not_from_model_text():
