@@ -462,6 +462,7 @@ jobs:
             tests/unit/scripts/test_hailo_device_smoke.py \
             tests/unit/scripts/test_hailo_shm_reap.py \
             tests/unit/scripts/test_hil_checks_verdicts.py \
+            tests/unit/scripts/test_issue_5160_hil_isolation.py \
             tests/unit/scripts/test_hil_goal_check.py \
             tests/unit/scripts/test_hil_loc_metrics.py \
             tests/unit/scripts/test_hil_m1_repeat.py \
