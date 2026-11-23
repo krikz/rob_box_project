@@ -295,8 +295,10 @@ ENV ALSA_CARD=ArrayUAC10
 
 # Пути к данным
 ENV SOUND_PACK_DIR=/ws/sound_pack
-# Поставка Химеры читается из чекаута (sound_pack/chimera), который деплой обновляет до SHA
-# и монтирует в /ws/sound_pack. CHIMERA_PACKAGE_DIR не задаём: дефолт package_dir() — тот же каталог.
+# Поставка Химеры едет в образе (ADR-0175 шаг 1.1, #5152). Монтирование чекаута
+# ../../sound_pack:/ws/sound_pack:ro перекрывает тот же путь; без тома остаётся копия образа.
+# CHIMERA_PACKAGE_DIR не задаём: дефолт package_dir() — /ws/sound_pack/chimera.
+COPY sound_pack/chimera /ws/sound_pack/chimera
 
 ENV TTS_CACHE_DIR=/config/voice_assistant/tts_cache
 

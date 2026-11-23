@@ -13,7 +13,7 @@ import os
 import wave
 from typing import Mapping, Optional, Tuple
 
-PACKAGE_DIR = "/ws/sound_pack/chimera"  # дефолт: монтирование чекаута, docker/sound/docker-compose.yaml
+PACKAGE_DIR = "/ws/sound_pack/chimera"  # дефолт: копия в образе, деплой перекрывает тем же путём (compose :ro)
 PROFILE_NAME = "profile.json"
 RATE_HZ = 16000  # формат Лайт и ReSpeaker: моно PCM16, ADR-0175
 CHANNELS = 1

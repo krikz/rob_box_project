@@ -24,7 +24,7 @@ with _ros:
 _ros.fixture()
 
 BIRD = "bird_chirps_16k_notail.wav"
-BIRD_SHA = "03fc28940f71091bc60e89b21cca846b5173bac521a15f3166f3c902c369ab33"
+BIRD_SHA = "bc3dddb760272139646f0fb65153d1f06049b85dc1e0ea80d0a43e2f43e6bd0c"
 SEAL = "seal_zap_16k_notail.wav"
 SEAL_SHA = "fac1baf26afa3134d2abc8eaddc2cb794c3218c110bac96ed78b918b7ae0c2c2"
 
