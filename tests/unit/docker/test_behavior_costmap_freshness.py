@@ -99,6 +99,12 @@ def test_dockerfile_builds_behaviors_and_ships_the_patched_libs():
     assert "libnav2_back_up_behavior.so" in df
     assert df.index("libbehavior_server_core.so") < df.index("rm -rf /tmp/nav2-fix")
     assert df.index("libnav2_back_up_behavior.so") < df.index("rm -rf /tmp/nav2-fix")
+    # #5003: сборный гард. Линкер shared-библиотеки молча пропускает
+    # неопределённый символ — образ без этого шага собрался бы сломанным.
+    guard = df.index("nm -D --defined-only")
+    assert guard < df.index("rm -rf /tmp/nav2-fix")
+    assert "undefined in" in df[guard:]
+    assert "defined by no .so" in df[guard:]
 
 
 def test_patch_applies_on_pinned_behaviors(tmp_path: Path):
@@ -126,6 +132,14 @@ def test_patch_applies_on_pinned_behaviors(tmp_path: Path):
     cycle = loop.index("switch (onCycleUpdate())")
     assert skip < cycle
     backup = (src / "nav2_behaviors/plugins/back_up.cpp").read_text(encoding="utf-8")
-    heading = (src / "nav2_behaviors/plugins/drive_on_heading.cpp").read_text(encoding="utf-8")
-    assert "costmapTickStatusFor" in backup
+    # Тело шаблона — в заголовке: TU BackUp эмитит слабое определение. В .cpp
+    # его быть не должно: тот файл инстанцирует только DriveOnHeading<DriveOnHeading>.
+    heading_cpp = (src / "nav2_behaviors/plugins/drive_on_heading.cpp").read_text(encoding="utf-8")
+    assert "costmapTickStatusFor" not in heading_cpp
+    heading = (src / "nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp").read_text(encoding="utf-8")
+    assert "template<typename ActionT>" in heading
+    assert "Status DriveOnHeading<ActionT>::costmapTickStatus() const" in heading
     assert "costmapTickStatusFor" in heading
+    assert '#include "nav2_behaviors/behavior_server.hpp"' in heading
+    assert "BackUp::costmapTickStatus" in backup
+    assert "costmapTickStatusFor" in backup

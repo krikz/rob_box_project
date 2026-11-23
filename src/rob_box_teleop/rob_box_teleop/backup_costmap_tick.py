@@ -8,12 +8,17 @@ DriveOnHeading``. Колёса не крутятся. Копия ``local_costmap
 
 Humble ``BackUp`` наследует ``DriveOnHeading``, но CMake собирает его в свой
 ``libnav2_back_up_behavior.so`` (``plugins/back_up.cpp`` включает заголовок
-``drive_on_heading.hpp``). Правка только этого заголовка попадает в
-``libnav2_drive_on_heading_behavior.so`` и BackUp её не видит: в том же логе
-``Costmap copy stale`` — 0 строк, ``Collision Ahead`` на BackUp — 4.
+``drive_on_heading.hpp``). Тело шаблона ``DriveOnHeading<ActionT>::costmapTickStatus``
+живёт в этом заголовке, а не в ``plugins/drive_on_heading.cpp``: тот файл
+инстанцирует только ``DriveOnHeading<DriveOnHeading>``, и тело там оставляет
+``DriveOnHeading<BackUp>::costmapTickStatus`` неопределённым — ``dlopen``
+``libnav2_back_up_behavior.so`` падает. Заголовок компилируют оба TU, так что
+каждый эмитит слабое определение. В том же логе ``Costmap copy stale`` — 0
+строк, ``Collision Ahead`` на BackUp — 4: образ был без этой правки.
 
-Решение живёт здесь и в ``behavior_server`` (одна библиотека на оба плагина,
-ADR-0148). Плагин только спрашивает, что делать с тиком.
+Решение — в ``behavior_server`` (одна библиотека на оба плагина, ADR-0148).
+Плагин только спрашивает, что делать с тиком. Сборный гард образа ловит
+символ, который не определяет ни один .so.
 """
 
 from __future__ import annotations
