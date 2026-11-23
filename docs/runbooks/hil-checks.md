@@ -99,7 +99,16 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_cancel_matrix.sh        # м�
 - **`guard_off`** (#4470 off). Проба отъезжает назад. `proximity-guard` с `HIL_GUARD_SOUND=off` (умолчание HIL),
   тот же наезд. PASS: стоп есть, маячок есть, писка и фразы на Sound Pi нет, в журнале защиты есть строка
   «HIL: зона stop, на настоящий робот не уходит».
-- **`move_ahead`** (#5160). Реплика `MOVE_AHEAD_PHRASE` («Робот, вперёд на метр.») уходит в диалог
+- **`move_ahead`** (#5160). До реплики оркестр снимает сырьё и спрашивает
+  `scripts/hil/checks/isolation.py` (не `hil.sh status`: тот ходит на все Pi).
+  Код пускает цель только если сразу четыре факта: `docker inspect` боевого
+  `ros2-control` не `running`, в графе ровно один `/controller_manager` (сторож
+  `python3 -m rob_box_sim.hil count` внутри gazebo), контейнер `{HIL_SIM_PREFIX}-gazebo`
+  `running`, командных кадров VESC нет (`commands: 0` в `/tmp/hil/can_speed.json` на
+  Main Pi; файл уже должен лежать, его пишет `scripts/hil/speed/can_watch.py`,
+  предохранитель candump не запускает). Нет сырья или факт нарушен — строка
+  `ISOLATION REFUSE` и выход 2, `inject` не вызывается. Реплика `MOVE_AHEAD_PHRASE`
+  («Робот, вперёд на метр.») уходит в диалог
   (`scripts/robot_dev/inject.sh`). Цель создаёт тул `move_direction`, проба в режиме `watch` только пишет
   `TRACK` правды Gazebo и своей цели не шлёт. PASS: в `voice.log` есть «Отправлен запрос …: move_direction»,
   «✅ Инструмент move_direction выполнен успешно» и строка `[navigate_to_pose] цель: frame_id=map`; сдвиг
@@ -133,7 +142,7 @@ orphan/{probe.log,watchdog.log,nav2.log}
 controller_abort/{probe.log,nav2.log,watchdog.log}
 zone/{probe.log,guard.log,voice.log,expr.log,env.txt}          guard_off/ — то же + recreate_*.txt
 nav_aborted/{probe.log,voice.log,nav2.log,inject.txt}          stop_*/{voice.log,inject.txt[,probe.log]}
-move_ahead/{probe.log,voice.log,nav2.log,inject.txt}
+move_ahead/{hil_status.txt,inspect.txt,can_watch.json,probe.log,voice.log,nav2.log,inject.txt}
 ```
 
 В комментарий к карточке: строку `VERDICT` из `verdicts.txt`, `git rev-parse HEAD` и тег образа с робота,

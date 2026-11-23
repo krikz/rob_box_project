@@ -21,6 +21,8 @@
 #   client_kill     #4435  цель принята, процесс пробы убит (SIGTERM) без cancel_goal. Робот должен встать.
 #   host_cancel     #4435  ros2 action cancel /navigate_to_pose с хоста (нулевой GoalInfo), не наш тул.
 #   move_ahead      #5160  «Робот, вперёд на метр»: цель создаёт move_direction, проба только мерит TRACK.
+#                   До цели — isolation.py: только Gazebo (один /controller_manager),
+#                   боевой ros2-control не running, командных кадров VESC 0. Иначе выход 2.
 #
 # Предусловия проверяет сам и честно отказывает (выход 3): stand.lock начинается с HIL_CHECKS_OWNER (замок берёт тот,
 # кто запускает, скрипт его не трогает), hil.sh status = HIL on и один /controller_manager, нужные контейнеры running,
@@ -263,11 +265,40 @@ sc_doorway() {
     hi=${DOOR_OPENING#*,}
     verdict doorway "$d" --opening-lo "$lo" --opening-hi "$hi"
 }
+cm_count() {  # число /controller_manager глазами сторожа в gazebo; нет числа — «-», не ноль.
+    local out rc=0
+    out=$(rsh "$HIL_SANDBOX_HOST" "timeout ${HIL_PROBE_TIMEOUT_S:-30} docker exec $GZ /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null") || rc=$?
+    if [ "$rc" -eq 124 ]; then echo timeout; return 0; fi
+    printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -
+}
+isolation_ok() {  # isolation_ok <каталог>: код решает до цели. Отказ — exit 2, цель не шлётся.
+    local d="$1" line
+    {
+        rsh "$HIL_MAIN_HOST" "docker inspect -f '{{.Name}} {{.State.Status}}' ros2-control 2>&1 || true"
+        rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.Name}} {{.State.Status}}' $GZ 2>&1 || true"
+    } >"$d/inspect.txt"
+    {
+        echo "── Main Pi"
+        rsh "$HIL_MAIN_HOST" "docker inspect -f '{{.Name}} {{.State.Status}}' ros2-control 2>&1 || true"
+        echo "── /controller_manager в графе (сторож в gazebo): $(cm_count) (норма HIL — 1)"
+    } >"$d/hil_status.txt"
+    rsh "$HIL_MAIN_HOST" "cat /tmp/hil/can_speed.json 2>/dev/null || true" >"$d/can_watch.json"
+    line=$("$PY" -X utf8 "$(pypath "$HERE/isolation.py")" "$(pypath "$d")" --gazebo-prefix "$HIL_SIM_PREFIX")
+    printf '%s\n' "$line" | tee -a "$OUT/verdicts.txt"
+    case "$line" in
+        "ISOLATION PASS:"*) return 0 ;;
+    esac
+    printf '❌ предохранитель #5160 отказал — цель не отправлена (%s)\n' "$d" >&2
+    exit 2
+}
 sc_move_ahead() {
     # #5160: реплика в диалог, цель создаёт move_direction. Проба только слушает TRACK
     # (watch не шлёт NavigateToPose). Вердикт читает лог тула и сдвиг правды Gazebo.
+    # До реплики — предохранитель: только Gazebo, боевой ros2-control стоит,
+    # командных кадров VESC нет. Иначе exit 2, inject не вызывается.
     local d="$OUT/move_ahead" t0 ppid
     mkdir -p "$d"
+    isolation_ok "$d"
     t0=$(iso_now)
     probe "$d/probe.log" watch --secs $((MOVE_AHEAD_WAIT_S + 30)) &
     ppid=$!
