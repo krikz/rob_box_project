@@ -154,29 +154,19 @@ jobs:
           # registry (teleop/ros2-control от 28.09, voice/supervisor от
           # 20.10) → контейнеры пересоздались на старых образах → робот
           # деградировал. Причина НЕ в механике rerun: GitHub честно
-          # повторяет inputs каждой попытки (все 5 attempt'ов run'а имели
-          # одинаковые env), а сам run был задиспатчен с
+          # повторяет inputs каждой попытки, а сам run был задиспатчен с
           # environment=production (default формы) вместе с
-          # registry_source=local. Дальше цепочка по коду (как было до
-          # #4763): production → IMAGE_TAG=latest (case выше), а шаги
-          # pull/start НЕ грузили .image-versions.${IMAGE_TAG} при
-          # registry_source=local (условие '[ 'local' != 'local' ]' = false)
-          # → compose разрешал образы в голый ${IMAGE_TAG} = latest.
-          # Голый latest локальный registry обновляет только релизная
-          # сборка с main; ежедневные develop-сборки пушат только dev-теги,
-          # поэтому latest там месяцами старше свежей сборки. Комбинация
-          # local+production недокументирована
-          # (docs/deployment/DEPLOYMENT_WORKFLOW.md: production → github/skip,
-          # local → staging/test) и ни одна автоматика её не использует.
-          # Rerun такого run молча повторил бы старьё снова — честный FAIL
-          # (ADR-0018) здесь, ДО любого SSH на Pi, вместо тихой деградации
-          # робота. Диспатч и rerun после этого гарда ведут себя одинаково:
-          # оба падают с понятной ошибкой, пока не выбрана документированная
-          # комбинация.
-          if [ "${{ inputs.registry_source }}" = "local" ] && [ "${{ inputs.environment }}" = "production" ]; then
-            echo "::error title=Issue #4653 — недопустимая комбинация параметров::registry_source=local + environment=production выкачает голые теги *-humble-latest из локального registry — их обновляет только релизная сборка с main (на момент инцидента им было ~6 недель). Деплой свежей develop-сборки: environment=staging (IMAGE_TAG=dev). Production: registry_source=github (ghcr) или registry_source=skip (рестарт без pull). Rerun этого run снова упадёт здесь — задиспатчь правильную комбинацию."
-            exit 1
-          fi
+          # registry_source=local. До #4763 шаги pull/start не грузили
+          # .image-versions.${IMAGE_TAG} при registry_source=local, и compose
+          # разрешал образы в голый ${IMAGE_TAG} = latest.
+          # Слепой бан local+production (exit 1 здесь, до SSH) снят решением
+          # Шифу 22.11.2026 (#5110): комбинация разрешена, но только через
+          # fail-closed предпроверку пинов — следующий шаг workflow. Он читает
+          # docker/*/.image-versions.${IMAGE_TAG} (для production это
+          # .image-versions.latest, пины вида latest-<sha>, не голый latest)
+          # и падает с ::error, называя отсутствующие теги, ДО Stop Containers.
+          # Диспатч и rerun ведут себя одинаково: оба доходят до предпроверки,
+          # оба падают, если пина нет в локальном registry.
 
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
@@ -198,12 +188,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
 
-      # Issue #5110 / #4653: локальный registry — единственный источник образов
-      # для registry_source=local, и пины .image-versions.<IMAGE_TAG> берутся из
-      # этого же checkout'а. Если пина нет в registry (замер 23.11.2026:
-      # prod-пины latest-b2e7144, а teleop/quest такого тега не имеют) или пин
-      # плавающий, деплой обязан упасть ЗДЕСЬ, до первого SSH: на Pi ничего не
-      # остановлено, работающий стек сохранён, в логе ::error с именем образа.
+      # Issue #5110 / #4653: fail-closed предпроверка пинов. Это замена слепого
+      # бана local+production (снят в шаге Setup решением Шифу 22.11.2026):
+      # комбинация разрешена, только если этот шаг reachable и падает раньше
+      # любых изменений контейнеров. Локальный registry — единственный источник
+      # образов для registry_source=local; пины берутся из
+      # docker/*/.image-versions.<IMAGE_TAG> этого же checkout'а (production →
+      # IMAGE_TAG=latest → пины latest-<sha>, не голый latest). Если пина нет
+      # в registry (замер 23.11.2026, перепроверен 23.11: teleop и quest
+      # latest-b2e7144 отсутствуют, остальные 14 на месте) или пин плавающий,
+      # деплой падает ЗДЕСЬ, до Stop Containers: на Pi ничего не остановлено,
+      # в логе ::error с именем отсутствующего тега.
       - name: "[Preflight] Verify pinned images exist in local registry (#5110)"
         if: ${{ !inputs.dry_run && inputs.registry_source == 'local' }}
         run: |

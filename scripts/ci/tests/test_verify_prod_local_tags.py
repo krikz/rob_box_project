@@ -13,6 +13,7 @@ ROBBOX_REGISTRY_HOST. Живой реестр — только источник 
 
 import http.server
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -223,9 +224,33 @@ def test_image_name_rule_matches_compose():
     assert checked >= 16, f"проверено только {checked} пинов — файлы пинов не найдены?"
 
 
-def test_workflow_runs_preflight_before_ssh_and_only_for_local():
-    """Шаг preflight стоит до первого SSH-шага и запускается только при
-    registry_source=local (github/skip пины локального registry не касаются)."""
+def test_production_pins_are_sha_suffixes_not_floating():
+    """Production-деплой берёт пины из docker/*/.image-versions.latest
+    (workflow: environment=production → IMAGE_TAG=latest). Каждый *_TAG обязан
+    быть latest-<sha>, не плавающим latest/dev/test/local: иначе local+production
+    снова выкачает голый *-humble-latest, как в инциденте #4653."""
+    floating = {"latest", "dev", "test", "local"}
+    checked = 0
+    for pin_file in sorted((ROOT / "docker").glob("*/.image-versions.latest")):
+        for line in pin_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            var, _, value = line.partition("=")
+            if not var.endswith("_TAG"):
+                continue
+            assert value not in floating, f"{pin_file}: {var}={value} — плавающий тег"
+            assert value.startswith("latest-") and len(value) > len(
+                "latest-"
+            ), f"{pin_file}: {var}={value} — production-пин обязан быть latest-<sha>"
+            checked += 1
+    assert checked >= 16, f"в .image-versions.latest только {checked} пинов"
+
+
+def test_workflow_runs_preflight_before_stop_and_ban_is_gone():
+    """Слепой бан #4653 (local+production → exit 1 в Setup) снят: иначе
+    предпроверка для production недостижима. Шаг preflight reachable при
+    registry_source=local и стоит до Stop Containers и до первого SSH."""
     data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = [s for job in data["jobs"].values() for s in job.get("steps", [])]
     names = [s.get("name", "") for s in steps]
@@ -243,6 +268,22 @@ def test_workflow_runs_preflight_before_ssh_and_only_for_local():
         i for i, name in enumerate(names) if name == "Verify SSH Tools and Connectivity"
     )
     assert idx[0] < first_ssh, "preflight обязан идти ДО первого SSH-шага"
+    setup = next(s for s in steps if s.get("id") == "setup")
+    assert not re.search(
+        r'registry_source \}\}" = "local".*environment \}\}" = "production"',
+        setup["run"],
+        re.DOTALL,
+    ), "слепой бан #4653 (local+production в Setup) всё ещё на месте"
+    for gate in (
+        "[Vision Pi] Stop Containers",
+        "[Sound Pi] Stop Containers",
+        "[Main Pi] Stop Containers",
+    ):
+        stop = next(i for i, name in enumerate(names) if name == gate)
+        assert idx[0] < stop, f"preflight обязан идти ДО {gate}"
+    # Production зовёт тот же скрипт с IMAGE_TAG=latest, не с голым latest.
+    assert "IMAGE_TAG" in preflight["run"]
+    assert "latest" not in preflight["run"].replace("${{ env.IMAGE_TAG }}", "")
 
 
 def test_script_is_executable():

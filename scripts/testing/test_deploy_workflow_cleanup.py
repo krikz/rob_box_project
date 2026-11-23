@@ -300,68 +300,39 @@ def test_every_referenced_step_id_is_defined_once():
         assert {f"{node}_status", f"{node}_logs", f"{node}_topics"} <= set(ids)
 
 
-# ── Issue #4653: registry_source=local + environment=production ──────────────
+# ── Issue #4653 / #5110: слепой бан снят, на его месте fail-closed предпроверка ──
 
 
-def _guard_snippet():
-    """Текст if-блока гарда #4653 из шага «Setup SSH and Environment» —
-    реальный код workflow, а не его копия: тест подставляет inputs и
-    выполняет блок в bash."""
-    body = dict(_steps(WORKFLOW_PATH.read_text(encoding="utf-8")))[
-        "Setup SSH and Environment"
-    ]
-    m = re.search(
-        r'if \[ "\$\{\{ inputs\.registry_source \}\}" = "local" \]'
-        r' && \[ "\$\{\{ inputs\.environment \}\}" = "production" \]; then\n'
-        r"(.*?)\n\s+fi",
-        body,
+def test_blind_ban_is_gone_and_preflight_is_reachable_before_stop():
+    """Инцидент 10.11 (run 42861316455): local+production выкачал голые
+    *-humble-latest. Слепой бан (exit 1 в Setup, до SSH) закрыл комбинацию,
+    но и предпроверку пинов: local+production умирал раньше шага preflight.
+    Решение Шифу 22.11.2026 (#5110): бан снят, комбинация разрешена только
+    если предпроверка reachable и стоит до Stop Containers. Плавающий тег
+    и отсутствующий пин ловит scripts/ci/verify_prod_local_tags.sh, не exit 1
+    в Setup."""
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    steps = _steps(workflow)
+    names = [name for name, _ in steps]
+    setup = dict(steps)["Setup SSH and Environment"]
+    assert not re.search(
+        r'registry_source \}\}" = "local".*environment \}\}" = "production"',
+        setup,
         re.DOTALL,
+    ), "слепой бан #4653 (local+production в Setup) всё ещё на месте"
+    idx = next(
+        i for i, (_, body) in enumerate(steps) if "verify_prod_local_tags.sh" in body
     )
-    assert (
-        m
-    ), "гард #4653 (registry_source=local && environment=production → exit 1) не найден в Setup"
-    return m.group(0)
-
-
-def test_guard_rejects_undocumented_local_production_combo():
-    """Инцидент 10.11 (run 42861316455): run задиспатчен с environment=production
-    (default формы) + registry_source=local. До #4763 шаги pull/start не грузили
-    .image-versions.* при registry_source=local, поэтому compose разрешил образы
-    в голый ${IMAGE_TAG}=latest — а голый latest локальный registry обновляет
-    только релизной сборкой с main (образы от 28.09). Робот получил 6-недельной
-    давности образы и деградировал. Документированные комбинации
-    (docs/deployment/DEPLOYMENT_WORKFLOW.md) не пострадают. Гард остаётся:
-    local+production по-прежнему недокументированная комбинация."""
-    import subprocess
-
-    snippet = _guard_snippet()
-    cases = [
-        # (registry_source, environment, ожидаемый код возврата гарда)
-        ("local", "production", 1),  # сам инцидент — недокументированная комбинация
-        ("local", "staging", 0),  # develop-деплой из локального registry
-        ("local", "test", 0),  # тестовый деплой из локального registry
-        ("local", "local", 0),  # deprecated-алиас → IMAGE_TAG=dev (issue #1379)
-        ("github", "production", 0),  # production из ghcr
-        ("skip", "production", 0),  # рестарт без pull
-    ]
-    for registry_source, environment, expected_rc in cases:
-        script = snippet.replace(
-            "${{ inputs.registry_source }}", registry_source
-        ).replace("${{ inputs.environment }}", environment)
-        rc = subprocess.run(["bash", "-c", script], capture_output=True).returncode
-        assert rc == expected_rc, (
-            f"registry_source={registry_source} + environment={environment}: "
-            f"гард вернул {rc}, ожидался {expected_rc}"
-        )
-
-
-def test_guard_message_points_to_documented_combos():
-    """Гард обязан подсказать правильные параметры, иначе оператор rerun'ит
-    run вхолостую."""
-    snippet = _guard_snippet()
-    assert "environment=staging" in snippet
-    assert "registry_source=github" in snippet
-    assert "#4653" in snippet
+    body = steps[idx][1]
+    assert "registry_source == 'local'" in body
+    assert "${{ env.IMAGE_TAG }}" in body
+    for gate in (
+        "Verify SSH Tools and Connectivity",
+        "[Vision Pi] Stop Containers",
+        "[Sound Pi] Stop Containers",
+        "[Main Pi] Stop Containers",
+    ):
+        assert idx < names.index(gate), f"предпроверка обязана стоять до {gate}"
 
 
 # ── Issue #5110: пины локального registry проверяются ДО SSH ────────────────
