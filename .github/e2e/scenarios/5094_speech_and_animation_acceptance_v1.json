@@ -1,0 +1,13 @@
+{
+  "name": "5094_speech_and_animation_acceptance_v1",
+  "issue": 5094,
+  "gate": "ADR-0022 GATE-1",
+  "description": "Мягкий GATE-1 окна #5094. Судит шаг сценария (речь + показанная анимация), а не привод: привод подтверждает scripts/e2e/check_drive_locked.py до окна, отдельным сырьём.",
+  "steps": {
+    "n5094_anekdot_anim": {
+      "must_have_speech": true,
+      "must_show_animation": true,
+      "_comment": "Оба канала в одном ходе. Нет SpeechEvent started — FAIL turn_nospeech, как марафон #3 шаг n906 (run 44999727503). Нет лица команды и принятой play_animation — PATTERN_MISS, анимация не доказана."
+    }
+  }
+}
