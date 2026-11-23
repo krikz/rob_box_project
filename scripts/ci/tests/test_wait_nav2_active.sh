@@ -12,9 +12,11 @@
 #     при rc≠0 (и при отсутствии контейнера / отсутствии проб);
 #   * внутри окна (check_container_status.sh вернул pending_start с nav2)
 #     ждёт конца окна и мерит снова — не пишет «жив» раньше вердикта;
-#   * лечение #5039: rc≠0 вне окна при уже healthy zenoh-router — ровно один
-#     `docker restart nav2`, повторное ожидание нового окна и решение по
-#     новому замеру. Второго перезапуска нет, роутер не трогается.
+#   * лечение #5039 — ручной рубильник NAV2_RESTART_ON_FAIL, по умолчанию 0
+#     (решение Шифу 23.11, #5149): без него гейт не рестартует и честно
+#     краснеет. При =1 — ровно один `docker restart nav2`, и только после
+#     второй подтверждающей пробы при healthy zenoh-router. Таймаут (-1)
+#     рестарт не лечит. После рестарта старая запись Health.Log не принимается.
 #
 # docker/sshpass мокаются через PATH. stdout скрипта — одна JSON-строка
 # {ok, reason}; exit 0 всегда, шаг воркфлоу валит джобу по .ok.
@@ -89,14 +91,19 @@ assert_eq() {  # $1=actual $2=expected $3=label
 }
 
 # Сырой docker inspect одного контейнера nav2.
-# $1=health $2=exit_code $3=started_at $4=start_period_ns $5=n_log_entries
+# $1=health $2=exit_code $3=started_at $4=start_period_ns $5=n_log_entries $6=probe_start
 # n_log_entries=0 — проб ещё не было: ExitCode должен читаться как -1, а не 0.
+# probe_start пуст — Start пробы = StartedAt контейнера (проба свежая для него).
 inspect_nav2() {
-    local health="$1" exit_code="$2" started_at="$3" period_ns="$4" n_log="${5:-1}"
+    local health="$1" exit_code="$2" started_at="$3" period_ns="$4" n_log="${5:-1}" probe_start="${6:-}"
+    if [ -z "$probe_start" ]; then
+        probe_start="$started_at"
+    fi
     jq -nc \
         --arg health "$health" \
         --argjson exit_code "$exit_code" \
         --arg started_at "$started_at" \
+        --arg probe_start "$probe_start" \
         --argjson period_ns "$period_ns" \
         --argjson n_log "$n_log" \
         '{
@@ -106,7 +113,7 @@ inspect_nav2() {
                 StartedAt: $started_at,
                 Health: {
                     Status: $health,
-                    Log: ([range($n_log) | {ExitCode: $exit_code, Output: "probe"}])
+                    Log: ([range($n_log) | {ExitCode: $exit_code, Start: $probe_start, Output: "probe"}])
                 }
             },
             Config: {Healthcheck: {StartPeriod: $period_ns}}
@@ -129,6 +136,7 @@ assert_contains() {  # $1=haystack $2=needle $3=label
 ROUTER_FIXTURES=()
 EXTRA_ENV=()
 LAST_STDERR=""
+LAST_RESULT=""
 LAST_RESTARTS=0
 
 # run_case EXPECT_OK STATUS_JSON FIXTURES... -- LABEL
@@ -187,16 +195,15 @@ run_case() {
     fi
     rm -rf "$fixture_dir"
 
-    local result
-    result="$(printf '%s\n' "$stdout" | jq -c 'select(.ok != null)' 2>/dev/null | tail -n 1 || true)"
+    LAST_RESULT="$(printf '%s\n' "$stdout" | jq -c 'select(.ok != null)' 2>/dev/null | tail -n 1 || true)"
     printf '  [%s]\n' "$label"
-    if [ -z "$result" ]; then
+    if [ -z "$LAST_RESULT" ]; then
         printf '  %s✗%s no JSON result, stdout: %s\n' "$RED" "$NC" "$stdout" >&2
         FAILED=$((FAILED + 1))
         TOTAL=$((TOTAL + 1))
         return
     fi
-    assert_eq "$(printf '%s' "$result" | jq -r '.ok')" "$expect_ok" "ok"
+    assert_eq "$(printf '%s' "$LAST_RESULT" | jq -r '.ok')" "$expect_ok" "ok"
 }
 
 NOW_EPOCH="$(date +%s)"
@@ -252,16 +259,21 @@ run_case true "$OTHER_PENDING" "$FIX" -- \
     "G: pending is another container, nav2 ExitCode=0 → ok=true (gate is nav2-only)"
 
 # --- лечение #5039: один перезапуск nav2 при живом роутере --------------------
-# Замер, на котором основано лечение: вне окна rc=1 (узлы не active), а
-# zenoh-router уже healthy — один `docker restart nav2` поднимал nav2 2/2.
+# Рубильник по умолчанию выключен (решение Шифу 23.11, #5149). H/J включают
+# его явно. Рестарт — только после второй подтверждающей пробы: одна красная
+# healthy контейнер не трогает.
 
-# H: rc=1, роутер healthy → ровно один restart, новый замер rc=0 → ok=true.
+# H: NAV2_RESTART_ON_FAIL=1, две пробы rc=1, роутер healthy → ровно один
+# restart, новый замер rc=0 → ok=true. Первая проба рестарта не даёт.
 FIX1="$(inspect_nav2 starting 1 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
 FIX2="$(inspect_nav2 healthy 0 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
-ROUTER_FIXTURES=("healthy")
-run_case true "$NO_PENDING" "$FIX1" "$FIX2" -- \
-    "H: ExitCode=1 + healthy router → 1 restart, re-measure 0 → ok=true (#5039)"
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0")
+ROUTER_FIXTURES=("healthy" "healthy")
+run_case true "$NO_PENDING" "$FIX1" "$FIX1" "$FIX2" -- \
+    "H: NAV2_RESTART_ON_FAIL=1, ExitCode=1 confirmed + healthy router → 1 restart, re-measure 0 → ok=true (#5039)"
 assert_eq "$LAST_RESTARTS" "1" "restart count (H)"
+assert_contains "$LAST_STDERR" "рестарта ещё нет" \
+    "first red probe waits, no restart yet (H)"
 assert_contains "$LAST_STDERR" "nav2 healthcheck ExitCode=1 — однократный restart nav2" \
     "log line about the one-shot restart (H)"
 
@@ -271,12 +283,14 @@ run_case false "$NO_PENDING" "$FIX1" -- \
     "I: ExitCode=1 + router starting → no restart, ok=false (#5039)"
 assert_eq "$LAST_RESTARTS" "0" "restart count (I)"
 
-# J: rc=1, роутер healthy, после перезапуска rc=1 → fail и БОЛЬШЕ НИ ОДНОГО
-# перезапуска (второго не бывает: повтор — это уже цикл, а не лечение).
+# J: NAV2_RESTART_ON_FAIL=1, две пробы rc=1, после перезапуска снова rc=1 →
+# fail и БОЛЬШЕ НИ ОДНОГО перезапуска (второго не бывает: повтор — это уже
+# цикл, а не лечение). Подтверждение после рестарта рестарт не повторяет.
 FIX3="$(inspect_nav2 unhealthy 1 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
-ROUTER_FIXTURES=("healthy")
-run_case false "$NO_PENDING" "$FIX1" "$FIX3" -- \
-    "J: ExitCode=1 → 1 restart, re-measure 1 → ok=false, no second restart (#5039)"
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0")
+ROUTER_FIXTURES=("healthy" "healthy" "healthy")
+run_case false "$NO_PENDING" "$FIX1" "$FIX1" "$FIX3" "$FIX3" -- \
+    "J: NAV2_RESTART_ON_FAIL=1, ExitCode=1 confirmed → 1 restart, re-measure 1 → ok=false, no second restart (#5039)"
 assert_eq "$LAST_RESTARTS" "1" "restart count (J)"
 
 # K: rc=-1 (healthcheck ни разу не отработал вне окна) — это не «упал после
@@ -287,13 +301,21 @@ run_case false "$NO_PENDING" "$FIX_NOPROBE" -- \
     "K: ExitCode=-1 (no probes) + healthy router → no restart, ok=false (#5039)"
 assert_eq "$LAST_RESTARTS" "0" "restart count (K)"
 
-# L: рубильник NAV2_RESTART_ON_FAIL=0 — лечение выключено, гейт ведёт себя
-# как до #5039: fail без restart.
+# L: дефолт (переменная не задана) — лечение выключено. Даже при healthy
+# роутере и rc=1 гейт не рестартует и честно краснеет с причиной.
+# Явный NAV2_RESTART_ON_FAIL=0 — тот же исход (рубильник выключен руками).
+ROUTER_FIXTURES=("healthy")
+run_case false "$NO_PENDING" "$FIX1" -- \
+    "L: default (NAV2_RESTART_ON_FAIL unset) + ExitCode=1 + healthy router → 0 restarts, ok=false (#5149)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (L, default)"
+assert_contains "$LAST_STDERR" "ExitCode=1" "log names ExitCode (L)"
+assert_contains "$LAST_RESULT" "ExitCode=1" "JSON reason names ExitCode (L)"
+assert_contains "$LAST_RESULT" "controller_server" "JSON reason names the nodes the probe wants (L)"
 EXTRA_ENV=("NAV2_RESTART_ON_FAIL=0")
 ROUTER_FIXTURES=("healthy")
 run_case false "$NO_PENDING" "$FIX1" -- \
-    "L: NAV2_RESTART_ON_FAIL=0 → no restart, ok=false (#5039)"
-assert_eq "$LAST_RESTARTS" "0" "restart count (L)"
+    "L0: NAV2_RESTART_ON_FAIL=0 explicit → no restart, ok=false (#5039)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (L0)"
 
 # M: после перезапуска контейнер снова в start_period — гейт ждёт НОВОЕ окно
 # (короткое, 10s) и решает по третьему замеру, а не по старому.
@@ -303,10 +325,54 @@ SHORT_PERIOD_NS=10000000000  # 10s
 M_YOUNG="$(date -u -d "@$(( $(date +%s) - 2 ))" +%Y-%m-%dT%H:%M:%SZ)"
 FIX_NEW_WINDOW="$(inspect_nav2 starting 1 "$M_YOUNG" "$SHORT_PERIOD_NS")"
 FIX_REMEASURED="$(inspect_nav2 healthy 0 "$OLD_STARTED" "$SHORT_PERIOD_NS")"
-ROUTER_FIXTURES=("healthy")
-run_case true "$NO_PENDING" "$FIX1" "$FIX_NEW_WINDOW" "$FIX_REMEASURED" -- \
-    "M: after restart new start_period → wait and decide on the new measurement (#5039)"
+# Рубильник явным =1 и две подтверждающие пробы: иначе дефолт 0 рестарта не даст,
+# а одно красное окно рестарт не включает (#5149).
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0")
+ROUTER_FIXTURES=("healthy" "healthy")
+run_case true "$NO_PENDING" "$FIX1" "$FIX1" "$FIX_NEW_WINDOW" "$FIX_REMEASURED" -- \
+    "M: NAV2_RESTART_ON_FAIL=1, after restart new start_period → wait and decide on the new measurement (#5039)"
 assert_eq "$LAST_RESTARTS" "1" "restart count (M)"
+
+# --- #5149: дефолт выключен, подтверждение, свежая проба ---------------------
+# N: =1 и одна красная проба, второй замер rc=0. Рестарта нет: одиночный
+# провал (таймаут пробы, разовый сбой) healthy контейнер не трогает.
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0")
+ROUTER_FIXTURES=("healthy")
+run_case true "$NO_PENDING" "$FIX1" "$FIX2" -- \
+    "N: NAV2_RESTART_ON_FAIL=1 + one red probe then ExitCode=0 → 0 restarts, ok=true (#5149)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (N)"
+assert_contains "$LAST_STDERR" "рестарта ещё нет" "confirm wait logged, restart not taken (N)"
+
+# O: =1 и таймаут ExitCode=-1 (проб не было) — рестарт такое не лечит.
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0")
+ROUTER_FIXTURES=("healthy")
+run_case false "$NO_PENDING" "$FIX_NOPROBE" -- \
+    "O: NAV2_RESTART_ON_FAIL=1 + ExitCode=-1 → 0 restarts, ok=false (#5149)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (O)"
+
+# P: =1, провал подтверждён, после рестарта Health.Log ещё старый (Start
+# раньше нового StartedAt, StartPeriod=0). Гейт старую запись не принимает,
+# ждёт свежую и зеленеет только по ней. Рестарт ровно один.
+STALE_PROBE="$(date -u -d "@$(( $(date +%s) - 300 ))" +%Y-%m-%dT%H:%M:%SZ)"
+P_STARTED="$(date -u -d "@$(( $(date +%s) - 1 ))" +%Y-%m-%dT%H:%M:%SZ)"
+FIX_STALE="$(inspect_nav2 unhealthy 1 "$P_STARTED" 0 1 "$STALE_PROBE")"
+FIX_FRESH="$(inspect_nav2 healthy 0 "$P_STARTED" 0 1 "$P_STARTED")"
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0")
+ROUTER_FIXTURES=("healthy" "healthy")
+run_case true "$NO_PENDING" "$FIX1" "$FIX1" "$FIX_STALE" "$FIX_FRESH" -- \
+    "P: after restart stale Health.Log ignored, ok only on a fresh probe (#5149)"
+assert_eq "$LAST_RESTARTS" "1" "restart count (P)"
+assert_contains "$LAST_STDERR" "older than StartedAt" "stale probe waited, not accepted (P)"
+
+# Q: =1, провал подтверждён (MAX_WAIT_S хватает на confirm), после рестарта
+# RESTART_WAIT_S=0 — свежую пробу ждать нечем. Старая запись Health.Log не
+# принимается. Честный fail, рестарт ровно один.
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=1" "CONFIRM_WAIT_S=0" "RESTART_WAIT_S=0")
+ROUTER_FIXTURES=("healthy" "healthy")
+run_case false "$NO_PENDING" "$FIX1" "$FIX1" "$FIX_STALE" "$FIX_STALE" -- \
+    "Q: after restart no fresh probe and budget exhausted → ok=false, 1 restart (#5149)"
+assert_eq "$LAST_RESTARTS" "1" "restart count (Q)"
+assert_contains "$LAST_STDERR" "no fresh healthcheck probe after restart" "budget fail names missing fresh probe (Q)"
 
 # --- таблица решения: nav2_action без робота ---------------------------------
 # Чистая функция решения скармливается напрямую (source и вызов), без ssh.
@@ -316,15 +382,26 @@ source "$SCRIPT_UNDER_TEST"
 assert_eq "$(nav2_action 0 false unknown false)" "ok" "decision: rc=0 → ok"
 assert_eq "$(nav2_action 0 true unknown false)" "ok" "decision: rc=0 inside window → ok"
 assert_eq "$(nav2_action 1 true healthy false)" "wait" "decision: rc=1 inside window → wait"
-assert_eq "$(nav2_action 1 false healthy false)" "restart" "decision: rc=1 + healthy router → restart"
+# Рубильник в source-скрипте по умолчанию 0: одна красная проба — fail, не restart.
+assert_eq "$(nav2_action 1 false healthy false)" "fail" "decision: default is fail, not restart (#5149)"
 assert_eq "$(nav2_action 1 false starting false)" "fail" "decision: rc=1 + router not healthy → fail"
 assert_eq "$(nav2_action 1 false unknown false)" "fail" "decision: rc=1 + router unknown → fail"
 assert_eq "$(nav2_action 1 false healthy true)" "fail" "decision: rc=1 after one restart → fail (never twice)"
 assert_eq "$(nav2_action -1 false healthy false)" "fail" "decision: no probes → fail, no restart"
-assert_eq "$(nav2_action 1 false healthy false)" "restart" "decision: restart is the default"
 # shellcheck disable=SC2034  # переменную читает nav2_action из source-скрипта
-assert_eq "$( (NAV2_RESTART_ON_FAIL=0; nav2_action 1 false healthy false) )" "fail" \
-    "decision: NAV2_RESTART_ON_FAIL=0 kills the cure"
+NAV2_RESTART_ON_FAIL=1
+assert_eq "$(nav2_action 1 false healthy false false)" "confirm" \
+    "decision: =1 + one red probe → confirm, not restart (#5149)"
+assert_eq "$(nav2_action 1 false healthy false true)" "restart" \
+    "decision: =1 + confirmed failure + healthy router → restart"
+assert_eq "$(nav2_action -1 false healthy false true)" "fail" \
+    "decision: =1 + ExitCode=-1 → fail, timeout is not cured by restart"
+assert_eq "$(nav2_action 1 false healthy true true)" "fail" \
+    "decision: =1 after one restart → fail (never twice)"
+# shellcheck disable=SC2034  # nav2_action читает переменную из окружения source
+NAV2_RESTART_ON_FAIL=0
+assert_eq "$(nav2_action 1 false healthy false true)" "fail" \
+    "decision: NAV2_RESTART_ON_FAIL=0 kills the cure even when confirmed"
 
 # --- контракт воркфлоу -------------------------------------------------------
 # Шаг Main Pi обязан звать wait_nav2_active.sh и валить джобу по .ok.
@@ -348,6 +425,8 @@ def step(name):
 main = step("[Main Pi] Check Container Status")
 assert "scripts/ci/wait_nav2_active.sh" in main, "Main Pi step does not call wait_nav2_active.sh"
 assert "STATUS_JSON" in main, "Main Pi step does not pass STATUS_JSON to the nav2 gate"
+assert "NAV2_RESTART_ON_FAIL" in main, "Main Pi step does not pass NAV2_RESTART_ON_FAIL"
+assert "inputs.nav2_restart_on_fail" in main, "Main Pi step does not read the dispatch input"
 assert "exit 1" in main, "Main Pi step never exits 1: a dead nav2 would stay green"
 # Приёмка #5118: гейт ok=true обязан писать main_healthy=true. Иначе false из
 # статуса (pending внутри окна) висит до Summary и красит зелёный деплой.
@@ -367,7 +446,12 @@ assert "exit 1" in issues_branch[1].split("fi", 1)[0], (
 for marker in ("deploy_status=success", "deploy_status=cancelled", "deploy_status=hil_locked"):
     branch = summary.split(marker, 1)[1].split("elif", 1)[0].split("else", 1)[0]
     assert "exit 1" not in branch, marker
-print("  workflow contract: Main Pi gate + issues exit 1 ok")
+inputs = workflow[True]["workflow_dispatch"]["inputs"]
+flag = inputs.get("nav2_restart_on_fail")
+assert flag is not None, "workflow_dispatch has no nav2_restart_on_fail input"
+assert flag.get("type") == "boolean", flag
+assert flag.get("default") is False, flag
+print("  workflow contract: Main Pi gate + nav2_restart_on_fail input + issues exit 1 ok")
 PY
 
 echo
