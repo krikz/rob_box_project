@@ -970,10 +970,16 @@ def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str,
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
     over_performance = performing and agent_spec(agent).sink == Sink.SPEAKERS
     heard = audible(results, speaks, over_performance) if results else ()
-    told = fact_dictation.saved(text, results)
+    told = fact_dictation.saved(text, results, cmd.speech)
     if told is not None and told not in heard:
         heard = (*heard, told)
-    return outcome_phrase(heard) if heard else None
+    if heard:
+        return outcome_phrase(heard)
+    # утверждение «запомнил» без тула: фраза кода, не слова модели (#5128). Диктовка сюда не попадает —
+    # хук хода уже положил тул, и её успех сказал код выше.
+    if fact_dictation.unkept_claim(cmd.speech, cmd.actions):
+        return phrases.text(kn.DONE_CLAIM_PHRASE)
+    return None
 
 
 def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True, text: str = "",
@@ -981,10 +987,10 @@ def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = Tru
     """Что звучит из слов модели: реплика или вопрос — только без действий (§4.1), выступление — всегда. У агента с
     текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно.
     ``segments=False`` — выступление взял его владелец (``Ports.perform``): сегменты звучат там, не репликами.
-    Успех диктовки (:func:`_dictation_said`) — слова модели не звучат: фраза уже из факта результата (#5166)."""
+    Успех записи и ложное «запомнил» (:func:`fact_dictation.drop_speech`) — слова модели не звучат (#5166, #5128)."""
     lines: List[Tuple[str, str]] = []
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
-    if _dictation_said(text, results):
+    if fact_dictation.drop_speech(text, cmd.speech, results) or fact_dictation.unkept_claim(cmd.speech, cmd.actions):
         said = None
     if said and (not loud_actions(cmd) or agent == kn.TEXT_CHANNEL_AGENT):
         lines.append((said, cmd.voice or ""))
@@ -1303,21 +1309,12 @@ def dictated_fact(log: Any, turn: "_Turn", cmd: Command) -> Command:
     """Продиктованный факт без тула в команде — вызовом кода (#5128).
 
     «Запомни про меня…» модель закрывала словами «Запомнил» и ``memory_save`` не звала.
-    Слова модели не подменяются: что звучит при успехе, решает :func:`_dictation_said`.
+    Слова модели не подменяются: что звучит при успехе, решает :func:`fact_dictation.saved`.
     """
     fresh, done = fact_dictation.with_dictated(turn.text, cmd, turn.acted)
     if done:
         log.info(f"{LOG_MARK} диктовка факта: код добавил {done} (модель тул не звала) turn={turn.turn_id}")
     return fresh
-
-
-def _dictation_said(text: str, results: Sequence[ActionResult]) -> bool:
-    """Успех диктовки уже в исходах: слова модели об этом ходе не звучат (#5166).
-
-    Фраза — из факта результата (:func:`fact_dictation.saved`), не из речи модели.
-    Не диктовка и отказ записи — слова модели остаются.
-    """
-    return fact_dictation.saved(text, results) is not None
 
 
 def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
