@@ -41,9 +41,9 @@ setup(
             'battery_state_publisher = '
             'rob_box_perception.battery_state_node:main',
             # #4346 вариант B, прототип: тег с известной позой → /rtabmap/initialpose.
-            # Выключен по умолчанию (enabled=false); на роботе не запускается.
-            'tag_relocalization = '
-            'rob_box_perception.tag_relocalization_node:main',
+            # Не в console_scripts (tests/unit/docker/test_tagreloc_b_off.py): автозапуска нет,
+            # на роботе ноду никто не поднимает. В симе — сервис tagreloc за профилем reloc,
+            # `python3 -m rob_box_perception.tag_relocalization_node` (docker/sim/compose.loc.yaml).
             'perception_bridge = '
             'rob_box_perception.perception_bridge:main',
             # ADR-0089 Phase 1: AI HAT+ inference node. Stub publishes
