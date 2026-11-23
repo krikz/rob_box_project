@@ -62,7 +62,7 @@
 
 **Почему lock=90, а не 100:** в `twist_mux` lock глушит источники со
 **строго меньшим** приоритетом — это видно по текущему конфигу:
-`joystick_lock` стоит на 100 и блокирует web(50)/voice(25)/nav2(10),
+`joystick_lock` в замере §5.1 стоял на 100 и блокировал web(50)/voice(25)/nav2(10),
 при этом сам `cmd_vel_joy` на 100 продолжает работать (источник и lock
 **равны** по priority → блокировка не действует на источник с равным
 приоритетом). Значит lock на 100 заглушил бы и quest(90) — то есть
@@ -133,7 +133,7 @@ twist_mux. `/voice_lock` не вводим.
 
 | # | Решение | Обоснование |
 |---|---|---|
-| R1 | `/teleop_lock` (Bool) — новый twist_mux lock, priority=**90**, timeout=0.0 (sticky) | Зеркалит `/joystick_lock` (priority 100, sticky), но не глушит самого держателя (quest 90). |
+| R1 | `/teleop_lock` (Bool) — новый twist_mux lock, priority=**90**, timeout=0.0 (sticky) | Зеркалит `/joystick_lock` по семантике «у меня руль» (в замере §5.1 priority 100, sticky), но не глушит самого держателя (quest 90). С #4694 сам `/joystick_lock` стоит на 51, не на 100: 100 глушил quest. |
 | R2 | `/teleop_lock_watchdog` — **отменён**, не вводим | Аппаратура(100) выше lock-а(90) → при падении арбитра робот управляем с пульта. Автоматика разблокировки не нужна (решение Шифу). |
 | R3 | Публикация `/teleop_lock` — **avatar_arbiter** (единственный владелец LockManager), не QuestBridge и не LocalAvatarArbiterClient | Один источник истины (ADR-0028 §4.2). |
 | R4 | Блокируются **web_ui(50), voice(25), navigation(10)** — т.е. всё строго ниже priority=90. Не блокируется joystick(100), emergency(255), quest(90). | Семантика «у меня руль» = то же, что `/joystick_lock`, но не глушит держателя. |

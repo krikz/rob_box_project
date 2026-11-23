@@ -297,7 +297,7 @@ git commit -m "feat(quest): aiohttp WSS server with PIN auth, subscribe, heartbe
 - Test: `src/rob_box_quest/test/unit/core/test_safety.py`
 - Modify: `docker/main/config/twist_mux/twist_mux.yaml` — добавить input `quest`.
 
-**`twist_mux.yaml` сейчас (полностью):**
+**`twist_mux.yaml` на дату плана (24.08.2026), не текущий конфиг.** С #4694 `/joystick_lock` стоит на priority 51, не 100; quest — 90, не 40. Живой файл — `docker/main/config/twist_mux/twist_mux.yaml`.
 
 ```yaml
 twist_mux:

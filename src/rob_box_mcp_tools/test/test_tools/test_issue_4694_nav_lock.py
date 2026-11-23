@@ -1,6 +1,6 @@
 """#4694: голосовая езда к точке не говорит «еду»/«приехал», пока twist_mux глушит cmd_vel.
 
-Замки ``/joystick_lock`` (priority 100) и ``/teleop_lock`` (priority 90), timeout 0.0 — липкие.
+Замки ``/joystick_lock`` (priority 51) и ``/teleop_lock`` (priority 90), timeout 0.0 — липкие.
 Любой True глушит Nav2 (priority 10). Сообщения ещё нет — не «свободно» и не «занято».
 Цель NavigateToPose уходит только когда оба замка уже False.
 """
