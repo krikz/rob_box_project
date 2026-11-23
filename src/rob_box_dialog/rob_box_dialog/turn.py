@@ -95,6 +95,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog import memory
 from rob_box_dialog import pickup_parties
 from rob_box_dialog import siren_ask
+from rob_box_dialog import speech_show
 from rob_box_dialog.voice_warmth import no_warm_voices
 from rob_box_dialog import state_claim
 from rob_box_dialog import theme_switch
@@ -1176,6 +1177,7 @@ def considered(engine: "TurnEngine", turn: "_Turn", cmd: Command, last: bool) ->
     fresh = their_photos(engine, log, turn, fresh)  # «пришли их» без id (#4505)
     fresh = corrected_ambulance(log, turn, fresh)  # сирена/мигалка: ambulance → police_lights (#4694)
     fresh = asked_siren(log, turn, fresh)  # названный звук и мигалка, которых модель не заказала (#5020)
+    fresh = shown_with_speech(log, turn, fresh)  # «расскажи и покажи»: сцена, которую модель забыла (#5094)
     fresh = dictated_fact(log, turn, fresh)  # диктовка факта без тула модели (#5128)
     names = foreign_keys(engine.log.window(exclude=turn.turn_id), turn, fresh, snapshot)
     fresh = unnamed_without_retry(log, turn, fresh, names, last)
@@ -1282,6 +1284,18 @@ def asked_siren(log: Any, turn: "_Turn", cmd: Command) -> Command:
     fresh, done = siren_ask.with_asked(turn.text, cmd, turn.acted)
     if done:
         log.info(f"{LOG_MARK} сирена/мигалка: код добавил {done} turn={turn.turn_id}")
+    return fresh
+
+
+def shown_with_speech(log: Any, turn: "_Turn", cmd: Command) -> Command:
+    """Сцена показа, которую составная просьба назвала, а команда не заказала (#5094).
+
+    «Расскажи анекдот и покажи анимацию» модель закрывала речью без ``play_animation``: сцена не
+    зажигалась. Слова модели не подменяются, анекдот код не сочиняет.
+    """
+    fresh, done = speech_show.with_show(turn.text, cmd, turn.acted)
+    if done:
+        log.info(f"{LOG_MARK} составная просьба: код добавил {done} turn={turn.turn_id}")
     return fresh
 
 
@@ -1727,6 +1741,7 @@ async def _close_invalid(engine: "TurnEngine", turn: _Turn, invalid: Invalid, sn
     invalid = replace(invalid, salvage=theme_switch.salvage_with_switch(
         engine.session.snapshot.top("DJ") is not None, turn.text, invalid.salvage, turn.acted))
     invalid = replace(invalid, salvage=siren_ask.salvage_with_asked(turn.text, invalid.salvage, turn.acted))
+    invalid = replace(invalid, salvage=speech_show.salvage_with_show(turn.text, invalid.salvage, turn.acted))
     invalid = replace(invalid, salvage=fact_dictation.salvage_with_dictated(turn.text, invalid.salvage, turn.acted))
     log.warning(f"{LOG_MARK} невалидная команда {why} → допустимых действий {len(invalid.salvage)}, итог скажет код")
     if action_chain.runs_as_chain(invalid.salvage):  # повтор не помог - вереница с планом кода (ADR-0165 §3)
