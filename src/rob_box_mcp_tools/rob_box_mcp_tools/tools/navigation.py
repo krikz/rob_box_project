@@ -50,7 +50,7 @@ from ..core.action_outcome import (
 from rob_box_core.follow_path_halt import FOLLOW_PATH_CANCEL_SRV, NAV_CMD_VEL_TOPIC, ZERO_TWIST_REPEATS
 from rob_box_dialog import knowledge as kn
 from ..localization_watch import LocalizationWatch
-from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose
+from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose, MapPoseSource, OnDemandTf
 
 _CANCEL_ALL_LABEL = "Nav2 cancel_goal"
 _CANCEL_ALL_TIMEOUT_SEC = 5.0
@@ -233,6 +233,32 @@ def _confirm_localization(result: MCPToolResult, track) -> MCPToolResult:
         result = _nav_failure(NAV_LOCALIZATION_LOST)
     result.data = {**(result.data or {}), **extra}
     return result
+
+
+def relative_goal_in_map(
+    pose_source: Callable[[], MapPose], x: float, y: float, theta: float
+):
+    """#5160: относительная точка ``base_link`` → точка ``map`` ровно один раз.
+
+    Nav2 ищет ``base_link``→``map`` на штамп цели при каждом перепланировании.
+    Цель в ``base_link`` старше буфера TF (по умолчанию 10 с) падает
+    с ``Extrapolation Error`` (живой прогон 23.11: планировщик приступил
+    через 18,4 с). Точка мира от штампа не зависит.
+
+    Возвращает ``(x, y, theta, frame_id)`` в ``map`` или ``MCPToolResult`` отказа.
+    Трансформа нет — отказ; цель в ``base_link`` «как раньше» не шлётся
+    (ADR-0148).
+    """
+    pose = pose_source()
+    if not pose.ok:
+        return _pose_failure(pose, "Не поехал: не знаю, где стою на карте")
+    yaw = pose.theta or 0.0
+    return (
+        pose.x + x * math.cos(yaw) - y * math.sin(yaw),
+        pose.y + x * math.sin(yaw) + y * math.cos(yaw),
+        yaw + theta,
+        pose.frame_id,
+    )
 
 
 def _send_nav_goal(
@@ -533,6 +559,9 @@ class MoveDirectionTool(MCPTool):
     """Инструмент для движения в направлении."""
 
     event_source = "action:/navigate_to_pose"
+    #: #5160: источник позы на карте; ставит ``__init__``.
+    #: Нет атрибута — тул собран в обход, цели нет.
+    _pose_source: Optional[Callable[[], MapPose]] = None
 
     DIRECTIONS = {
         "вперёд": {"x": 1.0, "y": 0.0, "theta": 0.0},
@@ -541,10 +570,16 @@ class MoveDirectionTool(MCPTool):
         "направо": {"x": 0.0, "y": 0.0, "theta": -math.pi / 2},
     }
 
-    def __init__(self, node):
+    def __init__(self, node, pose_source: Optional[Callable[[], MapPose]] = None):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.controller_halt = ControllerHalt(node)
+        # #5160: тот же сеанс TF, что у «где ты» (mcp_server.map_pose_source).
+        # Без него — свой на один запрос: постоянный слушатель /tf в этой ноде
+        # жёг ~45 % CPU (map_pose.py).
+        self._pose_source = (
+            pose_source if pose_source is not None else MapPoseSource(lambda: OnDemandTf(node))
+        )
 
     @property
     def name(self) -> str:
@@ -593,19 +628,40 @@ class MoveDirectionTool(MCPTool):
         if direction in ["вперёд", "назад"]:
             coords["x"] *= distance
 
+        # #5160: один раз base_link → map в момент отправки. Дальше цель не
+        # пересчитывается ни при одном перепланировании: штамп цели Nav2
+        # больше не нужен.
+        pose_source = self._pose_source
+        if pose_source is None:
+            return MCPToolResult(
+                success=False,
+                error="нет источника позы на карте: тул собран в обход конструктора",
+                message="Не поехал: не знаю, где стою на карте",
+            )
+        world = relative_goal_in_map(pose_source, coords["x"], coords["y"], coords["theta"])
+        if isinstance(world, MCPToolResult):
+            return world
+        goal_x, goal_y, goal_theta, frame_id = world
+
         result = _send_nav_goal(
             self.nav_client,
             self.node,
-            coords["x"],
-            coords["y"],
-            coords["theta"],
-            frame_id="base_link",
+            goal_x,
+            goal_y,
+            goal_theta,
+            frame_id=frame_id,
             timeout=60.0,
             halt=self.controller_halt,
         )
         if result.success:
             result.data = {
-                **(result.data or {}), "direction": direction, "distance": distance, "relative_coords": coords
+                **(result.data or {}),
+                "direction": direction,
+                "distance": distance,
+                "relative_coords": coords,
+                "goal_frame_id": frame_id,
+                "goal_x": goal_x,
+                "goal_y": goal_y,
             }
             result.message = f"Приехал: {direction} {distance}м"
             self.log_info(f"✅ Движение {direction} завершено")
