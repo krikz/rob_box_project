@@ -240,9 +240,11 @@ PY2
 # issue #2902 — next_when_robot_asked: when_robot_asked СЛЕДУЮЩЕГО шага. Если
 # речь проваленной попытки уже совпала с ним, робот задал вопрос, на который
 # отвечает следующий шаг, и повтор этой реплики проверял бы другое — ретрай
-# запрещается (retry_block_reason в e2e_tool_match.py). Поле ПОСЛЕДНЕЕ:
-# разделитель \x1f сохраняет позиции, прежние поля не сдвигаются.
-E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok'
+# запрещается (retry_block_reason в e2e_tool_match.py).
+# issue #5030 — pattern_grace_sec: секунды ожидания поздней строки паттерна
+# после конца хода шага. Поле ПОСЛЕДНЕЕ: разделитель \x1f сохраняет позиции,
+# прежние поля не сдвигаются. Старый TSV без поля читается как грейс 0.
+E2E_SCENARIO_ROW_READ='read -r idx label text voice patterns_json acceptance_json expect_raw retry_acceptance when_robot_asked required_question sleep_before_sec next_when_robot_asked barge_in_json next_barge_in_json silent_ok pattern_grace_sec'
 
 # parse_scenario_to_tsv() — читает scenario.json, пишет TSV-подобный файл
 # (на самом деле \x1f-separated, не таб — см. ниже) с одной строкой на шаг,
@@ -330,10 +332,21 @@ for i, s in enumerate(steps):
     barge = norm_barge(s.get('barge_in'))
     next_barge = norm_barge(nxt.get('barge_in'))
     silent_ok = 1 if (s.get('silent_ok') or exp == 'silent_ok') else 0
+    # #5030: pattern_grace_sec -- сколько секунд ПОСЛЕ конца хода шага паттерн
+    # ещё может прийти (поздняя строка восприятия, n701: speaker_id печатает
+    # Speaker на 16 с позже, чем STT-цикл закрылся). 0 -- прежнее поведение:
+    # окно паттернов закрывается в момент проверки. Кривое значение -- 0,
+    # не тихий грейс: ждать не то, что написал автор, хуже, чем не ждать.
+    try:
+        grace = float(s.get('pattern_grace_sec', 0) or 0)
+    except (TypeError, ValueError):
+        grace = 0.0
+    if grace < 0:
+        grace = 0.0
     fields = [str(i), s.get('label', f's{i+1}'), s.get('text', ''), s.get('voice', 'anton'),
               json.dumps(pats), json.dumps(acc, ensure_ascii=False), exp, str(retry),
               when_asked, str(required_q), str(sleep_before), next_asked,
-              barge, next_barge, str(silent_ok)]
+              barge, next_barge, str(silent_ok), str(grace)]
     print(FS.join(fields))
 PY
 }
@@ -803,10 +816,57 @@ _E2E_SPEECH_GREP='SpeechEvent'
 
 _events_py() { printf '%s' "${E2E_EVENTS_PY:-${SCRIPT_DIR_E2E:-.}/e2e_events.py}"; }
 
+# #5002: окно шага -- [since, until] в одной шкале с timestamp'ами docker-лога.
+# $1=since (RFC3339), $2=until (RFC3339 с наносекундами; пусто -- только --since, как раньше).
+# Сырые строки с docker-префиксами (--timestamps). Верхняя граница обязана быть с дробью:
+# docker --until без дроби отсекает всю свою секунду, и ход, закрывшийся в ней, выпадает.
+# rc docker на --until != 0 (старый демон без флага) -- клиентский фильтр по префиксу
+# --timestamps: строковое сравнение (формат нуль-паддинг), until включительно;
+# строки без timestamp-префикса не выбрасываются (продолжение многострочного лога).
+fetch_step_window_logs() {  # $1=since $2=until
+    local since="$1" until="${2:-}" raw rc=0
+    if [ -n "$until" ]; then
+        # Редирект снаружи подстановки, не внутри: ``$(cmd 2>/dev/null)``
+        # затирает rc cmd (последняя команда подстановки -- сам редирект).
+        raw="$(${ROBOT_SSH} "docker logs voice-assistant --since '${since}' --until '${until}' --timestamps 2>&1")"
+        rc=$?
+        if [ "$rc" = "0" ]; then
+            printf '%s' "$raw"
+            return 0
+        fi
+    fi
+    raw="$(${ROBOT_SSH} "docker logs voice-assistant --since '${since}' --timestamps 2>&1" 2>/dev/null || echo '')"
+    if [ -z "$until" ]; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    # Клиентский фильтр только если в выводе есть timestamp-префиксы. Заглушки
+    # тестов и старый docker без --timestamps отдают голые строки: резать их
+    # нечем, окно остаётся как --since (прежнее поведение, не ложный пустой лог).
+    if ! printf '%s\n' "$raw" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'; then
+        printf '%s' "$raw"
+        return 0
+    fi
+    # mawk (awk на раннерах) не понимает {n} в regex без --re-interval: условие
+    # /^[0-9]{4}-/ никогда не истинно, next не срабатывает, фильтр печатает все
+    # строки. Класс [0-9] четырежды -- переносимо. Нижняя граница тоже режется:
+    # фолбэк docker --since без --until отдаёт сырой лог целиком, и ход ДО шага
+    # иначе снова попадает в окно.
+    printf '%s\n' "$raw" | awk -v since="$since" -v until="$until" '
+        {
+            ts = $1
+            if (ts ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T/ && (ts < since || ts > until)) next
+            print
+        }
+    '
+}
+
 # Первая строка вывода -- часы робота (date +%s.%N), дальше отфильтрованный docker logs.
 # ``; true``: пустой grep не должен выглядеть как сбой SSH -- сбой виден по отсутствию числа в 1-й строке.
-_events_fetch() {  # $1=since (RFC3339 или 600s) $2=egrep
-    ${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '$1' 2>&1 | grep -aE '$2'; true" 2>/dev/null
+_events_fetch() {  # $1=since (RFC3339 или 600s) $2=egrep [$3=until, #5002]
+    local until_flag=""
+    [ -n "${3:-}" ] && until_flag=" --until '$3'"
+    ${ROBOT_SSH} "date +%s.%N; docker logs voice-assistant --since '$1'${until_flag} --timestamps 2>&1 | grep -aE '$2'; true" 2>/dev/null
 }
 
 _ev_kv() {  # stdin = key=value строки; $1=key
@@ -957,7 +1017,7 @@ wait_robot_quiet() {
     done
 }
 
-# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started","n":N,"delay_sec":X}.
+# barge_in шага: JSON {"after":"speech_started|llm_request|segment_started|perform_started","n":N,"delay_sec":X}.
 _barge_field() {  # $1=json $2=поле
     BARGE_JSON="$1" python3 -c 'import json, os, sys
 try:
@@ -973,7 +1033,7 @@ wait_barge_anchor() {
     local since="$1" spec="$2" after n t0 now out
     after="$(_barge_field "$spec" after)"; n="$(_barge_field "$spec" n)"
     case "$after" in
-        speech_started|llm_request|segment_started) ;;
+        speech_started|llm_request|segment_started|perform_started) ;;
         *) E2E_ANCHOR_ERROR="неизвестный barge_in.after='${after}'"; return 2 ;;
     esac
     t0="$(date +%s)"
@@ -1026,9 +1086,16 @@ barge_hold() {
     delay="$(_barge_field "$spec" delay_sec)"
     robot_now="$(${ROBOT_SSH} "date +%s.%N" 2>/dev/null | tr -d '\r')"
     case "$robot_now" in ''|*[!0-9.]*) robot_now="$E2E_ANCHOR_NOW" ;; esac
-    remaining="$(awk -v d="${delay:-0}" -v n="$robot_now" -v a="$E2E_ANCHOR_TS" 'BEGIN{r=d-(n-a); printf "%.2f", (r>0?r:0)}')"
-    awk "BEGIN{exit !($remaining > 0)}" 2>/dev/null && sleep "$remaining"
-    awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
+    # LC_ALL=C: ru_RU печатает «1,00», и sleep такую строку не принимает -- задержка якоря
+    # молча схлопывалась в ноль (тест #3857: took=0.08 вместо ~1 с по часам робота).
+    # Целые секунды: дробный sleep на CI (GNU sleep без локали, busybox) дробь не
+    # принимает и молча выходит 0 -- задержка якоря схлопывается (тест #3857: 0.16 с в CI).
+    # python, не awk: LC_ALL=C внутри $(awk) не перебивает LC_ALL=ru_RU вызывающего,
+    # awk печатает «1,00», [ -gt ] падает, sleep не зовётся (тест #3857 comma-locale).
+    export D="${delay:-0}" N="$robot_now" A="$E2E_ANCHOR_TS"
+    remaining="$(LC_ALL=C python3 -c 'import os,math; r=float(os.environ["D"])-(float(os.environ["N"])-float(os.environ["A"])); print(math.ceil(r) if r>0 else 0)')"
+    if [ "${remaining:-0}" -gt 0 ] 2>/dev/null; then sleep "$remaining"; fi
+    LC_ALL=C awk -v n="$robot_now" -v a="$E2E_ANCHOR_TS" -v r="$remaining" 'BEGIN{printf "%.1f", (n-a)+r}'
 }
 
 # --- issue #3989 — восстановление шага: политика сценария и фразы -------------------------------------------
@@ -1219,7 +1286,11 @@ check_track_ref() {
         echo "  PATTERN_MISS: track_ref: id песни акта не определён, а шаг сыгран"
         return 1
     fi
-    out="$(_events_fetch "$since" 'Запрос выполнения: ' \
+    # #5002: верхняя граница -- момент проверки. Без неё вызов тула следующего шага
+    # красился бы как вызов этого (то же окно, что у acceptance).
+    local until
+    until="$(${ROBOT_SSH} "date -u +%Y-%m-%dT%H:%M:%S.%NZ" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+    out="$(_events_fetch "$since" 'Запрос выполнения: ' "$until" \
         | python3 "$(_events_py)" trackcheck --scenario "$scenario" --label "$label" --track "$E2E_STEP_TRACK_ID" 2>&1)"
     if [ "$(printf '%s\n' "$out" | _ev_kv ok)" = "1" ]; then
         echo "  PATTERN_OK: track_ref: $(printf '%s\n' "$out" | _ev_kv detail)"
@@ -1236,8 +1307,10 @@ check_track_ref() {
 # e2e_events.session_report; тишина -- реплика снятия (фраза -- RECOVERY в e2e_events.py) в /voice/stt/utterance, как
 # от STT, и новый снимок. Маркер «E2E_RECOVER silenced at_act_start» (recover_mark), пометка акта в сводке. Не
 # снялась -- E2E_FATAL: акт молчащего робота нечитаем. Не прочитать -- громко, но не фатал: шагам поможет step_recover.
-# Рабочий процесс внутри voice-assistant (rclpy), как у музыки ниже. argv: read|unsilence, фраза (base64), сек ждать
-# снимков после реплики. Печатает одну строку JSON: snapshot, scenes, [after], now.
+# Рабочий процесс внутри voice-assistant (rclpy), как у музыки ниже. argv: read|unsilence|inject, фраза (base64),
+# сек ждать снимков после реплики. Печатает одну строку JSON: snapshot, scenes, [after], [subscribers, injected], now.
+# inject (решение Шифу 19.11, #4951) -- та же публикация в /voice/stt/utterance, но с честным счётом подписчиков:
+# реплика уходит только при subscribers > 0, иначе публикация в пустоту -- не инъекция (injected=0).
 _e2e_session_py() {
     cat <<'SESSIONPY'
 import base64, json, sys, time
@@ -1262,15 +1335,21 @@ def scenes():
             for s in got[-1].scenes]
 spin_until(lambda: got, 5.0)  # latched: у живой ноды снимок приходит сразу
 report = {"snapshot": bool(got), "scenes": scenes()}
-if mode == "unsilence":
+if mode in ("unsilence", "inject"):
     pub = node.create_publisher(Utterance, "/voice/stt/utterance", 10)
     spin_until(lambda: pub.get_subscription_count() > 0, 5.0)
-    msg = Utterance()
-    msg.text = base64.b64decode(sys.argv[2]).decode("utf-8").strip()
-    msg.source, msg.provider = Utterance.SOURCE_RESPEAKER, "e2e_harness"
-    pub.publish(msg)
-    spin_until(lambda: False, wait_s)  # снимков может быть несколько (собеседник, сцена): берём последний
-    report["after"] = scenes()
+    matched = int(pub.get_subscription_count())
+    if mode == "inject":
+        report["subscribers"] = matched
+        report["injected"] = int(matched > 0)
+    if matched > 0 or mode == "unsilence":
+        msg = Utterance()
+        msg.text = base64.b64decode(sys.argv[2]).decode("utf-8").strip()
+        msg.source, msg.provider = Utterance.SOURCE_RESPEAKER, "e2e_harness"
+        pub.publish(msg)
+    if mode == "unsilence":
+        spin_until(lambda: False, wait_s)  # снимков может быть несколько (собеседник, сцена): берём последний
+        report["after"] = scenes()
 report["now"] = time.time()
 node.destroy_node()
 rclpy.shutdown()
@@ -1310,6 +1389,44 @@ ensure_not_silenced_for_act() {
     echo "E2E_FATAL: перед актом робот в тишине (${detail}), реплика «${phrase}» не сняла её за ${wait_s} с — шаги акта проглотила бы тишина (issue #3989)" >&2
     printf '%s\n' "$out" | tail -3 >&2
     exit 2
+}
+
+# --- issue #4951 (решение Шифу 19.11) — STT не донёс команду: оригинал в /voice/stt/utterance ----------------
+# Шаг не приняли ни в одной попытке (no_accept, мусор до потолка, тишина после повтора): харнесс публикует в топик
+# ОРИГИНАЛЬНУЮ фразу шага (source=respeaker, provider=e2e_harness) -- ОДИН раз за шаг. Публикация в пустоту -- не
+# инъекция: у топика обязан быть подписчик (injected=1, e2e_events.inject_report). Судья окна шага ищет в логе
+# «✅ ПРИНЯТО», а его пишет только stt_node: харнесс пишет честную строку сам, с пометкой (e2e_harness) -- без неё
+# ход после инъекции выглядел бы как ход без приёма. Шаг с инъекцией -- «OK recovered_stt_inject», не чистый PASS.
+_emit_container_log() {  # $1 = строка в stdout PID 1 voice-assistant (только он попадает в docker logs)
+    local line cmd
+    line="$1"
+    # Команда уходит ОДНИМ аргументом robot_ros (как python3 -c в stt_inject_command): robot_ros
+    # сериализует аргументы через %q и eval'ит их на роботе, а eval склеивает аргументы пробелами
+    # без экранирования -- разбитая по словам команда теряет группировку. Не одним аргументом:
+    # bash -c получал только «printf», а пустой файл создавал редирект внешней оболочки
+    # (поймано тестом #4951: pid1_stdout = 0 байт).
+    cmd="$(printf 'printf "%%s\\n" %q > /proc/1/fd/1' "$line")"
+    robot_ros "$cmd" >/dev/null 2>&1
+}
+stt_inject_command() {  # $1 = текст шага
+    # rc 0 -- реплика ушла в топик при живом подписчике И строка приёма записана в лог контейнера;
+    # rc 1 -- инъекции не было (пустой текст, нет подписчика, публикация не ответила) -- шаг остаётся честным FAIL;
+    # rc 2 -- реплика ушла, но приём в лог не записан: ход мог быть, судья его не увидит -- отдельный вердикт.
+    local text="$1" code_b64 text_b64 out rep
+    [ -n "$text" ] || return 1
+    code_b64="$(_e2e_session_py | base64 | tr -d '\n\r')"
+    text_b64="$(printf '%s' "$text" | base64 | tr -d '\n\r')"
+    out="$(robot_ros "python3 -c \"import base64;exec(base64.b64decode('${code_b64}').decode())\" inject '${text_b64}' 0" 2>/dev/null)"
+    rep="$(printf '%s\n' "$out" | grep -a '^{' | tail -1 | python3 "$(_events_py)" inject 2>/dev/null)"
+    if [ "$(printf '%s\n' "$rep" | _ev_kv injected)" != "1" ]; then
+        log "⚠️ инъекция не удалась: /voice/stt/utterance без подписчика или рабочий процесс не ответил (${rep:-нет ответа})"
+        return 1
+    fi
+    if ! _emit_container_log "✅ ПРИНЯТО (e2e_harness): ${text}"; then
+        log "⚠️ инъекция: реплика ушла, но строка «ПРИНЯТО» не записана в лог контейнера -- судья хода без приёма"
+        return 2
+    fi
+    return 0
 }
 
 # --- issue #4027 — скорость и тон TTS не переживают акт ---------------------------------------------------

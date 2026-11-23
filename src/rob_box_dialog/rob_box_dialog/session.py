@@ -86,6 +86,9 @@ class SessionSnapshot:
     session_id: str
     epoch: int
     started_at: float
+    #: Поколение сессии: +1 на ``reset`` (новая сессия), ``replace_epoch`` (стоп) не трогает.
+    #: ``session_id`` reset не меняет — по нему новую сессию не отличить (ADR-0175 §1.2).
+    session_generation: int = 0
     scenes: Tuple[SceneFrame, ...] = ()
     voice: VoiceState = VoiceState()
     speaker: Optional[SpeakerRef] = None
@@ -102,6 +105,8 @@ class SessionSnapshot:
     #: Владельцы тулов продукта из профиля (ADR-0167 Ш1в, ``owners.TOOL_OWNERS``): по ним срез тулов агента
     #: (``agents.tools_for``). Ставит хост при создании сессии; ``None`` - хост не передал (умолчание ядра - без тулов).
     owners: Optional[Tuple[str, ...]] = None
+    #: Автоматический раздел фактов собеседника виден до ``reset``; в новой сессии факты читаются явными тулами памяти.
+    speaker_memory_visible: bool = True
 
     def top(self, kind: str) -> Optional[SceneFrame]:
         """Верхний кадр этого вида или ``None``."""
@@ -125,18 +130,25 @@ class SessionChanged:
 Listener = Callable[[SessionChanged], None]
 
 #: TTL кадров по умолчанию: пользовательская тишина — 10 мин, вопрос «X, это ты?» — 15 с.
-_DEFAULT_TTL_S: Mapping[Tuple[str, str], float] = MappingProxyType({
-    ("Silence", "user"): float(kn.SILENCE_TTL_S),
-    ("Identity", "code"): float(kn.IDENTITY_TTL_S),
-})
+_DEFAULT_TTL_S: Mapping[Tuple[str, str], float] = MappingProxyType(
+    {
+        ("Silence", "user"): float(kn.SILENCE_TTL_S),
+        ("Identity", "code"): float(kn.IDENTITY_TTL_S),
+    }
+)
 
 
 class Session:
     """Владелец сессии одного агента. Писать в неё может только код через эти методы."""
 
-    def __init__(self, agent: str, clock: Callable[[], float] = time.monotonic,
-                 session_id: Optional[str] = None, wake_words: Optional[Sequence[str]] = None,
-                 owners: Optional[Sequence[str]] = None) -> None:
+    def __init__(
+        self,
+        agent: str,
+        clock: Callable[[], float] = time.monotonic,
+        session_id: Optional[str] = None,
+        wake_words: Optional[Sequence[str]] = None,
+        owners: Optional[Sequence[str]] = None,
+    ) -> None:
         """``session_id`` — имя сессии канала (телеграм: ``telegram:<chat_id>``, §9.2); ``None`` — новое uuid.
         ``wake_words`` — таблица вейков личности из профиля продукта (``profile.ProductProfile.wake_personality``),
         ``owners`` — владельцы тулов продукта (``profile.ProductProfile.owners``)."""
@@ -144,10 +156,16 @@ class Session:
             raise ValueError(f"Session: agent must be one of {kn.AGENTS}, got {agent!r}")
         self._clock = clock
         self._listeners: List[Listener] = []
-        self._snap = SessionSnapshot(agent=agent, session_id=session_id or uuid.uuid4().hex, epoch=0,
-                                     started_at=clock(),
-                                     wake_words=None if wake_words is None else tuple(wake_words),
-                                     owners=None if owners is None else tuple(owners))
+        self._snap = SessionSnapshot(
+            agent=agent,
+            session_id=session_id or uuid.uuid4().hex,
+            epoch=0,
+            started_at=clock(),
+            wake_words=None if wake_words is None else tuple(wake_words),
+            owners=None if owners is None else tuple(owners),
+        )
+        #: Сколько раз за сессию уже отдали вопрос об имени этому собеседнику (A29). Не в снимке: модель это не решает.
+        self.identity_asked: dict[str, int] = {}
 
     @property
     def snapshot(self) -> SessionSnapshot:
@@ -160,15 +178,17 @@ class Session:
     def subscribe(self, listener: Listener) -> None:
         self._listeners.append(listener)
 
-    def push_scene(self, kind: str, set_by: str, ttl_s: Optional[float] = None,
-                   payload: Optional[Mapping[str, Any]] = None) -> SceneFrame:
+    def push_scene(
+        self, kind: str, set_by: str, ttl_s: Optional[float] = None, payload: Optional[Mapping[str, Any]] = None
+    ) -> SceneFrame:
         """Положить кадр; TTL по умолчанию — из :mod:`.knowledge` (тишина пользователя, вопрос личности). Кадр из
         ``knowledge.TOOL_ASK_CLOSED_BY`` (новый вопрос робота, тишина, оператор) снимает окно вопроса тула."""
         if kind not in kn.SCENE_KINDS or set_by not in kn.SCENE_SETTERS:
             raise ValueError(f"push_scene: unknown kind/set_by {kind!r}/{set_by!r}")
         ttl = _DEFAULT_TTL_S.get((kind, set_by)) if ttl_s is None else ttl_s
-        frame = SceneFrame(kind, set_by, None if ttl is None else self._clock() + ttl,
-                           MappingProxyType(dict(payload or {})))
+        frame = SceneFrame(
+            kind, set_by, None if ttl is None else self._clock() + ttl, MappingProxyType(dict(payload or {}))
+        )
         scenes = _without_tool_ask(self._snap.scenes) if kind in kn.TOOL_ASK_CLOSED_BY else self._snap.scenes
         self._commit("push_scene", scenes=scenes + (frame,))
         return frame
@@ -205,10 +225,21 @@ class Session:
             self._commit("expire", scenes=tuple(f for f in self._snap.scenes if f not in gone), **asked)
         return gone
 
-    def reset(self) -> None:
-        """Новая сессия разговора: эпоха + 1, стек и вопрос очищены; голос, собеседник, музыка и провайдеры —
-        не трогаются («забудь всё» ≠ «выключи музыку»)."""
-        self._commit("reset", epoch=self._snap.epoch + 1, scenes=(), pending_ask=None)
+    def reset(self, *, speaker_memory_visible: Optional[bool] = None) -> None:
+        """Новая сессия разговора: эпоха + 1, стек и вопрос очищены; голос, собеседник, музыка, провайдеры
+        и постоянные факты — не трогаются («забудь всё» ≠ «выключи музыку»). ``speaker_memory_visible`` задаёт
+        автоматическую память в снимке новой эпохи; ``None`` сохраняет текущий режим для служебного сброса окна.
+        Счётчик вопроса об имени (A29) сбрасывается: новая сессия — новый акт."""
+        visible = self._snap.speaker_memory_visible if speaker_memory_visible is None else speaker_memory_visible
+        self.identity_asked = {}
+        self._commit(
+            "reset",
+            epoch=self._snap.epoch + 1,
+            session_generation=self._snap.session_generation + 1,
+            scenes=(),
+            pending_ask=None,
+            speaker_memory_visible=visible,
+        )
 
     def replace_epoch(self) -> int:
         """Перебивание стопом (REPLACE, §6.2, ``interrupt.py``): эпоха + 1 — речь, ответ LLM и исходы действий
@@ -217,13 +248,16 @@ class Session:
         self._commit("replace_epoch", epoch=self._snap.epoch + 1, scenes=_without_tool_ask(self._snap.scenes))
         return self._snap.epoch
 
-    def set_voice(self, requested: Optional[str] = None, applied: Optional[str] = None,
-                  provider: Optional[str] = None) -> None:
+    def set_voice(
+        self, requested: Optional[str] = None, applied: Optional[str] = None, provider: Optional[str] = None
+    ) -> None:
         """Обновить голос: переданные поля заменяются, ``None`` — оставить как было."""
         old = self._snap.voice
-        voice = VoiceState(requested if requested is not None else old.requested,
-                           applied if applied is not None else old.applied,
-                           provider if provider is not None else old.provider)
+        voice = VoiceState(
+            requested if requested is not None else old.requested,
+            applied if applied is not None else old.applied,
+            provider if provider is not None else old.provider,
+        )
         self._commit("set_voice", voice=voice)
 
     def set_speaker(self, speaker: Optional[SpeakerRef]) -> None:

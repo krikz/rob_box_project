@@ -36,6 +36,14 @@ on:
         required: false
         default: false
         type: boolean
+      # Решение Шифу 23.11 (#5149): гейт nav2 по умолчанию не лечит, а валит.
+      # Рубильник ручной — для оператора/дежурного, не для каждого деплоя.
+      # true → NAV2_RESTART_ON_FAIL=1: один рестарт после подтверждённого провала.
+      nav2_restart_on_fail:
+        description: 'Ручной рестарт nav2 при подтверждённом провале гейта (по умолчанию выключен: гейт валит деплой, контейнер не трогает)'
+        required: false
+        default: false
+        type: boolean
       force_hil_unlock:
         description: 'Пропустить проверку HIL-замка (осторожно: снимает лишь проверку, замок на Pi НЕ удаляется)'
         required: false
@@ -95,25 +103,21 @@ jobs:
         run: |
           echo "Setting up deployment environment..."
 
-          # Настройка переменных окружения
+          # Настройка переменных окружения.
+          # Адреса — из переменных раннера (смена топологии без правки workflow, #4375);
+          # без них остаются нынешние, байт в байт.
+          echo "vision_pi_ip=${ROBBOX_VISION_HOST:-10.1.1.11}" >> $GITHUB_ENV
+          echo "sound_pi_ip=${ROBBOX_SOUND_HOST:-10.1.1.12}" >> $GITHUB_ENV
+          echo "main_pi_ip=${ROBBOX_MAIN_HOST:-10.1.1.10}" >> $GITHUB_ENV
           case "${{ inputs.environment }}" in
             production)
               echo "IMAGE_TAG=latest" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             staging)
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             test)
               echo "IMAGE_TAG=test" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
             # Ретро 18.08 (t_544e4aa5 / issue #1379): environment=local —
             # алиас для staging (IMAGE_TAG=dev). Тег "local" в registry
@@ -126,9 +130,6 @@ jobs:
             local)
               echo "⚠️  WARNING: environment=local — алиас для staging (IMAGE_TAG=dev). Тег 'local' в registry не публикуется (L-Build Vision/Main Pi Services используют dev/test/latest). Для develop/main/z-{e2e}-веток используй environment=staging/test явно." >&2
               echo "IMAGE_TAG=dev" >> $GITHUB_ENV
-              echo "vision_pi_ip=10.1.1.11" >> $GITHUB_ENV
-              echo "sound_pi_ip=10.1.1.12" >> $GITHUB_ENV
-              echo "main_pi_ip=10.1.1.10" >> $GITHUB_ENV
               ;;
           esac
 
@@ -139,14 +140,33 @@ jobs:
               echo "registry_display=GitHub Container Registry (ghcr.io)" >> $GITHUB_ENV
               ;;
             local)
-              echo "SERVICE_IMAGE_PREFIX=10.1.1.249:5000/krikz/rob_box" >> $GITHUB_ENV
-              echo "registry_display=Local Build Machine Registry (10.1.1.249:5000)" >> $GITHUB_ENV
+              echo "SERVICE_IMAGE_PREFIX=${ROBBOX_REGISTRY_HOST:-10.1.1.249:5000}/krikz/rob_box" >> $GITHUB_ENV
+              echo "registry_display=Local Build Machine Registry (${ROBBOX_REGISTRY_HOST:-10.1.1.249:5000})" >> $GITHUB_ENV
               ;;
             skip)
               echo "SERVICE_IMAGE_PREFIX=ghcr.io/krikz/rob_box" >> $GITHUB_ENV
               echo "registry_display=Skipping pull (using existing local images)" >> $GITHUB_ENV
               ;;
           esac
+
+          # Issue #4653 (инцидент 10.11, run 42861316455): rerun этого
+          # workflow выкачал голые теги *-humble-latest из локального
+          # registry (teleop/ros2-control от 28.09, voice/supervisor от
+          # 20.10) → контейнеры пересоздались на старых образах → робот
+          # деградировал. Причина НЕ в механике rerun: GitHub честно
+          # повторяет inputs каждой попытки, а сам run был задиспатчен с
+          # environment=production (default формы) вместе с
+          # registry_source=local. До #4763 шаги pull/start не грузили
+          # .image-versions.${IMAGE_TAG} при registry_source=local, и compose
+          # разрешал образы в голый ${IMAGE_TAG} = latest.
+          # Слепой бан local+production (exit 1 здесь, до SSH) снят решением
+          # Шифу 22.11.2026 (#5110): комбинация разрешена, но только через
+          # fail-closed предпроверку пинов — следующий шаг workflow. Он читает
+          # docker/*/.image-versions.${IMAGE_TAG} (для production это
+          # .image-versions.latest, пины вида latest-<sha>, не голый latest)
+          # и падает с ::error, называя отсутствующие теги, ДО Stop Containers.
+          # Диспатч и rerun ведут себя одинаково: оба доходят до предпроверки,
+          # оба падают, если пина нет в локальном registry.
 
           echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           echo "timestamp=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
@@ -167,6 +187,22 @@ jobs:
           # Установка sshpass для автоматической аутентификации
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
+
+      # Issue #5110 / #4653: fail-closed предпроверка пинов. Это замена слепого
+      # бана local+production (снят в шаге Setup решением Шифу 22.11.2026):
+      # комбинация разрешена, только если этот шаг reachable и падает раньше
+      # любых изменений контейнеров. Локальный registry — единственный источник
+      # образов для registry_source=local; пины берутся из
+      # docker/*/.image-versions.<IMAGE_TAG> этого же checkout'а (production →
+      # IMAGE_TAG=latest → пины latest-<sha>, не голый latest). Если пина нет
+      # в registry (замер 23.11.2026, перепроверен 23.11: teleop и quest
+      # latest-b2e7144 отсутствуют, остальные 14 на месте) или пин плавающий,
+      # деплой падает ЗДЕСЬ, до Stop Containers: на Pi ничего не остановлено,
+      # в логе ::error с именем отсутствующего тега.
+      - name: "[Preflight] Verify pinned images exist in local registry (#5110)"
+        if: ${{ !inputs.dry_run && inputs.registry_source == 'local' }}
+        run: |
+          bash scripts/ci/verify_prod_local_tags.sh "${{ env.IMAGE_TAG }}"
 
       - name: Verify SSH Tools and Connectivity
         if: '!inputs.dry_run'
@@ -370,6 +406,13 @@ jobs:
           # Reinstall нужен, если source-файлы отличаются от develop ИЛИ
           # установленный unit/timer ещё не соответствует текущему контракту.
           # Последнее условие закрывает миграцию старых Pi после #2635/#2683.
+          # Ретро run 43035890763: после #4533 старый unit матчит Restart=/ExecStart=
+          # (они не менялись), поэтому stale `ExecStartPre compose pull` требует
+          # явного отрицания — иначе reinstall skip-нулся бы навсегда.
+          # Тот же класс дыры: After=network-online.target без Wants= (LED ждёт
+          # чужой wait-online) тоже не ловится Restart=/ExecStart=.
+          # TimeoutStartSec=900: дефолт 90 с короче service_healthy, старый unit
+          # без этой строки тоже не ловится Restart=/ExecStart= (#4533).
           if sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
               "cd ~/rob_box_project && \
                diff -q scripts/setup/setup_vision_pi.sh <(git show origin/develop:scripts/setup/setup_vision_pi.sh) >/dev/null 2>&1 && \
@@ -377,6 +420,9 @@ jobs:
                systemctl cat robbox-vision.service >/dev/null 2>&1 && \
                systemctl cat robbox-vision.service | grep -q '^Restart=on-failure$' && \
                systemctl cat robbox-vision.service | grep -q '^ExecStart=/usr/bin/docker compose up -d --pull never$' && \
+               ! systemctl cat robbox-vision.service | grep -q '^ExecStartPre=.*compose pull' && \
+               ! systemctl cat robbox-vision.service | grep -q '^After=.*network-online.target' && \
+               systemctl cat robbox-vision.service | grep -q '^TimeoutStartSec=900$' && \
                test -f /etc/systemd/system/robbox-vision-health.timer && \
                systemctl is-enabled --quiet robbox-vision-health.timer && \
                diff -q /usr/local/bin/robbox_vision_health_check.sh scripts/monitoring/robbox_vision_health_check.sh >/dev/null 2>&1"; then
@@ -464,11 +510,16 @@ jobs:
           echo "🔖 .image-versions теперь в текущей ветке (РЕВЕРТ #1244 15.08)"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): per-service ветки
-          # ci/image-versions-{vision,main} НЕ работают — при registry_source=local
-          # деплой не грузит .image-versions (условие 'local' != 'local' = false),
-          # тянет голые dev-теги → роботы получают старые образы. SHA-теги
-          # коммитятся ПРЯМО в develop (как было до #1244, revert 51e041a1).
-          # Если файла нет — compose возьмёт голые теги (fallback).
+          # ci/image-versions-{vision,main} НЕ работают — деплой читает файл
+          # из текущей ветки (git reset --hard выше), отдельную ветку не
+          # чекаутит. SHA-теги коммитятся ПРЯМО в develop (как было до #1244,
+          # revert 51e041a1). Если файла нет — compose возьмёт голые теги
+          # (fallback ${IMAGE_TAG}).
+          # Issue #4763: файл грузится и при registry_source=local. Сборка
+          # пушит SHA-тег в local registry (L-Build Pi Services,
+          # tag_and_push → localhost:5000) и только потом пишет его в файл;
+          # исключение local (bdaf81847, «SHA-теги только для ghcr») оставляло
+          # робота на голом dev, который переписывает следующая сборка.
 
       - name: "[Vision Pi] Pull Docker Images"
         # Issue #2930: шаг — preflight перед Stop Containers. Pull без
@@ -490,7 +541,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       # ==================== TIME SYNC ====================
@@ -575,7 +626,7 @@ jobs:
             "cd ~/rob_box_project/docker/vision && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_d01fe536+t_9d35468d+round-403: cleanup stale containers/networks'; \
              docker network rm vision_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
@@ -773,7 +824,7 @@ jobs:
             "cd ~/rob_box_project/docker/sound && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       - name: "[Sound Pi] Sync System Time"
@@ -821,7 +872,7 @@ jobs:
           START_CMD="cd ~/rob_box_project/docker/sound && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 cleanup stale containers/networks (sound)'; \
              docker network rm sound_default 2>/dev/null || true; \
              docker container prune -f 2>/dev/null || true; \
@@ -914,7 +965,8 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           # 🔴 РЕВЕРТ #1244 (15.08, decision #1316): см. Vision-шаг выше.
           # SHA-теги коммитятся ПРЯМО в develop; если файла нет —
-          # compose возьмёт голые теги (fallback).
+          # compose возьмёт голые теги (fallback). Issue #4763: файл
+          # грузится и при registry_source=local (SHA-тег есть в local registry).
 
       - name: "[Main Pi] Pull Docker Images"
         # Issue #2930: шаг — preflight перед Stop Containers. Pull без
@@ -932,7 +984,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              REGISTRY_SOURCE=${{ inputs.registry_source }} bash ~/rob_box_project/scripts/deploy/preflight_pull_images.sh"
 
       # ==================== TIME SYNC ====================
@@ -958,6 +1010,20 @@ jobs:
                echo '⚠️  sync_time.sh not found (old code) — skipping'; \
              fi" \
             || echo "⚠️  Warning: time sync failed on Main Pi"
+
+      # Issue #5045: /maps/mapping_state.json на Main Pi не читается с 4f5baba18
+      # (6 марта), но в томе карт остался и называет «квартиру». Источник правды
+      # об активной карте — maps.is_active в БД (#4392). Чистка идемпотентна:
+      # нет файла — шаг молча проходит; есть — удаляет и пишет строку в лог.
+      # rtabmap.db не трогаем. До Stop Containers: том ./maps ещё не занят записью.
+      - name: "[Main Pi] Remove dead mapping_state.json (#5045)"
+        if: '!inputs.dry_run'
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Removing dead /maps/mapping_state.json on Main Pi (#5045)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
+            "bash ~/rob_box_project/scripts/deploy/remove_dead_mapping_state.sh ~/rob_box_project/docker/main/maps"
 
       # Issue #2930: Stop стоит ПОСЛЕ Pull Docker Images — `down` выполняется,
       # только если preflight подтвердил, что все образы стека лежат локально.
@@ -999,7 +1065,7 @@ jobs:
             "cd ~/rob_box_project/docker/main && \
              export IMAGE_TAG=${{ env.IMAGE_TAG }} && \
              export SERVICE_IMAGE_PREFIX=${{ env.SERVICE_IMAGE_PREFIX }} && \
-             if [ '${{ inputs.registry_source }}' != 'local' ] && [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
+             if [ -f .image-versions.${{ env.IMAGE_TAG }} ]; then set -a && . .image-versions.${{ env.IMAGE_TAG }} && set +a; fi && \
              echo '🔧 retro t_9d35468d: prune stale containers + force-recreate'; \
              docker container prune -f 2>/dev/null || true; \
              echo '🔧 round-403 fix #2499: явный rm для всех compose-контейнеров (name-slot release)'; \
@@ -1039,11 +1105,25 @@ jobs:
           # ADR-0159: третья независимая сессия (Sound Pi) идёт тем же параллельным
           # паттерном — время шага остаётся максимумом, а не суммой.
           # Объединение меняет только время выполнения (сумма → максимум),
-          # не поведение: обе ветки по-прежнему `|| warning`, шаг по-прежнему
+          # не поведение: ветки по-прежнему `|| warning`, шаг по-прежнему
           # никогда не проваливает деплой сам по себе.
+          #
+          # Issue #5089 (деплой №8, run 44991405421, job 137113050253,
+          # 2026-11-22T05:59:15–17Z): `docker image prune -af` на Main Pi снял
+          # локальные теги `*-dev-acd5a8d` у 8 сервисов, хотя их контейнеры
+          # были запущены и Config.Image ссылался на эти теги (reclaimed 0B).
+          # Следующий `compose up --pull never` упал «No such image». Почему
+          # prune счёл in-use тег unused, не установлено; уборку образов
+          # делает scripts/deploy/docker_prune_safe.sh — он сам считает
+          # in-use ID по контейнерам и не снимает их теги, а пропавший тег
+          # восстанавливает из Image контейнера. `docker builder prune -af`
+          # остаётся: кэш сборки тегов контейнеров не носит.
+          # Скрипт едет на борт шагом Update Code (scripts/ — не COPY, а
+          # checkout репозитория). Нет скрипта (старый checkout) — warning,
+          # как и любой другой сбой уборки.
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.vision_pi_ip }} \
             "docker system df && \
-             docker image prune -af && \
+             bash ~/rob_box_project/scripts/deploy/docker_prune_safe.sh && \
              docker builder prune -af && \
              docker system df" \
             > "${RUNNER_TEMP}/cleanup_vision.log" 2>&1 \
@@ -1052,14 +1132,20 @@ jobs:
 
           sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.main_pi_ip }} \
             "docker system df && \
-             docker image prune -af && \
+             bash ~/rob_box_project/scripts/deploy/docker_prune_safe.sh && \
              docker builder prune -af && \
              docker system df" \
             > "${RUNNER_TEMP}/cleanup_main.log" 2>&1 \
             || echo "⚠️  Warning: Docker cleanup failed on Main Pi" >> "${RUNNER_TEMP}/cleanup_main.log" &
           MAIN_CLEANUP_PID=$!
 
-          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }}             "docker system df &&              docker image prune -af &&              docker builder prune -af &&              docker system df"             > "${RUNNER_TEMP}/cleanup_sound.log" 2>&1             || echo "⚠️  Warning: Docker cleanup failed on Sound Pi" >> "${RUNNER_TEMP}/cleanup_sound.log" &
+          sshpass -p 'open' ssh $SSH_OPTS ros2@${{ env.sound_pi_ip }} \
+            "docker system df && \
+             bash ~/rob_box_project/scripts/deploy/docker_prune_safe.sh && \
+             docker builder prune -af && \
+             docker system df" \
+            > "${RUNNER_TEMP}/cleanup_sound.log" 2>&1 \
+            || echo "⚠️  Warning: Docker cleanup failed on Sound Pi" >> "${RUNNER_TEMP}/cleanup_sound.log" &
           SOUND_CLEANUP_PID=$!
 
           # wait на каждый PID отдельно и без учёта кода возврата — как и
@@ -1174,6 +1260,11 @@ jobs:
         # См. комментарий в "[Vision Pi] Check Container Status" — та же
         # логика (двухзамерная проверка через docker inspect, см. скрипт
         # scripts/ci/check_container_status.sh), но для Main Pi.
+        # #5150: пауза 15 с НЕ меняется. Решение Шифу 23.11 — docker Timeout
+        # nav2 на роботе не поднимать, поэтому новая проба обязана уложиться
+        # в текущие Timeout 10 с и Interval 15 с (числа — healthcheck_budget.py,
+        # дедлайн пробы 3 с < bond 4 с). Прежняя идея «пауза = StartPeriod +
+        # retries × Timeout + Interval» требовала поднять Timeout и отменена.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Main Pi container status..."
@@ -1207,6 +1298,41 @@ jobs:
             echo "--- main_status_summary.txt ---"
             cat main_status_summary.txt
           fi
+
+          # Issue #5114 (run 45019034598): nav2 на обоих замерах был
+          # health=starting внутри start_period, шаг выше написал «стабильно»,
+          # а controller_server уже умер SIGILL. Гейт — только про nav2:
+          # вне окна читает последний ExitCode healthcheck (это rc
+          # docker/main/scripts/nav2/healthcheck.sh: три узла == active),
+          # внутри окна ждёт его конца и мерит снова. rc≠0 валит ШАГ, а не
+          # только пишет deploy_status ниже: Summary с if: always() зелёную
+          # джобу не краснит. Скрипт печатает JSON и выходит 0, чтобы причина
+          # успела попасть в лог шага.
+          # NAV2_RESTART_ON_FAIL — ручной флаг (вход nav2_restart_on_fail,
+          # решение Шифу 23.11, #5149). По умолчанию false/0: гейт не лечит
+          # контейнер, а честно валит деплой. true — один рестарт, и только
+          # после второй подтверждающей пробы при healthy zenoh-router.
+          PI_HOST="${{ env.main_pi_ip }}" \
+          PI_USER=ros2 \
+          PI_PASSWORD=open \
+          PI_COMPOSE_DIR='~/rob_box_project/docker/main' \
+          PI_SSH_OPTS="$SSH_OPTS" \
+          STATUS_JSON="$(cat /tmp/main_status.json)" \
+          NAV2_RESTART_ON_FAIL="${{ inputs.nav2_restart_on_fail == true && '1' || '0' }}" \
+            bash scripts/ci/wait_nav2_active.sh > /tmp/nav2_gate.json
+          echo "--- nav2 gate ---"
+          cat /tmp/nav2_gate.json
+          if [ "$(jq -r '.ok' /tmp/nav2_gate.json)" != "true" ]; then
+            echo "❌ nav2 is not active: $(jq -r '.reason' /tmp/nav2_gate.json)"
+            echo "main_healthy=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          # Приёмка #5118: гейт прошёл — main_healthy честно true. Раньше false
+          # из статуса (pending внутри start_period) оставался висеть, и
+          # Summary красил зелёный деплой. Статус сам дожидается окна, так что
+          # сюда healthy=false доходит только при провале; true здесь —
+          # страховка, что «гейт ok, а флаг false» не переживёт шаг.
+          echo "main_healthy=true" >> $GITHUB_OUTPUT
 
       - name: "[Vision Pi] Check Container Logs"
         if: '!inputs.dry_run'
@@ -1608,6 +1734,10 @@ jobs:
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Check the logs above and created GitHub issue for details"
             echo "deploy_status=issues" >> "$GITHUB_OUTPUT"
+            # Issue #5114: до этого ветка только писала deploy_status, и джоба
+            # оставалась зелёной (run 45019034598 — success при мёртвом nav2).
+            # Шаг карточки ниже имеет if: always() и всё равно создаст issue.
+            exit 1
           fi
 
       # ==================== ISSUE CREATION (retro 14.08 t_d01fe536 + 15.08 t_feca724c) ====================

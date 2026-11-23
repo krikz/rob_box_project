@@ -35,3 +35,5 @@ def test_n806_may_recover_silenced_but_n805b_may_not():
         policy = dict(eev.recover_policy(json.load(fh)))
     assert eev.SILENCED in policy["n806_long_count_again"]
     assert eev.SILENCED not in policy["n805b_unsilence"]
+    # #4694: n805b теперь может восстановиться по искажённому STT (`stt_replay`), но не по `silenced`.
+    assert eev.STT_REPLAY in policy["n805b_unsilence"]

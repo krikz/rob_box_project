@@ -41,3 +41,5 @@ class Utterance:
         self.chat_id = 0
         self.speaker_tag = ""
         self.provider = ""
+        self.confidence = -1.0  # #4017 C1: умолчание .msg - уверенность неизвестна
+        self.alternatives = []

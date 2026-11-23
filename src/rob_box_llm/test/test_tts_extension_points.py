@@ -310,7 +310,7 @@ class TestMiniMaxTTSProviderCapabilities:
     def test_pronunciation_dict_via_extra_still_works(self, minimax_provider):
         # Backwards-compat: pre-#1780 callers forwarded pronunciation_dict
         # via ``settings.extra``. We still accept that path so existing
-        # dialogue_node / voice configs keep working without changes.
+        # dialog_node / voice configs keep working without changes.
         s = TTSSettings(
             voice="v",
             extra={"pronunciation_dict": {"phoneme": ["a/ɑ"]}},

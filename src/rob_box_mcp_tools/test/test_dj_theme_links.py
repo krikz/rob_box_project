@@ -10,7 +10,6 @@ LLM предлагает строки поиска → код проверяет
 from __future__ import annotations
 
 import sqlite3
-import threading
 import time
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -19,9 +18,9 @@ from types import SimpleNamespace
 import pytest
 
 from rob_box_mcp_tools.core.rtttl_library import RtttlLibrary
+from rob_box_mcp_tools.engine.engine_tools import DjSetTool, library_melodies, theme_finder
 from rob_box_mcp_tools.engine.search import ThemeHits, theme_search
 from rob_box_mcp_tools.engine.theme_links import ThemeLinks, verify
-from rob_box_mcp_tools.engine.engine_tools import DjSetTool, library_melodies, theme_finder
 from rob_box_music import theme_queries as tq
 from rob_box_music.dj_line import SET_NOT_FOUND
 from rob_box_music.works import ThemeLink, put_theme_link, theme_links_report
@@ -38,8 +37,10 @@ ANSWERS = {
     DUCKS: ("work", ["Chicken Dance", "Vogeltanz", "Birdie Song", "Dance"]),
     "лебединое озеро": ("work", ["Swan Lake", "Tchaikovsky Swan Lake Op. 20"]),
     "король лев": ("work", ["Lion King", "Hakuna Matata", "Can You Feel the Love Tonight", "Circle of Life"]),
-    "животных": ("concept", ["The Lion Sleeps Tonight", "Baby Elephant Walk", "Pink Panther",
-                             "Flight of the Bumblebee", "Zebra Dance"]),
+    "животных": (
+        "concept",
+        ["The Lion Sleeps Tonight", "Baby Elephant Walk", "Pink Panther", "Flight of the Bumblebee", "Zebra Dance"],
+    ),
     "кукушка": ("work", ["Cuckoo Waltz"]),
     "ламповое": ("not_theme", []),
 }
@@ -53,8 +54,13 @@ class FakeLLM:
         parts = tool["function"]["parameters"]["properties"]["suggestions"]["items"]["properties"]["part"]["enum"]
         self.calls.append(list(parts))
         time.sleep(self.delay)
-        args = {"suggestions": [{"part": p, "kind": self.answers[p][0], "queries": self.answers[p][1]}
-                                for p in parts if p in self.answers]}
+        args = {
+            "suggestions": [
+                {"part": p, "kind": self.answers[p][0], "queries": self.answers[p][1]}
+                for p in parts
+                if p in self.answers
+            ]
+        }
         call = SimpleNamespace(name=tq.SUBMIT_TOOL, arguments=args)
         return "ok", SimpleNamespace(tool_calls=[call], truncated_tool_args=False), ""
 
@@ -68,8 +74,7 @@ def archive(tmp_path_factory):
 def library(archive, tmp_path):
     """Архив модуля, но своё хранилище связей на тест: кеш одного теста не помогает другому."""
     db = str(tmp_path / "links.db")
-    return SimpleNamespace(**{k: getattr(archive, k) for k in ("search", "get", "vocabulary")}, db_path=db,
-                           _db_path=db)
+    return SimpleNamespace(**{k: getattr(archive, k) for k in ("search", "get", "vocabulary")}, db_path=db, _db_path=db)
 
 
 def _links(llm=None, **kw):
@@ -101,7 +106,8 @@ def test_llm_queries_are_checked_by_the_catalog_and_only_found_records_play(libr
     assert hits.names == ("chickend",) and hits.missing == ()
     with closing(sqlite3.connect(library.db_path)) as conn:
         queries, rejected, source = conn.execute(
-            "SELECT queries, rejected, source FROM theme_links WHERE phrase=?", (DUCKS,)).fetchone()
+            "SELECT queries, rejected, source FROM theme_links WHERE phrase=?", (DUCKS,)
+        ).fetchone()
     assert queries == '["Chicken Dance"]' and source == "llm"
     assert set(eval(rejected)) == {"Vogeltanz", "Birdie Song", "Dance"}  # нет в каталоге / слишком общая строка
     again = _links(llm).expand(library, "Танец маленьких утят!", _direct(library, DUCKS))  # повтор — из реестра
@@ -117,8 +123,13 @@ def test_live_list_plays_every_named_work_and_dj_set_starts_with_them(library):
     rig = _rig()  # тот же заказ через dj_set: связи уже в реестре — без LLM
     seen = []
     finder = theme_finder(lambda: library, _links(llm))
-    dj = DjSetTool(None, rig.owner, melodies=library_melodies(lambda: library), seed=lambda: 4242,
-                   finder=lambda theme: seen.append(finder(theme)) or seen[-1])
+    dj = DjSetTool(
+        None,
+        rig.owner,
+        melodies=library_melodies(lambda: library),
+        seed=lambda: 4242,
+        finder=lambda theme: seen.append(finder(theme)) or seen[-1],
+    )
     data = dj.execute(action="start", heard_text=f"Робот, включи сет: {LIST}").data
     assert data["theme_source"] == "theme" and len(llm.calls) == 1 and set(seen[0].names) == set(hits.names)
     rig.clock.run_until(rig.clock.beat + 2)
@@ -153,19 +164,18 @@ def test_generic_query_is_not_a_work_name(library):
 
 
 def test_late_llm_does_not_hold_the_set_and_its_answer_is_cached(library):
-    llm = FakeLLM(delay=0.3)
-    spawned = []
+    """LLM опоздала — сет без неё; опоздавший ответ в хранилище — повтор без LLM.
 
-    def spawn(fn):
-        spawned.append(threading.Thread(target=fn))
-        spawned[-1].start()
-
-    links = ThemeLinks(ask=llm, wait_s=0.05, spawn=spawn)
+    Без wall-clock: на CI ``_note_missed``/sqlite давал 0.3–1 с при wait_s=0.05, и порог 0.25 с флачил
+    (run 44066755172). Контракт — структурный, как #3609: заказ уходит до вызова LLM, ответ кешируется фоном.
+    """
+    llm = FakeLLM()
+    jobs = []
+    links = ThemeLinks(ask=llm, wait_s=0.05, spawn=jobs.append)
     direct = theme_search(library, DUCKS)
-    started = time.perf_counter()
     assert links.expand(library, DUCKS, direct).names == ()
-    assert time.perf_counter() - started < 0.25
-    spawned[0].join()
+    assert llm.calls == [] and len(jobs) == 1  # заказ ушёл, LLM ещё не звали
+    jobs[0]()  # фон доработал
     assert _expand(links, library, DUCKS).names == ("chickend",) and len(llm.calls) == 1
 
 

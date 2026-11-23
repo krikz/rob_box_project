@@ -79,6 +79,30 @@ RUN source /opt/ros/humble/setup.bash \
 
 ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 
+# #4475: WouldSpinOnStall — тот же .so, что docker/main/nav2/Dockerfile.
+# bt_navigator грузит rob_box_would_spin_on_stall_bt_node из plugin_lib_names
+# (боевой nav2_params.yaml). Без .so configure падает: cannot open shared object.
+# Угол считает rob_box_teleop.turn_in_place (том compose, PYTHONPATH в start_nav2_direct.sh).
+# doTransform<PoseStamped> зовёт KDL — без -lorocos-kdl dlopen падает на Quaternion.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/main/nav2/would_spin_on_stall.cpp docker/main/nav2/turn_in_place_py.hpp /tmp/turn-bt/
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /tmp/turn-bt && \
+    g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \
+      -I/opt/ros/humble/include \
+      \$(for d in /opt/ros/humble/include/*/; do printf ' -I%s' \"\$d\"; done) \
+      -I/tmp/turn-bt -I/usr/include/python3.10 \
+      -o /opt/ros/humble/lib/librob_box_would_spin_on_stall_bt_node.so \
+      would_spin_on_stall.cpp \
+      -L/opt/ros/humble/lib -Wl,-rpath,/opt/ros/humble/lib \
+      -Wl,--no-as-needed \
+      -lbehaviortree_cpp_v3 -lrclcpp -ltf2 -ltf2_ros -lorocos-kdl -lpython3.10 \
+      -lnav_msgs__rosidl_typesupport_cpp -lsensor_msgs__rosidl_typesupport_cpp \
+      -lgeometry_msgs__rosidl_typesupport_cpp -ltf2_msgs__rosidl_typesupport_cpp" \
+    && rm -rf /tmp/turn-bt
+
 COPY docker/sim/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["ros2", "launch", "rob_box_sim", "sim.launch.py"]

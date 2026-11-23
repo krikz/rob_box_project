@@ -98,14 +98,96 @@ def load_state(path: Path) -> dict:
         return {}
 
 
+def session_facts() -> list:
+    """Факты последней сессии (docker/studio/run/facts.json) — тем же путём, что studio_jobs.
+
+    Импорт ленивый: мост к модели не тянет за собой весь jobs-модуль при старте,
+    а факты нужны только когда чертёж уже есть.
+    """
+    import studio_jobs as jobs
+
+    return jobs.load_run_facts()
+
+
+def _fact_numbers(fact: dict) -> str:
+    """Числа факта: «goals=10, sim_s=1561» — по ним модель отвечает фактично."""
+    numbers = fact.get("numbers") or {}
+    return ", ".join(f"{key}={numbers[key]}" for key in sorted(numbers))
+
+
+def _fact_line(fact: dict) -> str:
+    """Строка факта: источник, утверждение и числа."""
+    label = fact.get("run_label") or fact.get("key") or ""
+    claim = fact.get("claim") or ""
+    line = " — ".join(part for part in (label, claim) if part)
+    numbers = _fact_numbers(fact)
+    return f"{line} ({numbers})" if numbers else line
+
+
+def _draft_fact_lines(idea: dict, session: list) -> list:
+    """Факты черновика с числами: из fact_dicts поста, а если их нет — из фактов сессии."""
+    lines = []
+    seen = set()
+    for fact in idea.get("fact_dicts") or []:
+        key = fact.get("key")
+        if key:
+            seen.add(key)
+        lines.append(f"— {_fact_line(fact)}")
+    by_key = {fact.get("key"): fact for fact in session if fact.get("key")}
+    for key in idea.get("fact_keys") or []:
+        if key in seen:
+            continue
+        fact = by_key.get(key)
+        if fact:
+            lines.append(f"— {_fact_line(fact)}")
+    return lines
+
+
+def _run_lines(session: list) -> list:
+    """Прогоны робота из фактов последней сессии — с числами каждого."""
+    lines = []
+    for fact in session:
+        if fact.get("kind") != "robot_run":
+            continue
+        lines.append(f"— {fact.get('run_id') or fact.get('key')}: {_fact_numbers(fact)}")
+    return lines
+
+
+def _delivered_lines(idea: dict) -> list:
+    """Что студия уже отправила Шифу по этому черновику: ролик, прогон, message_id."""
+    motion = idea.get("last_motion") or {}
+    if not motion:
+        return []
+    runs = ", ".join(motion.get("runs") or []) or "—"
+    size = motion.get("bytes") or 0
+    lines = [
+        f"— {motion.get('format') or 'mp4'}, шаблон {motion.get('template') or '—'}, "
+        f"прогоны: {runs}, {size / 1024 / 1024:.1f} МБ"
+    ]
+    message_id = motion.get("message_id")
+    if message_id:
+        lines.append(
+            f"— ролик по этому черновику УЖЕ присылан в чат (message_id={message_id}). "
+            "Если Шифу спрашивает, где ролик или какие есть заезды, отвечай по этим данным: "
+            "назови прогон и message_id отправленного ролика, а не «нигде нет записей»."
+        )
+    return lines
+
+
 def discussed_idea(state: dict, idea_id: str = "") -> dict:
-    """Идея, которая сейчас на обсуждении: указанная или последняя со статусом discuss."""
+    """Идея или черновик, о которых идёт речь: указанный — или последняя идея на обсуждении.
+
+    Черновик лежит в ``state["posts"]``, а не в ``state["ideas"]``: по id надо искать
+    и там, иначе модель обсуждает не тот объект и отвечает «нигде нет записей
+    заездов», хотя ролик по этому черновику уже отправлен (issue #4713).
+    """
     ideas = state.get("ideas") or []
     if idea_id:
         for idea in ideas:
             if idea.get("id") == idea_id:
                 return idea
-        return {}
+        post = (state.get("posts") or {}).get(idea_id)
+        return post if isinstance(post, dict) else {}
     for idea in reversed(ideas):
         if idea.get("status") == "discuss":
             return idea
@@ -123,6 +205,21 @@ def build_prompt(message: str, idea: dict, state: dict) -> str:
         body = (idea.get("body_html") or "").strip()
         if body:
             lines.append(f"Текущий черновик идеи: {body[:1200]}")
+        # Факты студии с числами: без них агент отвечает «записей заездов нет»,
+        # хотя прогон и ролик по черновику есть (issue #4713).
+        session = session_facts()
+        draft_lines = _draft_fact_lines(idea, session)
+        if draft_lines:
+            lines.append("Факты черновика (с числами):")
+            lines.extend(draft_lines)
+        run_lines = _run_lines(session)
+        if run_lines:
+            lines.append("Прогоны в студии (по данным последней сессии):")
+            lines.extend(run_lines)
+        delivered = _delivered_lines(idea)
+        if delivered:
+            lines.append("Что уже отправлено Шифу по этому черновику:")
+            lines.extend(delivered)
     else:
         lines.append("Идея на обсуждении не указана — ответь по общему состоянию студии.")
     music = (state or {}).get("music") or {}

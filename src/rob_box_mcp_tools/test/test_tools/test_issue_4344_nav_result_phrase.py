@@ -168,7 +168,8 @@ def test_every_nav_failure_kind_has_its_phrase_in_dialog():
     """Контракт с диалогом: каждый вид неуспеха тула - своя фраза «Не доехал до точки …: причина»."""
     tool_kinds = {ao.nav_outcome(k).kind for k in (
         ao.NAV_ABORTED, ao.NAV_CANCELED, ao.NAV_TIMEOUT, ao.NAV_REJECTED, ao.NAV_NO_RESPONSE,
-        ao.NAV_SERVER_UNAVAILABLE, ao.NAV_LOCALIZATION_LOST, "что-то новое")}
+        ao.NAV_SERVER_UNAVAILABLE, ao.NAV_LOCALIZATION_LOST, ao.NAV_LOCK_HELD, ao.NAV_LOCK_UNKNOWN,
+        "что-то новое")}
     assert tool_kinds | {kn.NAV_UNKNOWN_TARGET} == set(kn.NAV_FAILURE_OUTCOMES)
 
 
@@ -225,11 +226,16 @@ def test_coordinates_use_the_same_phrases(nav, monkeypatch):
 
 @pytest.mark.unit
 def test_move_direction_failure_names_the_reason(nav):
-    """Общий путь ``_send_nav_goal``: у ``move_direction`` точки нет, но причина отказа - по исходу Nav2."""
+    """Общий путь ``_send_nav_goal``: причина отказа - по исходу Nav2.
+
+    #5160: без позы на карте цель не уходит вовсе, поэтому здесь поза есть —
+    отказ должен прийти от Nav2 (ABORTED), а не от преобразования кадра.
+    """
     tool = nav.MoveDirectionTool.__new__(nav.MoveDirectionTool)
     tool.node = MagicMock()
     tool.nav_client = _NavClient(ao.GOAL_STATUS_ABORTED)
     tool.controller_halt = _no_orphan_halt
+    tool._pose_source = lambda: nav.MapPose("ok", "map", x=0.0, y=0.0, theta=0.0)
     res = tool.execute("вперёд", 1.0)
     assert _spoken("move_direction", {"direction": "вперёд"}, res) == "Не доехал: навигация прервалась."
 

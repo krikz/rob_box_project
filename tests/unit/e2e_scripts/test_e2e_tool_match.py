@@ -24,8 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "scripts" / "ci" / "e2e"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from e2e_tool_match import tool_invoked  # noqa: E402
-
+from e2e_tool_match import first_invocation_position, step_verdict, tool_invoked  # noqa: E402
 
 # --- живые фрагменты лога ---------------------------------------------------
 
@@ -67,8 +66,15 @@ class TestNotInvoked:
 
     @pytest.mark.parametrize(
         "tool",
-        ["stop_music", "request_music", "move_direction", "clear_waypoints",
-         "get_music_state", "set_dj_mode", "register_speaker"],
+        [
+            "stop_music",
+            "request_music",
+            "move_direction",
+            "clear_waypoints",
+            "get_music_state",
+            "set_dj_mode",
+            "register_speaker",
+        ],
     )
     def test_catalog_alone_is_not_a_call(self, tool):
         assert tool_invoked(TOOLS_CATALOG, tool) is False
@@ -120,8 +126,13 @@ class TestFreeTextFallback:
 
     @pytest.mark.parametrize(
         "frag",
-        ["STOP command received", "Cancel: new STT input", "Воспроизведение прервано",
-         "session reset", "[backlog] flushed to LLM"],
+        [
+            "STOP command received",
+            "Cancel: new STT input",
+            "Воспроизведение прервано",
+            "session reset",
+            "[backlog] flushed to LLM",
+        ],
     )
     def test_free_text_is_substring_matched(self, frag):
         assert tool_invoked("... %s ..." % frag, frag) is True
@@ -144,3 +155,140 @@ class TestEdges:
         log = "tools=['music_library']"
         assert tool_invoked(log, "music_library") is True
         assert tool_invoked(log, "save_track") is False
+
+
+# --- run 43475658766 (Act5 n506): отклонённая LLM-попытка — не вызов ------------------------
+
+#: Первая попытка модели — комбо edit_music+stop_music; валидатор её ОТКЛОНИЛ
+#: (verdict=invalid:single_action_class, actions=[] — ничего не исполнено), модель повторила
+#: чистым edit_music. Структура строк — как в живом логе run 43475658766.
+N506_REJECTED_COMBO = (
+    "[dialog_node-3] 🔎 LLM RESPONSE: content='' finish=tool_calls "
+    'tool_calls=[(\'command\', \'{"actions": [{"tool": "edit_music", "args": {"change": "faster"}}, '
+    '{"tool": "stop_music", "args": {"boundary": "bar"}}], '
+    '"speech": "Сначала подгоню темп, потом выключу — засыпай спокойно."}\')]\n'
+    "[dialog_node-3] 🧾 [command] provider=deepseek mode=tool_choice "
+    "verdict=invalid:single_action_class actions=[] speech_dropped=0 detail='action.media'\n"
+)
+N506_VALID_RETRY = (
+    "[dialog_node-3] 🔎 LLM RESPONSE: content='' finish=tool_calls tool_calls=[('command', "
+    '\'{"actions": [{"tool": "edit_music", "args": {"change": "faster"}}]}\')]\n'
+    "[dialog_node-3] 🧾 [command] provider=deepseek mode=tool_choice "
+    "verdict=command actions=['edit_music'] speech_dropped=0\n"
+    "[mcp_server-9] 📤 Отправлен запрос 4e1b5fba: edit_music\n"
+    "[mcp_server-9] ✅ Инструмент edit_music выполнен успешно\n"
+)
+
+
+class TestRejectedAttemptIsNotAForbiddenCall:
+    def test_rejected_combo_response_does_not_count_as_invocation(self):
+        """#4694 n506: must_not не должен считать вызовом имя тула в ОТКЛОНЁННОЙ попытке."""
+        acc = {"must_not_call": ["stop_music"], "expected_tool_calls": ["edit_music"]}
+        result = step_verdict(acc, N506_REJECTED_COMBO + N506_VALID_RETRY)
+        assert result["pass"] is True, result["reason"]
+
+    def test_real_forbidden_invocation_still_fails(self):
+        """Реальное исполнение запрещённого тула по-прежнему обязано краснеть."""
+        acc = {"must_not_call": ["stop_music"]}
+        executed = N506_VALID_RETRY + "[mcp_server-9] ✅ Инструмент stop_music выполнен успешно\n"
+        result = step_verdict(acc, executed)
+        assert result["pass"] is False
+        assert "forbidden tool calls invoked: ['stop_music']" in result["reason"]
+
+
+# --- run 44880526738 (Act7 n701): диагностика моста — не вызов (#5008) ------------------------
+
+#: Строка 1180 voice-лога акта 7 дословно: мост расширил СЛЕДУЮЩИЙ запрос
+#: каталогом, тул не исполнялся. Acceptance сказал
+#: ``forbidden tool calls invoked: ['stop_music']`` — ложный FAIL.
+N701_WIDEN_DIAGNOSTIC = (
+    "[dialog_node-3] [INFO] [1795246294.049160213] [dialog_node]: "
+    "🧾 [command] tool_not_available → в запрос добавлены тулы "
+    "['get_music_state', 'stop_music', 'request_music', 'dj_set', "
+    "'music_library', 'generate_music']"
+)
+
+#: Настоящие вызовы stop_music из того же файла, но вне окна n701
+#: (строки 927/934/938 — Tier-1, 07:27:27Z; строка 1910 — n712).
+N701_REAL_CALLS = {
+    927: "[dialog_node-3] 🧾 [command] provider=deepseek mode=tool_choice "
+    "verdict=command actions=['stop_music'] speech_dropped=0",
+    934: "[mcp_server-9] 📥 Запрос выполнения: stop_music с параметрами {}",
+    938: "[mcp_server-9] ✅ Инструмент stop_music выполнен успешно",
+    1910: "[dialog_node-3] 🧾 [command] provider=deepseek mode=tool_choice "
+    "verdict=command actions=['stop_music', 'play_animation'] speech_dropped=0",
+}
+
+
+class TestDiagnosticListIsNotACall:
+    """#5008: имя тула в кавычках диагностики — не вызов."""
+
+    def test_widen_diagnostic_line_1180_is_not_a_call(self):
+        assert tool_invoked(N701_WIDEN_DIAGNOSTIC, "stop_music") is False
+
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "get_music_state",
+            "stop_music",
+            "request_music",
+            "dj_set",
+            "music_library",
+            "generate_music",
+        ],
+    )
+    def test_no_name_in_the_added_catalog_counts(self, tool):
+        assert tool_invoked(N701_WIDEN_DIAGNOSTIC, tool) is False
+        assert first_invocation_position(N701_WIDEN_DIAGNOSTIC, tool) is None
+
+    def test_n701_acceptance_stays_strict(self):
+        """Список запрещённых не ослабляется: диагностика не краснит, вызов краснит."""
+        acc = {"must_not_call": ["stop_music"]}
+        clean = step_verdict(acc, N701_WIDEN_DIAGNOSTIC)
+        assert clean["pass"] is True, clean["reason"]
+        called = step_verdict(acc, N701_WIDEN_DIAGNOSTIC + "\n" + N701_REAL_CALLS[934])
+        assert called["pass"] is False
+        assert "forbidden tool calls invoked: ['stop_music']" in called["reason"]
+
+    @pytest.mark.parametrize("lineno", sorted(N701_REAL_CALLS))
+    def test_real_calls_from_the_same_log_still_match(self, lineno):
+        assert tool_invoked(N701_REAL_CALLS[lineno], "stop_music") is True, lineno
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "ToolCall(id='call_01', name='stop_music', arguments=mappingproxy({}))",
+            "tool_calls=[('stop_music', '{\"boundary\": \"bar\"}')]",
+            "tools(3): 'stop_music', get_music_state, request_music",
+            # query_results / recent_actions: "tool": "X" — форма вызова (#3860)
+            '{"tool": "stop_music", "args": {"boundary": "bar"}}',
+        ],
+    )
+    def test_call_constructions_still_match(self, line):
+        assert tool_invoked(line, "stop_music") is True
+
+    def test_first_invocation_position_points_at_the_call_not_the_catalog(self):
+        logs = N701_WIDEN_DIAGNOSTIC + "\n" + N701_REAL_CALLS[934]
+        pos = first_invocation_position(logs, "stop_music")
+        assert pos is not None
+        assert pos > logs.lower().find("добавлены тулы")
+        assert pos == logs.lower().find("запрос выполнения: stop_music")
+
+    def test_unquoted_catalog_still_is_not_a_call(self):
+        """``tools(56): ... stop_music ...`` без кавычек — каталог, не вызов."""
+        assert tool_invoked(TOOLS_CATALOG, "stop_music") is False
+        assert tool_invoked("tools(12): clear_waypoints, stop_music, speak_text", "stop_music") is False
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # mcp_server.py:1358 — FSM не пустил тул: блок, не исполнение
+            "🚫 FSM blocked 'stop_music' during mapping",
+            # command_bridge.py:381 — salvage: спасённые, но не исполненные actions
+            "🧾 [command] retry=1 violations=['single_action_class'] → verdict=invalid:single_action_class "
+            "(120 мс) salvage=['stop_music']",
+        ],
+    )
+    def test_other_quoted_diagnostics_are_not_calls(self, line):
+        assert tool_invoked(line, "stop_music") is False
+        assert first_invocation_position(line, "stop_music") is None

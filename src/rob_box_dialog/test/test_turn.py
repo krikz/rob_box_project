@@ -757,10 +757,10 @@ def test_3995_invalid_command_with_only_animation_salvaged_still_speaks():
     _run(_engine(ports), N101)
     assert ports.executed == [[("play_animation", dict(HAPPY.args))]]
     assert ports.said == [(phrases.text(kn.INVALID_COMMAND_PHRASE), None, None)]
-    sound = ToolCall("play_sound", {"sound": "siren"})
+    sound = ToolCall("play_sound", {"sound": "robot_alert"})
     quiet = Ports(answers=[Answer(Invalid("bad_enum", "emotion=joy", salvage=(sound,)), "deepseek", calls=2)])
-    _run(_engine(quiet), "включи сирену")
-    assert quiet.executed == [[("play_sound", {"sound": "siren"})]] and quiet.said == []
+    _run(_engine(quiet), "какой сегодня день")
+    assert quiet.executed == [[("play_sound", {"sound": "robot_alert"})]] and quiet.said == []
 
 
 def test_query_data_goes_back_to_llm_once_then_answer():
@@ -1410,15 +1410,18 @@ def test_ceiling_in_llm_wait_names_the_provider():
 
 
 def test_ceiling_while_action_runs_says_its_timeout_not_dont_understand(monkeypatch):
-    """Действие уже стартовало (музыка готовится), а потолок кончился: «Музыка пока не заиграла», а не «не понял».
-    Продление срока под действие (``TurnDeadline.grant``, PR #3970) здесь выключено: проверяется сама фраза потолка."""
+    """Действие уже стартовало (музыка готовится), а потолок кончился: «ещё собираю», не «не понял» и не отказ
+    «не заиграла» (#5006: владелец ещё не сказал исход). Продление срока под действие (``TurnDeadline.grant``,
+    PR #3970) здесь выключено: проверяется сама фраза потолка."""
     from rob_box_dialog.deadline import TurnDeadline
 
     monkeypatch.setattr(TurnDeadline, "grant", lambda self, own_s: None, raising=False)
     ports = NamedPorts(answers=[Answer(Command(actions=(_MUSIC,)), "deepseek")], execute_delay=5)
     agg = _run(_engine(ports, deadline_s=0.1), "поставь ровный ритм")
-    assert _said(ports) == [phrases.text("media.timeout")]
+    assert _said(ports) == [phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)]
+    assert phrases.text("media.timeout") not in _said(ports)
     assert phrases.text("understand.timeout") not in _said(ports) and agg.status == "failed"
+    assert ports.said[0][2] != "sad", "срок - не отказ, грустить не о чем"
 
 
 _DJ_ROCK = ToolCall("dj_set", {"action": "start", "theme": "рок"})
@@ -1448,13 +1451,15 @@ def test_4313_ceiling_under_playing_set_does_not_say_not_started(monkeypatch):
     assert phrases.text("media.timeout") not in _said(ports)
 
 
-def test_4313_ceiling_when_nothing_plays_still_says_not_started(monkeypatch):
+def test_4313_ceiling_when_nothing_plays_says_still_working_not_refusal(monkeypatch):
+    """Потолок, а прежний сет не звучит: это не отказ «не заиграла» (#5006), владелец ещё может сказать исход."""
     from rob_box_dialog.deadline import TurnDeadline
 
     monkeypatch.setattr(TurnDeadline, "grant", lambda self, own_s: None, raising=False)
     ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")], execute_delay=5)
     _run(_engine(ports, deadline_s=0.1), "поставь рок")
-    assert _said(ports) == [phrases.text("media.timeout")]
+    assert _said(ports) == [phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)]
+    assert phrases.text("media.timeout") not in _said(ports)
 
 
 def test_4479_executor_timeout_under_playing_set_does_not_say_not_started():
@@ -1468,11 +1473,14 @@ def test_4479_executor_timeout_under_playing_set_does_not_say_not_started():
     assert phrases.text("media.timeout") not in _said(ports)
 
 
-def test_4479_executor_timeout_when_nothing_plays_still_says_not_started():
+def test_4479_executor_timeout_when_nothing_plays_says_still_working():
+    """n604 (#5006): срок класса вышел, ничего не играет — «ещё собираю», не «не заиграла»; грусти нет."""
     ports = NamedPorts(answers=[Answer(Command(actions=(_DJ_ROCK,)), "deepseek")])
     ports.outcomes["dj_set"] = ("timeout", {})
     _run(_engine(ports), "поставь рок")
-    assert _said(ports) == [phrases.text("media.timeout")]
+    assert _said(ports) == [phrases.text(kn.MEDIA_STILL_WORKING_PHRASE)]
+    assert phrases.text("media.timeout") not in _said(ports)
+    assert ports.said[0][2] != "sad"
 
 
 def test_4313_stop_under_playing_music_is_not_a_replacement(monkeypatch):

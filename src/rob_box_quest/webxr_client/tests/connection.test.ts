@@ -5,7 +5,7 @@
 // который дёрнет `Connection` — `new FakeWebSocket()` вернёт наш заранее
 // подготовленный client-сокет (см. FakeWebSocket constructor).
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import {
   encodeJsonFrame,
   FrameType,
@@ -101,7 +101,7 @@ class FakeWebSocket {
 
 (globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket;
 
-import { Connection } from "../src/wire/connection";
+import { Connection, SESSION_WATCHDOG_MS } from "../src/wire/connection";
 
 describe("Connection handshake (loopback)", () => {
   beforeEach(() => {
@@ -338,6 +338,76 @@ describe("Connection RTT (ping → pong)", () => {
     await new Promise<void>((r) => queueMicrotask(() => queueMicrotask(() => r())));
     expect(seen).toEqual([]);
     expect(conn.getRttMs()).toBeNull();
+  });
+});
+
+// Сервер закрывает сессию, если нет JSON_CMD{cmd:ping} дольше
+// WATCHDOG_TIMEOUT_S (session.py = 600 мс). setInterval первый кадр не
+// шлёт — keepalive обязан уйти в том же тике, что WELCOME, и дальше
+// строго чаще порога.
+function pingFrames(frames: Uint8Array[]): Array<{ cmd?: string }> {
+  return frames
+    .map((frame) => decodeFrame(frame))
+    .filter((dec) => dec.type === FrameType.JSON_CMD)
+    .map((dec) => JSON.parse(new TextDecoder().decode(dec.payload)) as { cmd?: string })
+    .filter((ev) => ev.cmd === "ping");
+}
+
+describe("Connection session keepalive (#4763)", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    FakeWebSocket.nextInstance = null;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function welcome(intervalMs?: number): Promise<{ conn: Connection; client: FakeWebSocket }> {
+    const server = FakeWebSocket.makeServer();
+    const client = FakeWebSocket.reserveClient();
+    FakeWebSocket.link(client, server);
+    const conn = new Connection({
+      url: "ws://test",
+      clientVersion: "0.1.0",
+      pin: "123456",
+      autoReconnect: false,
+      ...(intervalMs === undefined ? {} : { pingIntervalMs: intervalMs }),
+      WebSocketCtor: FakeWebSocket as unknown as new (url: string, protocols?: string | string[]) => WebSocket
+    });
+    conn.connect();
+    client.dispatchOpen();
+    const ws = conn._peekWs() as unknown as { readyState: number } | null;
+    if (ws) ws.readyState = 1;
+    server.send(
+      encodeJsonFrame(FrameType.WELCOME, 0, {
+        server_version: "0.1.0",
+        session_id: "s",
+        server_time_ms: 1
+      }) as unknown as ArrayBuffer
+    );
+    await vi.runAllTicks();
+    return { conn, client };
+  }
+
+  it("sends JSON_CMD ping in the same turn as WELCOME", async () => {
+    const { client } = await welcome();
+    expect(pingFrames(client.sentFrames)).toHaveLength(1);
+  });
+
+  it("keeps pinging faster than the 600 ms session watchdog", async () => {
+    const { client } = await welcome();
+    const before = client.sentFrames.length;
+    await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_MS - 1);
+    expect(pingFrames(client.sentFrames.slice(before)).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("clamps a ping interval that would outlive the watchdog", async () => {
+    const { client } = await welcome(SESSION_WATCHDOG_MS);
+    const before = client.sentFrames.length;
+    await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_MS - 1);
+    expect(pingFrames(client.sentFrames.slice(before)).length).toBeGreaterThanOrEqual(2);
   });
 });
 

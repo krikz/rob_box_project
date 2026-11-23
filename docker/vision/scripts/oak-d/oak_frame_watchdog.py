@@ -6,19 +6,22 @@
 ``X_LINK_ERROR``, кадров не было, а ``restarts=0``. Docker сам по unhealthy
 контейнер не перезапускает.
 
-Три режима одним файлом (решение принимает код ``verdict``, не текст в промпте):
+Три режима одним файлом (решение принимает код ``verdict``, не текст в промпте
+и не факт «контейнер Up»):
 
 * ``run``   — запускается из start_oak_d.sh рядом с ``ros2 launch``: подписка на
               топик кадров (по умолчанию camera_info цветной камеры — публикуется
               вместе с каждым кадром и в сотни раз легче image_raw), на каждый
-              кадр обновляет heartbeat-файл. Если кадров нет дольше порога, выходит
-              с кодом 1; start_oak_d.sh тогда гасит launch и выходит сам, а
+              кадр обновляет heartbeat-файл. Параллельно читает лог драйвера и
+              ставит отметку ``X_LINK_ERROR``, если драйвер сам её записал.
+              Если кадр старше порога или отметка есть — выходит с кодом 1;
+              start_oak_d.sh тогда гасит launch и выходит сам, а
               ``restart: unless-stopped`` поднимает контейнер на свежем устройстве.
 * ``check`` — healthcheck контейнера: 0 / 1 по тому же ``verdict``.
 * (без режима) — ошибка использования.
 
 ENV: OAK_FRAME_TOPIC, OAK_FRAME_STALE_SEC (30), OAK_START_GRACE_SEC (90),
-OAK_HEARTBEAT_PATH, OAK_STARTED_PATH.
+OAK_HEARTBEAT_PATH, OAK_STARTED_PATH, OAK_XLINK_PATH, OAK_DRIVER_LOG.
 """
 from __future__ import annotations
 
@@ -33,6 +36,10 @@ DEFAULT_STALE_SEC = 30.0
 DEFAULT_GRACE_SEC = 90.0
 DEFAULT_HEARTBEAT_PATH = "/tmp/oak_frame_heartbeat"
 DEFAULT_STARTED_PATH = "/tmp/oak_watchdog_started"
+DEFAULT_XLINK_PATH = "/tmp/oak_xlink_error"
+DEFAULT_DRIVER_LOG = "/tmp/oak_driver.log"
+# Строка, которую depthai_ros_driver пишет каждую секунду на мёртвом XLink (issue #4532).
+X_LINK_ERROR = "X_LINK_ERROR"
 
 OK = "ok"
 STARTING = "starting"
@@ -45,13 +52,18 @@ def verdict(
     started: Optional[float],
     stale_sec: float = DEFAULT_STALE_SEC,
     grace_sec: float = DEFAULT_GRACE_SEC,
+    xlink_error_at: Optional[float] = None,
 ) -> str:
-    """``ok`` — кадры свежие; ``starting`` — кадров нет, но идёт льготный срок; ``stale`` — кадров нет дольше порога.
+    """``ok`` — кадр свежий и XLink жив; ``starting`` — кадров нет, но идёт льготный срок; ``stale`` — иначе.
 
     ``started`` — когда стартовал сторож (None: сторожа нет, значит нечему отвечать за кадры, это stale).
+    ``xlink_error_at`` — когда драйвер записал ``X_LINK_ERROR`` в этом запуске. Отметка после старта
+    побеждает свежий heartbeat: кадры с мёртвого XLink не считаются здоровьем (ADR-0148).
     Часы пошли назад (``now`` раньше отметки) — это не свежесть: считаем stale.
     """
     if started is None:
+        return STALE
+    if xlink_error_at is not None and xlink_error_at >= started and now >= xlink_error_at:
         return STALE
     if last_frame is not None and last_frame >= started:
         age = now - last_frame
@@ -74,25 +86,33 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _paths() -> tuple[str, str]:
+def _paths() -> tuple[str, str, str]:
     return (
         os.environ.get("OAK_HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH),
         os.environ.get("OAK_STARTED_PATH", DEFAULT_STARTED_PATH),
+        os.environ.get("OAK_XLINK_PATH", DEFAULT_XLINK_PATH),
     )
 
 
 def check(now: Optional[float] = None) -> int:
-    """Код выхода healthcheck: 0 — не stale, 1 — stale."""
-    hb_path, st_path = _paths()
+    """Код выхода healthcheck: 0 — не stale, 1 — stale (кадр старый или X_LINK_ERROR)."""
+    hb_path, st_path, xlink_path = _paths()
     state = verdict(
         time.time() if now is None else now,
         _mtime(hb_path),
         _mtime(st_path),
         _env_float("OAK_FRAME_STALE_SEC", DEFAULT_STALE_SEC),
         _env_float("OAK_START_GRACE_SEC", DEFAULT_GRACE_SEC),
+        xlink_error_at=_mtime(xlink_path),
     )
     if state == STALE:
-        print(f"[oak_frame_watchdog] FAIL: кадров нет дольше порога ({hb_path})", file=sys.stderr)
+        xlink_at = _mtime(xlink_path)
+        started = _mtime(st_path)
+        if xlink_at is not None and started is not None and xlink_at >= started:
+            why = "X_LINK_ERROR"
+        else:
+            why = f"кадров нет дольше порога ({hb_path})"
+        print(f"[oak_frame_watchdog] FAIL: {why}", file=sys.stderr)
         return 1
     return 0
 
@@ -102,22 +122,68 @@ def _touch(path: str) -> None:
         os.utime(path, None)
 
 
+def recovery_step(
+    now: float,
+    last_frame: Optional[float],
+    started: Optional[float],
+    stale_sec: float = DEFAULT_STALE_SEC,
+    grace_sec: float = DEFAULT_GRACE_SEC,
+    xlink_error_at: Optional[float] = None,
+    restarts: int = 0,
+) -> tuple[str, int]:
+    """Один шаг хода unplug/replug: вердикт и счётчик рестартов (ADR-0148).
+
+    ``stale`` — кадр старше порога или отметка ``X_LINK_ERROR`` этого запуска:
+    сторож выходит, ``restart: unless-stopped`` поднимает контейнер, счётчик растёт.
+    ``starting`` — льготный срок после рестарта, кадров ещё нет, счётчик не растёт.
+    ``ok`` — кадр свежий и XLink жив: рестарты прекратились, счётчик не растёт.
+    """
+    state = verdict(now, last_frame, started, stale_sec, grace_sec, xlink_error_at)
+    return state, restarts + (1 if state == STALE else 0)
+
+
+def note_xlink_error(log_path: str, offset: int, marker_path: str) -> int:
+    """Прочитать новый хвост лога драйвера. Если там ``X_LINK_ERROR`` — поставить отметку.
+
+    Возвращает новый offset. Решение «есть ошибка / нет» принимает код по байтам лога,
+    не разбор текста ответа и не ``docker ps``.
+    """
+    try:
+        size = os.stat(log_path).st_size
+    except OSError:
+        return offset
+    if size < offset:
+        offset = 0
+    try:
+        with open(log_path, "rb") as handle:
+            handle.seek(offset)
+            chunk = handle.read()
+    except OSError:
+        return offset
+    if X_LINK_ERROR.encode() in chunk:
+        _touch(marker_path)
+    return offset + len(chunk)
+
+
 def run() -> int:  # pragma: no cover - нужен rclpy и камера
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import CameraInfo
 
-    hb_path, st_path = _paths()
+    hb_path, st_path, xlink_path = _paths()
     stale_sec = _env_float("OAK_FRAME_STALE_SEC", DEFAULT_STALE_SEC)
     grace_sec = _env_float("OAK_START_GRACE_SEC", DEFAULT_GRACE_SEC)
     topic = os.environ.get("OAK_FRAME_TOPIC", DEFAULT_TOPIC)
+    log_path = os.environ.get("OAK_DRIVER_LOG", DEFAULT_DRIVER_LOG)
 
-    # Контейнер при рестарте сохраняет /tmp: старый heartbeat нельзя принять за свежий.
-    try:
-        os.remove(hb_path)
-    except FileNotFoundError:
-        pass
+    # Контейнер при рестарте сохраняет /tmp: старый heartbeat и старую отметку нельзя принять за этот запуск.
+    for stale_mark in (hb_path, xlink_path):
+        try:
+            os.remove(stale_mark)
+        except FileNotFoundError:
+            pass
     _touch(st_path)
+    log_offset = 0
 
     rclpy.init()
     node = rclpy.create_node("oak_frame_watchdog")
@@ -130,15 +196,21 @@ def run() -> int:  # pragma: no cover - нужен rclpy и камера
             _touch(hb_path)
 
     node.create_subscription(CameraInfo, topic, on_frame, qos_profile_sensor_data)
-    node.get_logger().info(f"сторож кадров: {topic}, порог {stale_sec}s, льгота {grace_sec}s")
+    node.get_logger().info(f"сторож кадров: {topic}, порог {stale_sec}s, льгота {grace_sec}s, лог {log_path}")
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=1.0)
-            state = verdict(time.time(), _mtime(hb_path), _mtime(st_path), stale_sec, grace_sec)
+            log_offset = note_xlink_error(log_path, log_offset, xlink_path)
+            state = verdict(
+                time.time(),
+                _mtime(hb_path),
+                _mtime(st_path),
+                stale_sec,
+                grace_sec,
+                xlink_error_at=_mtime(xlink_path),
+            )
             if state == STALE:
-                node.get_logger().error(
-                    f"кадров нет дольше {stale_sec}s (X_LINK_ERROR?) — выходим, контейнер перезапустится"
-                )
+                node.get_logger().error("кадр старше порога или X_LINK_ERROR — выходим, контейнер перезапустится")
                 return 1
     finally:
         node.destroy_node()

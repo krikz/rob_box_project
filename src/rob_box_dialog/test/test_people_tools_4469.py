@@ -124,6 +124,19 @@ def test_executed_person_photo_goes_to_the_chat_as_a_photo_output():
     assert '"id": "fff371fe"' in photos[0][1] and "path" not in photos[0][1] and "fff371fe - без имени" in photos[0][1]
 
 
+def test_ten_executed_person_photos_go_to_the_chat_as_ten_photo_outputs():
+    calls = [ToolCall("person_photo", {"id": f"{n:08x}"}) for n in range(10)]
+    results = [_res("person_photo", "done", {"photo_id": call.args["id"], "caption": call.args["id"]})
+               for call in calls]
+    ports, sent = _ports(results)
+
+    _run(ports.execute(calls, SNAP, "t"))
+
+    photos = [text for _ref, text, extra in sent if extra.get("kind") == PHOTO_KIND]
+    assert len(photos) == 10
+    assert [f'"id": "{call.args["id"]}"' in text for call, text in zip(calls, photos)] == [True] * 10
+
+
 @pytest.mark.parametrize("result", [
     _res("person_photo", "rejected", {"reason": "exhibition_mode"}, "exhibition_mode"),
     _res("person_photo", "done", {"id": "fff371fe"}),  # владелец пути не дал

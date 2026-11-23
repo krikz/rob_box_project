@@ -144,8 +144,9 @@ def test_only_the_last_iteration_after_a_query_owes_words():
 
 
 def test_the_schema_does_not_require_speech_it_would_contradict_speech_with_actions():
-    """Схему форма не меняет: после запроса звук без слов - законный ответ («какие звуки» → ``play_sound``), а слова
-    рядом со звуком - ``speech_with_actions``. ``required: [speech]`` толкал бы модель в это нарушение."""
+    """Схему форма не меняет: после запроса звук без слов - законный ответ («какие звуки» → ``play_sound``).
+    ``required: [speech]`` толкал бы модель в нарушение на громком действии. Звук с #5020 тихий рядом с речью:
+    слова модели и ``play_sound`` вместе законны, звук слышен сам."""
     final = Answer(Command(speech="Звуков много."), "deepseek")
     ports = Ports([*_iters(_query(SOUNDS)), final], {"get_sound_info": ("done", SOUND_DATA)})  # разные: #4286
     _run(ports, N_SOUNDS)
@@ -155,7 +156,10 @@ def test_the_schema_does_not_require_speech_it_would_contradict_speech_with_acti
     sound = {"actions": [{"tool": "play_sound", "args": {"sound": "robot_happy"}}]}
     assert isinstance(validate(parse(sound), ALL, form=asked), Command)
     both = validate(parse({**sound, "speech": "Вот так."}), ALL, form=asked)
-    assert isinstance(both, Invalid) and both.reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
+    assert isinstance(both, Command)
+    loud = {"speech": "Ищу.", "actions": [{"tool": "memory_search", "args": {"query": "имя"}}]}
+    refused = validate(parse(loud), ALL, form=asked)
+    assert isinstance(refused, Invalid) and refused.reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
 
 
 def test_form_is_open_when_the_query_was_never_done(monkeypatch):

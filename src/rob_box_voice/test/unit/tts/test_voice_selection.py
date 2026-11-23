@@ -230,7 +230,7 @@ def test_provider_state_published_after_yandex_synthesis() -> None:
     """После успешного синтеза yandex публикуется фактический провайдер.
 
     Issue #1229: tts_node — единственный, кто знает фактического провайдера
-    после фолбека; publish позволяет dialogue_node/mcp_server обновить
+    после фолбека; publish позволяет dialog_node/mcp_server обновить
     LLM-контекст [TTS] и валидацию голосов.
     """
     node = _node_with_provider_state()

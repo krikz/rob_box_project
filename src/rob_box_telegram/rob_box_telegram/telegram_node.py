@@ -41,6 +41,7 @@ from rob_box_core.avatar_command import (
 from rob_box_core import speech_client
 from rob_box_core.utterance import Sink, Utterance
 
+from . import polling_guard
 from .camera_cache import CameraCache
 from .camera_on_demand import OnDemandCameraSubscriptions
 from .command_menu import publish_menu
@@ -164,6 +165,13 @@ async def _dispatch(sender, chat_id: int, text: str, role: str, kind: str, fetch
         await sender.send_person_photo(chat_id, text, fetch)
     else:
         await sender.deliver(chat_id, text, role)
+
+
+def _task_error(task) -> Optional[BaseException]:
+    """Exception a finished task died with, or ``None`` if it ended cleanly."""
+    if task.cancelled():
+        return None
+    return task.exception()
 
 
 def _flush_expired(receipts, send) -> None:
@@ -389,7 +397,7 @@ class TelegramNode(Node):
     def forward_to_stt(self, text: str, chat_id: Optional[int] = None) -> None:
         if not text:
             return
-        # Issue #1195 — источник реплики: source=telegram + chat_id. v1: dialogue_node
+        # Issue #1195 — источник реплики: source=telegram + chat_id. v1: dialog_node
         # по ним пропускает wake-word gate (сообщение в чат - явное обращение),
         # запоминает чат для эхо-маршрута и НЕ цепляет метку голосовой биометрии.
         # v2 (PR-12a #3706): dialog_node отдаёт реплику не Личности, а телеграм-агенту этого чата.
@@ -597,7 +605,21 @@ class TelegramNode(Node):
             name="telegram-bot",
         ).start()
 
+    def _retry_sleep(self, seconds: float) -> None:
+        """The wait between polling restarts. Tests override this with a no-op."""
+        time.sleep(seconds)
+
     def _run_telegram_loop(self, token: str) -> None:
+        # Issue #5061: the lock is taken BEFORE the loop, so a second
+        # TelegramNode in this container (a check run via ``docker exec``)
+        # dies here and never reaches getUpdates. The live bot keeps the
+        # descriptor open for its whole life.
+        try:
+            self._polling_lock = polling_guard.PollingLock(polling_guard.POLLING_LOCK_PATH)
+            self._polling_lock.acquire()
+        except polling_guard.PollingLockHeld as held:
+            self.get_logger().error(str(held))
+            return
         attempt, delay = 0, 5.0
         while rclpy.ok():
             loop = asyncio.new_event_loop()
@@ -606,14 +628,20 @@ class TelegramNode(Node):
                 loop.run_until_complete(self._run_telegram(token))
                 loop.close()
                 return
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 — any death of polling must retry, not go quiet
                 attempt += 1
-                d = min(delay * attempt, 60.0)
+                d = (
+                    polling_guard.conflict_backoff_s(attempt)
+                    if polling_guard.is_conflict(e)
+                    else min(delay * attempt, 60.0)
+                )
                 self.get_logger().error(
-                    f"Bot crashed ({attempt}): {e}. Retry in {d:.0f}s"
+                    f"{polling_guard.CONFLICT_LOG} (attempt {attempt}, retry in {d:.0f}s)"
+                    if polling_guard.is_conflict(e)
+                    else f"Bot crashed ({attempt}): {e}. Retry in {d:.0f}s"
                 )
                 loop.close()
-                time.sleep(d)
+                self._retry_sleep(d)
 
     async def _run_telegram(self, token: str) -> None:
         app = Application.builder().token(token).build()
@@ -643,9 +671,31 @@ class TelegramNode(Node):
         except Exception as exc:
             self.get_logger().warning(f"start_polling failed: {exc!r}; outer loop will retry")
             raise
+        # Issue #5061: python-telegram-bot swallows Conflict inside its own
+        # polling task and keeps polling a dead session. Watch that task; when
+        # it ends (or ends with Conflict), leave this function so the outer
+        # loop restarts polling instead of sleeping forever on a mute channel.
+        updater_task = getattr(app.updater, "_polling_task", None)
         try:
-            while rclpy.ok():
-                await asyncio.sleep(1.0)
+            if updater_task is None:
+                while rclpy.ok():
+                    await asyncio.sleep(1.0)
+            else:
+                while rclpy.ok() and not await polling_guard.watch_polling(updater_task):
+                    pass
+                if updater_task.done():
+                    # The task ending IS the failure, even with no exception:
+                    # python-telegram-bot swallows TelegramError inside the
+                    # task, so a clean exit still means getUpdates stopped.
+                    # Raising (not returning) makes the outer loop restart it.
+                    conflict = _task_error(updater_task)
+                    if polling_guard.is_conflict(conflict):
+                        self.get_logger().error(polling_guard.CONFLICT_LOG)
+                        raise conflict
+                    self.get_logger().error(
+                        "Telegram polling task ended on its own; restarting so the channel is not left dead"
+                    )
+                    raise RuntimeError("telegram polling task ended")
         finally:
             if self._echo_task is not None:
                 self._echo_task.cancel()

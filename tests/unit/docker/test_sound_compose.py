@@ -60,13 +60,22 @@ def test_voice_stack_lives_on_sound_pi_only() -> None:
 
 
 def test_moved_files_left_vision() -> None:
-    for rel in ("config/voice_assistant", "config/audio", "config/wake_words.yaml",
-                "scripts/voice_assistant", "scripts/supercollider",
-                "scripts/supervisor/start_supervisor.sh",
-                # волна 2 (PR-7): арбитр берёт свой скрипт рядом со start_supervisor.sh
-                "scripts/supervisor/start_arbiter.sh", "scripts/quest/start_quest.sh",
-                "scripts/telegram_bot/start_telegram_bot.sh", "config/telegram_bot/telegram_bot.yaml",
-                "quest/Dockerfile", "quest/Caddyfile", "telegram_bot/Dockerfile"):
+    for rel in (
+        "config/voice_assistant",
+        "config/audio",
+        "config/wake_words.yaml",
+        "scripts/voice_assistant",
+        "scripts/supercollider",
+        "scripts/supervisor/start_supervisor.sh",
+        # волна 2 (PR-7): арбитр берёт свой скрипт рядом со start_supervisor.sh
+        "scripts/supervisor/start_arbiter.sh",
+        "scripts/quest/start_quest.sh",
+        "scripts/telegram_bot/start_telegram_bot.sh",
+        "config/telegram_bot/telegram_bot.yaml",
+        "quest/Dockerfile",
+        "quest/Caddyfile",
+        "telegram_bot/Dockerfile",
+    ):
         assert not (VISION / rel).exists(), f"docker/vision/{rel} вернулся"
         assert (SOUND / rel).exists(), f"docker/sound/{rel} нет"
     # каталоги supervisor/quest/telegram на Vision не должны остаться даже пустыми
@@ -80,8 +89,8 @@ def test_supervisor_shares_state_dir_with_voice_assistant_on_one_node() -> None:
     sup, va = services["supervisor"], services["voice-assistant"]
     assert "./data/voice:/data" in sup["volumes"]
     assert "./data/voice:/data" in va["volumes"]
-    # лицевую базу ТАРС читает только на чтение; пишет её vision-face на Vision Pi
-    assert "./data/faces:/data/faces:ro" in sup["volumes"]
+    # #3655: list_faces зовёт /perception/people; диск лиц в supervisor не монтируем
+    assert all("data/faces" not in str(vol) for vol in sup["volumes"])
     assert sup["container_name"] == "avatar-supervisor"
     # арбитр переехал следом (PR-7), образ и каталог скриптов — те же, что у supervisor;
     # за файлами голосового стека он не ходит
@@ -127,9 +136,7 @@ def test_wave2_quest_is_addressed_by_sound_pi() -> None:
     script = (SOUND / "scripts/quest/start_quest.sh").read_text(encoding="utf-8")
     assert 'QUEST_IP="${QUEST_IP:-10.1.1.12}"' in script
     dockerfile = (SOUND / "quest" / "Dockerfile").read_text(encoding="utf-8")
-    assert "docker/sound/quest/Caddyfile" in dockerfile and "docker/vision" not in dockerfile.replace(
-        "Vision Pi", ""
-    )
+    assert "docker/sound/quest/Caddyfile" in dockerfile and "docker/vision" not in dockerfile.replace("Vision Pi", "")
 
 
 def test_wave2_telegram_bot_reads_host_resources_that_exist_on_sound() -> None:
@@ -139,8 +146,10 @@ def test_wave2_telegram_bot_reads_host_resources_that_exist_on_sound() -> None:
     # Vosk-фолбэк — тот же каталог моделей, что у voice-assistant (Ресурсный пак кладёт его на Sound)
     assert "/opt/rob_box/models:/models:ro" in bot["volumes"]
     assert "/opt/rob_box/models:/models:ro" in _compose(SOUND)["services"]["voice-assistant"]["volumes"]
-    # лицевая база — только чтение (копия-снимок до #3655)
-    assert "./data/faces:/data/faces:ro" in bot["volumes"]
+    # issue #3655: список лиц бот берёт у владельца /perception/people (Vision Pi),
+    # копия-снимок ./data/faces ему больше не монтируется
+    assert not any("/data/faces" in v for v in bot["volumes"])
+    assert not any("/data/faces" in v for v in _compose(SOUND)["services"]["supervisor"]["volumes"])
     assert bot["depends_on"] == ["zenoh-router"]
     template = (SOUND / ".env.secrets.template").read_text(encoding="utf-8")
     assert re.search(r"^TELEGRAM_BOT_TOKEN=", template, re.M)
@@ -170,9 +179,7 @@ def test_sensor_bridge_is_opt_in_and_runs_only_the_bridge_node() -> None:
 
 
 def test_perception_image_has_pyserial() -> None:
-    reqs = (REPO_ROOT / "docker" / "main" / "perception" / "requirements.txt").read_text(
-        encoding="utf-8"
-    )
+    reqs = (REPO_ROOT / "docker" / "main" / "perception" / "requirements.txt").read_text(encoding="utf-8")
     assert re.search(r"^pyserial\b", reqs, re.M), "без pyserial perception_bridge — в stub-режиме"
 
 
@@ -210,6 +217,7 @@ def test_image_versions_files_carry_tags_of_sound_services() -> None:
         assert re.search(r"^PERCEPTION_TAG=\S+$", text, re.M), env
         assert re.search(r"^TELEGRAM_BOT_TAG=\S+$", text, re.M), env
         assert re.search(r"^SUPERVISOR_TAG=\S+$", text, re.M), env
+        assert re.search(r"^QUEST_TAG=\S+$", text, re.M), env
         vision = (VISION / f".image-versions.{env}").read_text(encoding="utf-8")
         for var in ("VOICE_ASSISTANT_TAG", "TELEGRAM_BOT_TAG", "SUPERVISOR_TAG"):
             assert var not in vision, f"vision/.image-versions.{env}: дубль тега {var}"

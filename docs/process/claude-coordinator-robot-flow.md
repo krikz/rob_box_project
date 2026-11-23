@@ -40,7 +40,7 @@ flowchart LR
   H --> I[закрыть issue с evidence]
   I --> J[Build All Services]
   J --> K[Deploy, когда стенд свободен]
-  K --> L[потушить тяжёлые контейнеры, проверить scsynth]
+  K --> L[проверить scsynth]
   L --> M[следующий воркер на свежем develop]
 ```
 
@@ -68,8 +68,7 @@ flowchart LR
 5. **Сборка и деплой** — ручные workflow (`L: Build All Services`, затем
    `L: Deploy and Verify`, параметры — `docs/deployment`). Деплой
    запускается **только на свободном стенде** (§4). После деплоя
-   тяжёлые контейнеры снова гасятся (деплой их поднимает), проверяется
-   `supercollider` и health `voice-assistant`.
+   проверяются `supercollider` и health `voice-assistant`.
 
 Очередь последовательная там, где задачи трогают одни файлы (гармония,
 `compose`, `knowledge`): следующий воркер стартует от develop с
@@ -95,8 +94,6 @@ flowchart LR
 
 ## 4. Правила стенда (робот общий)
 
-- Тяжёлые контейнеры (`oak-d`, `rob-box-quest`, `vision-face`,
-  `vision-hailo`) потушены на время любых музыкальных прогонов.
 - Одна ssh-сессия, без фоновых циклов опроса на роботе.
 - Замок `flock /tmp/music_test.lock` держится на весь прогон.
 - Свободный стенд: нет `/ws/HOTPATCH` в `voice-assistant`, замок

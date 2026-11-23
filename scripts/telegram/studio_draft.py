@@ -22,25 +22,31 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import studio_text as st  # noqa: E402
+import studio_topic as topic  # noqa: E402
 
-# Какой вид факта взять за основу поста. Порядок — по «плотности» события:
-# влитый PR говорит читателю больше, чем закрытый issue.
+# Какой вид факта взять за основу поста, если интерес всех фактов одинаков.
+# Порядок — по «плотности» события: влитый PR говорит читателю больше,
+# чем закрытый issue. Основной выбор делает studio_topic.rank — по интересности.
 KIND_PRIORITY = ("merged_pr", "media", "adr", "decisions", "run", "closed_issue")
 
 
 def pick_fact(facts: list) -> dict:
-    """Выбрать факт-тему для поста."""
-    by_kind = {}
+    """Выбрать факт-тему для поста: интерес решает код (ADR-0148).
+
+    Разбор 13.11 (issue #4702): сессия собрала 44 факта, а пост вышел один и
+    самый скучный — свежая мелкая правка голоса. Тему выбирал «первый в
+    списке» плюс свежесть. Теперь выбор делает studio_topic.rank: вид события,
+    масштаб, интерес читателя, своя графика; свежесть — только последний
+    признак, когда баллы равны.
+
+    Короткое утверждение (<20 знаков) темой быть не может — как и раньше.
+    """
+    ranked = topic.rank(facts)
+    if ranked:
+        return ranked[0]
+    # Ни один факт не годится по длине утверждения — берём первый, как раньше.
     for fact in facts:
-        by_kind.setdefault(fact.get("kind") or "", []).append(fact)
-    for kind in KIND_PRIORITY:
-        for fact in by_kind.get(kind, []):
-            claim = (fact.get("claim") or "").strip()
-            if len(claim) < 20:
-                continue
-            return fact
-    for fact in facts:
-        if len((fact.get("claim") or "").strip()) >= 20:
+        if len((fact.get("claim") or "").strip()) >= topic.MIN_CLAIM_CHARS:
             return fact
     return facts[0] if facts else {}
 
@@ -107,6 +113,9 @@ def build_post(
         "tags": produced.get("tags") or [],
         "media_ref": idea["media_ref"],
         "fact_keys": idea["fact_keys"],
+        # Полный факт — чтобы черновик, на который не ответили, можно было
+        # вернуть в ожидание целиком (claim, source, kind), а не один ключ.
+        "fact_dicts": [fact],
         "show": claim,
         "source": fact.get("source", ""),
         "why": produced.get("why") or "",

@@ -131,15 +131,17 @@ TOOL_CALLED = (
          "📥 Запрос выполнения: register_speaker с параметрами {'name': 'Саша'}")
     + _l("mcp_server", "INFO", "✅ Инструмент register_speaker выполнен успешно")
 )
+# v2-формат голосового ответа (#4354): речь идёт через tts_node, удалённый
+# движок v1 dialogue_node строк «process_input returned» больше не печатает.
+# Квотированный 'speak_text' в мёртвой v1-строке tools=[...] матчился бы
+# ПОСЛЕ 'register_speaker' в той же строке и инвертировал бы discovery-проверку.
 VOICE_ANSWER = _l(
-    "dialogue_node", "INFO",
-    "✅ [turn] process_input returned: spoken='Приятно познакомиться, Саша!'[:60] "
-    "tools=['register_speaker', 'speak_text'] finish_reason='stop'",
+    "tts_node", "INFO",
+    "🔊 TTS: text='Приятно познакомиться, Саша!'",
 )
 VOICE_ANSWER_NO_TOOL = _l(
-    "dialogue_node", "INFO",
-    "✅ [turn] process_input returned: spoken='Понял, не буду настаивать.'[:60] "
-    "tools=['speak_text'] finish_reason='stop'",
+    "tts_node", "INFO",
+    "🔊 TTS: text='Понял, не буду настаивать.'",
 )
 # Ровно строки из issue #2846 (run 35875477264).
 REJECT_NO_CONTEXT = (

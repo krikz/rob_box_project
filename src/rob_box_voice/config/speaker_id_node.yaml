@@ -2,7 +2,7 @@
 #
 # speaker_id_node подписывается на /audio/speech_audio (audio_node), вычисляет
 # d-vector голоса (resemblyzer), идентифицирует говорящего по /data/speakers.db
-# и публикует /voice/speaker/result. dialogue_node использует результат для
+# и публикует /voice/speaker/result. dialog_node использует результат для
 # префикса [Говорит <имя>] / [Говорит: незнакомец] — робот различает
 # собеседников по голосу, а не только по Yandex speaker_tag (который
 # присваивается per-session и не стабилен между сессиями).
@@ -50,7 +50,7 @@ speaker_id_node:
     unnamed_profiles_enabled: true
     unnamed_profiles_max: 20
     # Issue #2440 — harness-БД фактов для склейки профилей через шов
-    # идентичности (тот же файл, что sqlite_db_path у dialogue_node).
+    # идентичности (тот же файл, что sqlite_db_path у dialog_node).
     memory_db_path: "/data/harness_voice.db"
     # Issue #2751 — второй писатель фактов (MCP memory_save, таблица
     # voice_facts) — merge() переносит и их, см. docstring
@@ -65,7 +65,7 @@ speaker_id_node:
     # Issue #2750 — переключатель боевая/E2E БД (см. e2e_db_path выше).
     # false — дефолт мастерской. Меняется на роботе ТОЛЬКО E2E-харнессом:
     # ros2 param set /speaker_id_node e2e_mode true|false (тот же приём,
-    # что e2e_session_reset_token у dialogue_node). Ручной ssh cp+DELETE FROM по
+    # что e2e_session_reset_token у dialog_node). Ручной ssh cp+DELETE FROM по
     # боевой speakers.db, который этот параметр заменяет, — issue #2750.
     e2e_mode: false
     # Issue #2885 — прогрев resemblyzer в фоне сразу после старта ноды.

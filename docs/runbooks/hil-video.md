@@ -93,7 +93,7 @@ ssh ros2@10.1.1.250 'grep -E "GOAL_END|RECOV|EM_ON|TIMEOUT" /home/ros2/rob_box_h
 
 Подводные камни:
 
-- Печать через `| grep > файл` буферизуется: нужен `grep --line-buffered` (в скрипте есть).
+- Код выхода `runvideo.sh` — код `route.py`. Нет `GOAL_START` в логе (ошибка, пустые цели, падение до первой цели) — строка `ERROR before GOAL_START` и ненулевой код: раньше пайп в `grep` отдавал 0. `ROUTE_LOG` (пусто — общий `out/route.log`) и `out/route.log` пишутся одним логом.
 - `sandbox_prep.sh` не падает на файлах root в `out/` (контейнеры пишут туда от root): CRLF-шаг (`fix_crlf.sh`)
   обходит `out*` и `fuel`, и шаги 4–5 (Depot, `patch_compose.py`) выполняются.
 - Остановить прогон: `docker exec rob-box-hil-gazebo pkill -f /route.py`. **Не** `pkill -f runvideo.sh` через
@@ -176,6 +176,97 @@ ssh ros2@10.1.1.250 'grep -E "PLAN|UNREACHABLE|GOAL_END|EM_ON|COVERAGE_" /home/r
 - Строка `PLAN`: `turn_clearance`, `min_turn_clear_m` (самая тесная поза разворота до занятого — должна быть
   ≥ `turn_clearance`), `lanes_dropped_no_turn` (строки без места разворота), `clipped_m` (срезано с концов
   полос), `cross_lanes`.
+
+### 3b. Первая ошибка PathCalc в M1 (#4682) [код; живой HIL ещё не прогонялся]
+
+Это отдельное измерение глобального планирования, а не полный маршрут. Скорости, таймаут цели `route.py`,
+speed zones и DWB critics не меняются. Нужен diagnostic NavFn 1.1.20
+(`a097086719c88f781aa59788eca29ac6ca5e56db`) с failure-only binary snapshot и тем же gradient-origin patch,
+который собирается в production-образ; diagnostic библиотека собирается отдельно. Snapshot patch и writer лежат
+в `scripts/hil/diagnostics/`; весь Nav2 в репозиторий не копируется. Путь к ARM64-библиотеке передаётся явно;
+baseline без `static_layer`.
+
+```bash
+# Один раз в свежем внешнем workspace на Main; каталог не должен существовать.
+export PATHCALC_DIAG_WS=/home/ros2/rob_box_hil/nav2_diag_4682_snapshot
+bash scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh
+
+# Только после выделения HIL-окна координатором. Сценарий сам делает on/off для каждой попытки.
+export PATHCALC_OUT="$PWD/.tmp/depot-route-4682/pathcalc_$(date -u +%Y%m%dT%H%M%SZ)"
+export PATHCALC_DIAG_LIB="$PATHCALC_DIAG_WS/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so"
+bash scripts/hil/diagnostics/run_depot_pathcalc.sh
+```
+
+Сценарий делает **не более трёх** свежих M1. Перед каждой целью `ros2 lifecycle get` должен вернуть
+`active [3]` для `bt_navigator`, `planner_server`, `controller_server` и `smoother_server`; иначе M1 и bag не
+запускаются, сохраняются lifecycle/service raw, вердикт `LIFECYCLE_NOT_ACTIVE`, выход 33. Это отдельный
+startup/lifecycle класс. При повторном lifecycle abort сначала проверить доступность `change_state`; перезапускать
+можно только lifecycle manager, не отправляя цель неактивной ноде и не смешивая этот сбой с PathCalc.
+
+На первом `Failed to create a plan from potential` сценарий останавливает `route.py`, затем до cleanup забирает
+`pathcalc_snapshot.bin`: versioned little-endian scalar header, внутренние `costarr/potarr` и полные `pathx/pathy`.
+Producer пишет только на исчерпании `calcPath`, через `.tmp` и atomic rename до следующего `setNavArr`; успешный путь
+файла не создаёт. В пределах попытки действует first-write-wins, stale final удаляется перед следующей M1. Runner
+требует успешный remote rc и проверяет magic/version/точную длину по `nx/ny/npath`; отсутствующий или повреждённый
+snapshot — `PATHCALC_SNAPSHOT_CAPTURE_FAILED`, выход 41. Затем сохраняются Nav2 raw, `calcPath_error.log`,
+`/evaluation` и остальной bag, а также `get_costmap_error.log` с UTC/ROS timestamps запроса и ответа. Маршрут не
+продолжается. `EVIDENCE_CAPTURED` (выход 0) означает только полученную диагностику, не route PASS. Если ошибки нет в
+трёх попытках — `EVIDENCE_INSUFFICIENT recurrences=0/3`, выход 4; это не PASS и не доказательство исправления.
+Ошибка снятия costmap — выход 40, тоже не evidence PASS.
+
+Каждая попытка и любой выход после `on` проходят финальный gate: `hil.sh off`, отсутствие `/tmp/hil.lock` и
+Gazebo, удаление временного compose/start overlay, `NAV2_PARAMS_OVERLAYS` и `USE_SIM_TIME=true` отсутствуют в
+production `nav2`, а `hil_off.log` подтверждает неизменный боевой `SELECT * FROM maps`. Нарушение даёт
+`CLEANUP_FAILED`, выход 50, даже если PathCalc пойман. Существующий чужой lock до `on` — выход 20 без `pkill`,
+`off` или отправки цели. Артефакты каждой попытки лежат в `$PATHCALC_OUT/<run_id>_rN/`, общий вердикт — в
+`$PATHCALC_OUT/verdict.log`.
+
+R5 сюда не входит: финальный yaw разбирается отдельно по последним 20 с `/cmd_vel` и `Oscillation` scores, без
+смешивания с global-planning классом M1/M4/R3/R4.
+
+### 3c. Такт принятия M1 контроллером Nav2 (#4682)
+
+Для повтора с отсоединённым входом yaw можно записать оба аргумента фактического вызова
+`goal_checker` при успехе. Патч добавляет журнал в `controller_server` и сохраняет результат
+проверки позы. Дедлайн M1 остаётся 200 с симуляции.
+
+```bash
+# На хосте с тем же образом и архитектурой, что у Nav2 на Main. Заполнить новый внешний каталог.
+M1_GOAL_PROBE_IMAGE="$(docker inspect -f '{{.Image}}' nav2)" \
+M1_GOAL_PROBE_DIR="$HOME/rob_box_hil/m1-goal-probe" bash scripts/hil/diagnostics/build_nav2_goal_check.sh
+
+# На хосте запуска HIL нужны libcontroller_server_core.so, nav2_image_id и probe.sha256.
+# Запускаем только в согласованное HIL-окно.
+export M1_REPEAT_OUT="$HOME/rob_box_hil/m1-$(date -u +%Y%m%dT%H%M%SZ)"
+M1_GOAL_PROBE_DIR="$HOME/rob_box_hil/m1-goal-probe" M1_YAWATGOAL_ISOLATE=1 \
+M1_REPEAT_SHORT_CIRCUIT=false M1_REPEAT_TRANS_STOPPED=0.03 \
+    bash scripts/hil/repeat/run_m1_repeat.sh
+
+# В окружении ROS2 Humble с сообщениями, после off. /run содержит артефакты попытки.
+docker run --rm --network none --entrypoint /bin/bash \
+    -v "$M1_REPEAT_OUT:/run:ro" -v "$PWD/scripts/hil/diagnostics:/diag:ro" rob_box_sim:hil \
+    -c 'source /opt/ros/humble/setup.bash && python3 /diag/compare_goal_check.py /run' \
+    >"$M1_REPEAT_OUT/goal_check_comparison.json"
+```
+
+До цели runner проверяет активный `controller_server`, образ, SHA библиотеки внутри контейнера,
+маркер активации и граф `/cmd_vel_yaw`. Библиотека монтируется только в HIL под своим замком.
+`goal_check_reached.log` содержит входные позы, TF-кадры, их метки и скорости. `params_values.txt`
+хранит живые допуски и `stateful`. Если контроллер нигде не принял цель, runner пишет
+`GOAL_CHECK_TRACE_NO_REACH`, а исход маршрута берётся из `route.log`.
+
+Разбор сопоставляет GT по заголовкам симуляции с двумя моментами, тактом решения и меткой
+позы, которую получил Nav2. Пустой отсчёт означает, что среди записей в пределах ±4 с по
+времени получения нет метки симуляции ближе 100 мс. Ошибка GT считается до исходной цели в
+`route.log`. Команды привода показываются по времени получения в bag.
+
+`--goal NAME` (по умолчанию `M1`) читает `GOAL_START`/`GOAL_END` любой цели маршрута.
+К старым полям добавляются `goal_end_sim`, `goal_end_result`, `goal_end_err`,
+`goal_end_wall_ns` и GT через 0.5 и 1.5 с после `GOAL_END` (`gt_500ms_after_goal_end`,
+`gt_1500ms_after_goal_end`). Wall `GOAL_END` — метка решения плюс разница sim; sim в
+`route.log` квантован по 10 мс (`goal_end_wall_precision_ms`). Нет строки `GOAL_END` —
+эти поля null, без падения. Окно GT в мешке: wall−4 с .. wall решения +6 с. Команды
+привода по-прежнему −0.3..+0.6 с.
 
 ## 4. Запись видов
 

@@ -22,13 +22,13 @@ from typing import Any, Callable, Dict, List, Optional
 from .face_collage import TARGET_MARK, Tile, build_collage
 from .face_misses import MissJournal, default_journal_path
 from .face_merge import MERGE_MAX, SIMILAR_K_MAX, merge_people, similar_people
-from .face_store import MODE_EXHIBITION, FaceStore, best_snapshot_bytes
+from .face_store import MODE_EXHIBITION, FaceStore, best_snapshot_bytes, card_snapshot_bytes
 
 #: Потолок снимка в ответе: байты идут через zenoh между Pi, большое пережимается на Vision.
 PHOTO_MAX_BYTES = 200 * 1024
 
 #: Значения ``People.srv`` ``op`` (зеркало констант .srv: модуль не импортирует ROS-типы).
-OP_LIST, OP_PHOTO, OP_SET_NAME, OP_SIMILAR, OP_MERGE, OP_COLLAGE = 0, 1, 2, 3, 4, 5
+OP_LIST, OP_PHOTO, OP_SET_NAME, OP_SIMILAR, OP_MERGE, OP_COLLAGE, OP_CARD = 0, 1, 2, 3, 4, 5, 6
 
 #: Фильтр списка - перечисление, а не свободный текст.
 FILTERS = ("all", "unnamed", "today")
@@ -43,6 +43,7 @@ _ID_RE = re.compile(r"[0-9a-f][0-9a-f\-]{7,35}")
 REASONS = (
     "bad_filter", "bad_id", "bad_name", "person_not_found", "ambiguous_id", "exhibition_mode", "no_snapshot",
     "bad_op", "store_error", "bad_ids", "same_person", "merge_failed", "collage_failed", "no_collage",
+    "ambiguous_name", "no_card",
 )
 #: Сколько последних коллажей держит владелец (по одному на искомое лицо): бот забирает картинку отдельным
 #: запросом ``OP_COLLAGE``, и это ровно тот коллаж, номера которого получил тул (пересчёт дал бы другой порядок).
@@ -139,6 +140,8 @@ class PeopleService:
             return self._similar(person_id)
         if op == OP_COLLAGE:
             return self._collage(person_id)
+        if op == OP_CARD:
+            return card_reply(self._store, person_id)  # функция модуля: класс не раздуваем (class_budget)
         if op == OP_MERGE:
             return self._merge(person_id, filter)  # id источников - в поле ``filter`` (через запятую), .srv не меняем
         return _refuse("bad_op")
@@ -262,6 +265,64 @@ class PeopleService:
                                 "merged_ids": [i[:8] for i in outcome.merged_ids]})
 
 
+def _card_head(store: FaceStore, full: str) -> Dict[str, Any]:
+    """Сводка карточки из записи владельца: бот строит подпись по ней, не по диску."""
+    person = next((p for p in store.people() if p["person_id"] == full), {})
+    ts = float(person.get("last_encounter_ts") or 0.0)
+    return {
+        "id": full[:8],
+        "name": person.get("name"),
+        "epithet": person.get("epithet"),
+        "encounters": int(person.get("encounter_count") or 0),
+        "last_encounter": _iso(ts),
+        "last_encounter_ts": ts,
+        "has_snapshot": bool(person.get("has_snapshot")),
+    }
+
+
+def _resolve_card(store: FaceStore, query: str) -> "str | Reply":
+    """Полный id карточки: hex — как у снимка; иначе точное имя без регистра (так ``/face`` принимает оба)."""
+    q = (query or "").strip()
+    if _ID_RE.fullmatch(q.lower()):
+        found = [p["person_id"] for p in store.people() if str(p["person_id"]).startswith(q.lower())]
+        if not found:
+            return _refuse("person_not_found")
+        if len(found) > 1:
+            return _refuse("ambiguous_id")
+        return str(found[0])
+    if not q:
+        return _refuse("bad_id")
+    named = [p["person_id"] for p in store.people() if (p.get("name") or "").casefold() == q.casefold()]
+    if not named:
+        return _refuse("person_not_found")
+    if len(named) > 1:
+        return _refuse("ambiguous_name")
+    return str(named[0])
+
+
+def card_reply(store: FaceStore, query: str) -> Reply:
+    """Коллаж снимков одного лица (``OP_CARD``): байты владельца, не путь и не коллаж «похожих».
+
+    Нет ни одного снимка — ``no_snapshot`` и пустой jpeg (сводка в data всё же есть: бот строит отказ из причины,
+    картинку не выдумывает). Собрать сетку не вышло — ``no_card``. Режим выставки снимки наружу не отдаёт.
+    """
+    if store.mode == MODE_EXHIBITION:
+        return _refuse("exhibition_mode")
+    full = _resolve_card(store, query)
+    if isinstance(full, Reply):
+        return full
+    head = _card_head(store, full)
+    shots = card_snapshot_bytes(store, full)
+    if not shots:
+        return Reply(False, "no_snapshot", head)
+    tiles = [Tile(str(n), full[:8], None, raw) for n, raw in enumerate(shots, 1)]
+    jpeg = fit_jpeg(build_collage(tiles) or b"")
+    if not jpeg:
+        return Reply(False, "no_card", head)
+    head["size"] = len(jpeg)
+    return Reply(True, "", head, jpeg)
+
+
 def serve(service: PeopleService, request: Any, response: Any) -> Any:
     """Колбэк ROS-сервиса ``People``: запрос -> :meth:`PeopleService.handle` -> поля ответа. Исключение хранилища -
     отказ ``store_error``, а не тишина клиента."""
@@ -275,6 +336,6 @@ def serve(service: PeopleService, request: Any, response: Any) -> Any:
     return response
 
 
-__all__ = ["FILTERS", "LIST_MAX", "NAME_MAX", "OP_COLLAGE", "OP_LIST", "OP_MERGE", "OP_PHOTO", "OP_SET_NAME", "OP_SIMILAR",
-           "PeopleService", "REASONS", "Reply",
-           "PHOTO_MAX_BYTES", "day_start", "fit_jpeg", "serve", "valid_name"]
+__all__ = ["FILTERS", "LIST_MAX", "NAME_MAX", "OP_CARD", "OP_COLLAGE", "OP_LIST", "OP_MERGE", "OP_PHOTO",
+           "OP_SET_NAME", "OP_SIMILAR", "PeopleService", "REASONS", "Reply",
+           "PHOTO_MAX_BYTES", "card_reply", "day_start", "fit_jpeg", "serve", "valid_name"]

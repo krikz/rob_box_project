@@ -20,12 +20,19 @@ bt_navigator:
     groot_zmq_server_port: 1667
     default_nav_to_pose_bt_xml: "/config/nav2/behavior_trees/navigate_to_pose_w_replanning.xml"
     default_nav_through_poses_bt_xml: "/config/nav2/behavior_trees/navigate_through_poses.xml"
+    # #4607: порог «впереди стена» для corner_backup.corner_escape. Тот же stop_m,
+    # что у proximity (0.20 м в коридоре хода) и coverage_plan.GUARD_STOP_M.
+    # Не отдельная константа угла. В BT не читается: Humble не знает Script,
+    # recovery NavigateToPose — прежний Spin (прогон 18:47Z).
+    backup_stop_m: 0.20
     plugin_lib_names:
     - nav2_compute_path_to_pose_action_bt_node
     - nav2_compute_path_through_poses_action_bt_node
     - nav2_smooth_path_action_bt_node
     - nav2_follow_path_action_bt_node
     - nav2_spin_action_bt_node
+    # #4475: WouldSpinOnStall — угол разворота до свободного курса (free_spin).
+    - rob_box_would_spin_on_stall_bt_node
     - nav2_wait_action_bt_node
     - nav2_back_up_action_bt_node
     - nav2_drive_on_heading_bt_node
@@ -82,10 +89,18 @@ controller_server:
       required_movement_radius: 0.08  # Increased from 0.05 - more relaxed progress check
       movement_time_allowance: 30.0  # Increased from 20.0 - more time for smoother motion
     general_goal_checker:
-      stateful: true
+      # Humble 1.1.20 SimpleGoalChecker: stateful защёлкивает check_xy_ и не
+      # сбрасывает при уходе за xy (isGoalReached). reset() только на новый path.
+      # Depot M1 18.11: заход в 0.25 м ~0.6 с, уход до 0.486 м, yaw 10.7° внутри
+      # 0.20 рад → STATUS_SUCCEEDED. xy_goal_tolerance_buffer в Humble нет.
+      # false = xy и yaw одновременно (компромисс: осцилляция у цели, Nav2 #5166).
+      stateful: false
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25  # Increased from 0.15 - don't overshoot trying to be too precise
-      yaw_goal_tolerance: 0.20  # Increased from 0.15 (~11 deg) - smoother final rotation
+      # 0.22, не 0.30: чекер останавливает по своей оценке, а истина = оценка + дрейф.
+      # Планка по истине 0.35 рад (d-20261120-depot-gt-032-035), наблюдаемый дрейф курса
+      # до 0.11 рад (Gate 2, 60 целей): 0.22 + 0.11 ≈ 0.33 < 0.35. xy не сужаем.
+      yaw_goal_tolerance: 0.22
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
       debug_trajectory_details: true
@@ -133,8 +148,12 @@ controller_server:
       # Курс по пути перед проёмом (HIL 05.11): при 24 / 0.15 DWB подводил корпус к проёму
       # 0.8–0.9 м наискось (до 21°), защита стопила по косяку. 48 / 0.325 (дефолт Nav2) —
       # точка на пути дальше носа, корпус входит по оси.
+      # forward_point_distance 0.325 → 0.20 (Г1, решение Шифу 10.11): «нос» PathAlign
+      # (конец траектории + 0.20) уходит внутрь допуска цели 0.25 и барьер стоянки у
+      # черты 0.325 исчезает (было 1–51 с, HIL 10.11, research/2026-11-05 §13).
+      # Риск входа в проём наискось проверен регрессом polygon/dead_end/turn90 в HIL.
       PathAlign.scale: 48.0
-      PathAlign.forward_point_distance: 0.325
+      PathAlign.forward_point_distance: 0.20
       GoalAlign.scale: 12.0  # Avoid in-place pre-alignment far away from the goal
       GoalDist.scale: 20.0
       PathDist.scale: 32.0  # было 25: ближе к линии пути (она идёт по центру проёма)
@@ -151,8 +170,15 @@ local_costmap:
       width: 5
       height: 5
       resolution: 0.05
-      transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
-      tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
+      transform_tolerance: 1.0  # #5151: таймаут MessageFilter costmap (obstacle_layer.cpp, 7-й аргумент), не кэш TF.
+      # Живой замер 23.11: лаг дропа min 1.00027 с при этом значении; скан отстаёт на 5–10 мс.
+      # Поднимать без новой гистограммы нельзя: 1.0 уже сидит на границе таймаута.
+      # #5151: ключ мёртвый. Costmap2DROS пина a0970867 объявляет только transform_tolerance
+      # (costmap_2d_ros.cpp:98,150) и строит буфер без cache_time (costmap_2d_ros.cpp:181) —
+      # дефолт tf2 humble, 10 с (buffer_core.hpp). ros2 param get → Parameter not set.
+      # Поддержку в код не добавлять (решение Шифу 23.11). Ключ оставлен: его удаление
+      # yaml «для порядка» дроп не чинит, дроп сидит на transform_tolerance.
+      tf_buffer_duration: 30.0
       # Габарит — прямоугольник по замеру рулеткой (Шифу 04.11): 0.61 м вдоль хода,
       # 0.605 м поперёк. Совпадает с мешем base_link.stl (x −0.3036…+0.3064,
       # y ±0.303): центр корпуса смещён от base_footprint вперёд на 1.4 мм.
@@ -216,8 +242,15 @@ global_costmap:
       footprint: "[[0.3064, 0.3025], [0.3064, -0.3025], [-0.3036, -0.3025], [-0.3036, 0.3025]]"
       footprint_padding: 0.03  # как у local_costmap
       resolution: 0.05
-      transform_tolerance: 1.0  # Increased from 0.5 — LiDAR scans can be ~0.83s behind TF after restart
-      tf_buffer_duration: 30.0  # Keep TF history 30s — prevents drops when TF buffer is fresh after restart
+      transform_tolerance: 1.0  # #5151: таймаут MessageFilter costmap (obstacle_layer.cpp, 7-й аргумент), не кэш TF.
+      # Живой замер 23.11: лаг дропа min 1.00027 с при этом значении; скан отстаёт на 5–10 мс.
+      # Поднимать без новой гистограммы нельзя: 1.0 уже сидит на границе таймаута.
+      # #5151: ключ мёртвый. Costmap2DROS пина a0970867 объявляет только transform_tolerance
+      # (costmap_2d_ros.cpp:98,150) и строит буфер без cache_time (costmap_2d_ros.cpp:181) —
+      # дефолт tf2 humble, 10 с (buffer_core.hpp). ros2 param get → Parameter not set.
+      # Поддержку в код не добавлять (решение Шифу 23.11). Ключ оставлен: его удаление
+      # yaml «для порядка» дроп не чинит, дроп сидит на transform_tolerance.
+      tf_buffer_duration: 30.0
       track_unknown_space: true
       # Rolling window mode для работы без статической карты
       # Размер 50x50м покрывает типичную область работы робота
@@ -259,6 +292,12 @@ planner_server:
       plugin: "nav2_navfn_planner/NavfnPlanner"
       tolerance: 0.5
       use_astar: true
+      # true остаётся: false в Humble NavFn режет unknown как lethal и не
+      # дотягивает цель внутри tolerance, если вокруг неё ещё нет свободной
+      # клетки — робот не стартует в ещё не виденное. Сквозь стену, которую
+      # лидар уже пометил (хвост в 255 за cost≥253, или lethal), план не
+      # отдаётся: NavfnPlanner::pathTailBlocked кидает отказ, action ABORT,
+      # /plan не публикуется (#4694). track_unknown_space карты не выключать.
       allow_unknown: true
 
 smoother_server:
@@ -302,6 +341,12 @@ behavior_server:
     # и ICP. Ложных отказов больше не станет: симуляция обрезается остатком угла
     # (Spin) или пути (BackUp), отказ = столкновение в пределах самой команды.
     simulate_ahead_time: 2.0
+    # #5003: копия costmap_raw публикуется на 2 Гц (local_costmap.publish_frequency),
+    # а BackUp тикает на 10 Гц. Тик в десятки миллисекунд после очистки читал
+    # копию со стеной и отменял BackUp строкой «Collision Ahead». Копия старше
+    # этого допуска не решает столкновение: тик пропускается (до 3 раз), дальше
+    # проверка закрывается отказом. Число живёт здесь, код его читает (ADR-0148).
+    costmap_freshness_tolerance: 0.6
     max_rotational_vel: 0.6  # Original value from e367f09
     min_rotational_vel: 0.2  # Allow slow spins
     rotational_acc_lim: 0.6  # Original value from e367f09, match DWB

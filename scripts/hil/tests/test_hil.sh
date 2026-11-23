@@ -15,6 +15,14 @@
 #      из .env Main Pi; Zenoh-endpoint'ы с #iface;
 #   4. on при существующем замке — отказ, моторы не трогаются;
 #   5. on, если в графе два /controller_manager — сим гасится, выход 1;
+#   5b. on, если у /diff_drive_controller/cmd_vel_unstamped два подписчика (§5.1) —
+#      сим гасится, выход 1;
+#   5c. таймаут /controller_manager (#5138): три разные причины и сырьё в выводе —
+#      (а) контейнер перезапускался, (б) жив, но нет ни /clock, ни /sim/ground_truth/odom,
+#      (в) модель есть (/clock и ground_truth), а /diff_drive_controller/odom нет.
+#      Голого /odom в симе нет — фейк его не кормит, иначе тест проверяет фикстуру, не граф.
+#   5d. проба не ответила / контейнер не стартовал / compose завис на Creating —
+#      у каждой своя строка; после отказа гейта робот возвращён в бой, на успехе off не звался;
 #   6. off: сим гаснет ДО возврата ros2-control; замок снимается последним;
 #   7. scripts/deploy/check_hil_lock.sh: свободно / замок / нет ответа;
 #   8. реестр карт и точек (#4392): on снимает снапшот боевого maps и пересоздаёт
@@ -22,7 +30,11 @@
 #      и сверяет maps со снапшотом (изменился — выход 3 и diff); плохой HIL_WAYPOINT_DB —
 #      отказ до ssh; HIL_PROD_TOOLS_DB = rob_box_core.tools_db.TOOLS_DB_DEFAULT;
 #      шаг замка в деплое стоит до первой остановки контейнеров, update_and_restart.sh
-#      проверяет замок до `down`.
+#      проверяет замок до `down`;
+#   9. e2e-режим робота (#4686): on читает e2e_mode /speaker_id_node read-only пробой
+#      до любых записей на Pi — продолжает ТОЛЬКО по достоверному false; true, пустой/
+#      битый ответ и ненулевая проба — отказ без lock/motor/compose и без «cat >» на Pi;
+#      off только предупреждает — restore возвращает моторы, его не блокируем.
 #
 # Запуск: bash scripts/hil/tests/test_hil.sh
 
@@ -47,7 +59,8 @@ check() { if eval "$2"; then ok "$1"; else ko "$1"; fi; }
 
 # ── 1. синтаксис ──────────────────────────────────────────────────────────
 for f in scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf \
-         scripts/hil/video/fix_crlf.sh scripts/hil/video/runvideo.sh scripts/hil/video/runcoverage.sh scripts/hil/video/sandbox_prep.sh \
+         scripts/hil/video/fix_crlf.sh scripts/hil/video/runvideo.sh scripts/hil/video/runcoverage.sh \
+         scripts/hil/video/sandbox_prep.sh scripts/hil/video/run_depot.sh \
          scripts/hil/building/run_building.sh scripts/hil/building/building_remote.sh \
          scripts/deploy/check_hil_lock.sh docker/sim/hil_run.sh docker/main/update_and_restart.sh; do
     if bash -n "$REPO_ROOT/$f"; then ok "bash -n $f"; else ko "bash -n $f"; fi
@@ -64,6 +77,13 @@ done
 host="$1"; shift
 echo "$host|$*" >> "$FAKE_SSH_LOG"
 [ -n "${FAKE_SSH_DOWN:-}" ] && [ "$host" = "$FAKE_SSH_DOWN" ] && exit 255
+# hil.sh on читает копию Compose до подъёма Gazebo (гейт Depot, #4694).
+case "$*" in
+    *"cat '"*"compose.hil.yaml'"*)
+        [ -f "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml" ] || exit 1
+        cat "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml"
+        exit 0 ;;
+esac
 exec bash -c "$*"
 EOF
 cat > "$WORK/bin/docker" <<'EOF'
@@ -72,28 +92,86 @@ cat > "$WORK/bin/docker" <<'EOF'
 echo "docker $*" >> "$FAKE_DOCKER_LOG"
 S="$FAKE_STATE"
 st() { cat "$S/$1" 2>/dev/null || echo "${FAKE_DEFAULT_STATUS:-running}"; }
-last() { local a; for a; do :; done; printf '%s' "$a"; }
+last() { printf '%s' "${@: -1}"; }
 case "$1" in
     stop) echo exited > "$S/$(last "$@")" ;;
+    rm) rm -f "$S/$(last "$@")" ;;
     inspect)
         name=$(last "$@")
+        # bare docker inspect (без -f): JSON для hil.sh off (#5170).
+        # Health — только файл $S/$name.health. Нет файла = нет HEALTHCHECK.
+        _fmt=0
+        for _a in "$@"; do [ "$_a" = -f ] && _fmt=1; done
+        if [ "$_fmt" = 0 ]; then
+            # FAKE_INSPECT_BLANK — inspect молчит (контейнер уже мёртв, #5138).
+            # Пустой ответ — не absent: absent только явный Status=absent.
+            if [ -n "${FAKE_INSPECT_BLANK:-}" ] && [ "$name" = "${SIM_PREFIX:-t-hil}-gazebo" ]; then echo; exit 1; fi
+            # Файла нет — контейнер ещё не создан фейком, не «absent».
+            # absent только явный Status=absent. Иначе on до compose up пишет ложный absent.
+            [ -f "$S/$name" ] || { printf '{"Name":"/%s","State":{"Status":"%s","StartedAt":"%s"}}\n' "$name" "$(st "$name")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; exit 0; }
+            _st=$(st "$name")
+            _started=$(cat "$S/$name.started" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+            if [ -f "$S/$name.health" ]; then
+                printf '{"Name":"/%s","State":{"Status":"%s","StartedAt":"%s","Health":%s}}\n' \
+                    "$name" "$_st" "$_started" "$(cat "$S/$name.health")"
+            else
+                printf '{"Name":"/%s","State":{"Status":"%s","StartedAt":"%s"}}\n' \
+                    "$name" "$_st" "$_started"
+            fi
+            exit 0
+        fi
         case "$*" in
             *"State.Status}} {{.State.ExitCode"*)
                 [ -f "$S/$name" ] || { [ -n "${FAKE_INSPECT_BLANK:-}" ] && echo; exit 1; }; echo "$(cat "$S/$name") 0" ;;
+            *"RestartCount="*)
+                # #5138: сырьё гейта. FAKE_INSPECT_BLANK — inspect молчит (контейнер уже мёртв).
+                # FAKE_GZ_STATUS/EXIT/RESTART/STARTED перебивают файл состояния.
+                [ -n "${FAKE_INSPECT_BLANK:-}" ] && { echo; exit 1; }
+                [ -f "$S/$name" ] || { echo; exit 1; }
+                echo "Status=${FAKE_GZ_STATUS:-$(cat "$S/$name")} RestartCount=${FAKE_GZ_RESTART:-0} StartedAt=${FAKE_GZ_STARTED:-2026-11-22T19:36:19Z} ExitCode=${FAKE_GZ_EXIT:-0}" ;;
             *"State.Status"*) echo "$(st "$name")" ;;
             *"State.Running"*) [ "$(st "$name")" = running ] && echo true || echo false ;;
             *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"
                             [ -f "$S/$name.wpdb" ] && echo "WAYPOINT_DB_PATH=$(cat "$S/$name.wpdb")"; echo PATH=/x ;;
+            *"join .Args"*) [ -f "$S/$name.args" ] && cat "$S/$name.args" || true ;;
+            *".Mounts"*) [ -f "$S/$name.mounts" ] && cat "$S/$name.mounts" || true ;;
+            *".Image"*) [ -f "$S/$name.image" ] && cat "$S/$name.image" || echo sha256:fake ;;
         esac ;;
     image) exit 0 ;;
-    logs) echo "fake logs" ;;
+    logs) printf '%s\n' "${FAKE_GZ_LOGS:-fake gazebo log line}" ;;
     exec)
         case "$*" in
             *"python3 -c"*)  # maps-dump: боевой maps — файл $FAKE_STATE/prod_maps; нет файла — sqlite падает
                 [ "$(last "$@")" = "${FAKE_PROD_DB:-/data/voice_memory.db}" ] || exit 1
                 [ -f "$S/prod_maps" ] || exit 1
                 cat "$S/prod_maps" ;;
-            *) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
+            *"e2e_mode"*)  # эмулирует удалённый скрипт пробы (#4686): raw-вывод узла
+                # FAKE_E2E_MODE → true|false; пусто/бито — exit 9; __PROBE_FAIL__ — rc≠0.
+                raw="${FAKE_E2E_MODE-unset}"
+                [ "$raw" = unset ] && raw='Boolean value is: False'
+                [ "$raw" = "__PROBE_FAIL__" ] && exit 3
+                out=$(printf '%s\n' "$raw" | grep -aoE 'Boolean value is: (True|False)' | tail -1)
+                [ -n "$out" ] || exit 9
+                case "$out" in *True*) printf true ;; *) printf false ;; esac ;;
+            *"cat "*) [ -f "${FAKE_GAZEBO_SDF:-}" ] && cat "$FAKE_GAZEBO_SDF" || true ;;
+            *"topic list"*)  # #5138: список топиков сима (FAKE_TOPICS, по строке; __NONE__ — пусто)
+                [ -n "${FAKE_TOPIC_HANG:-}" ] && sleep "$FAKE_TOPIC_HANG"
+                case "${FAKE_TOPICS-__DEFAULT__}" in
+                    # Реальный граф сима (#5138): /clock, мост /sim/ground_truth/odom,
+                    # контроллер /diff_drive_controller/odom. Голого /odom в симе нет.
+                    __DEFAULT__) printf '%s\n' /clock /sim/ground_truth/odom /diff_drive_controller/odom ;;
+                    __NONE__) ;;
+                    *) printf '%s\n' "$FAKE_TOPICS" ;;
+                esac ;;
+            *"topic info"*)  # §5.1: Subscription count cmd_vel_unstamped (FAKE_CMD_VEL_SUBS, умолч. 1)
+                [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
+                echo "Type: geometry_msgs/msg/Twist"
+                echo "Publisher count: 1"
+                echo "Subscription count: ${FAKE_CMD_VEL_SUBS:-1}" ;;
+            *)  # счёт /controller_manager. FAKE_CM_HANG — проба не отвечает (зависший exec, #5138).
+                [ -n "${FAKE_CM_HANG:-}" ] && sleep "$FAKE_CM_HANG"
+                [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
+                echo "${FAKE_CM:-1}"; echo /controller_manager ;;
         esac ;;
     ps)
         case "$*" in
@@ -114,10 +192,19 @@ case "$1" in
             esac
         done
         if [ "$sim" = 1 ]; then
-            if [ "$verb" = up ]; then echo running > "$S/${SIM_PREFIX}-gazebo"; else rm -f "$S/${SIM_PREFIX}-gazebo"; fi
+            if [ "$verb" = up ]; then
+                # FAKE_COMPOSE_CREATED: compose завис на Creating — контейнер создан, не запущен, up падает.
+                if [ -n "${FAKE_COMPOSE_CREATED:-}" ]; then echo created > "$S/${SIM_PREFIX}-gazebo"; exit 1; fi
+                # FAKE_COMPOSE_STAYS_CREATED: up «прошёл», но контейнер так и остался Created.
+                if [ -n "${FAKE_COMPOSE_STAYS_CREATED:-}" ]; then echo created > "$S/${SIM_PREFIX}-gazebo"; exit 0; fi
+                echo running > "$S/${SIM_PREFIX}-gazebo"
+            elif [ "$(cat "$S/${SIM_PREFIX}-gazebo" 2>/dev/null)" = created ]; then
+                : # down не снимает Created: контейнер, не дошедший до старта, остаётся (#5138)
+            else rm -f "$S/${SIM_PREFIX}-gazebo"; fi
         elif [ "$verb" = up ]; then
             for s in "${svcs[@]}"; do
                 if [ -f "$S/$s.broken" ]; then echo restarting > "$S/$s"; else echo running > "$S/$s"; fi
+                if [ ! -f "$S/$s.started" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > "$S/$s.started"; fi
                 if [ "$hil" = 1 ]; then echo true > "$S/$s.simt"; else rm -f "$S/$s.simt"; fi
                 if [ "$snd" = 1 ]; then printf '%s\n' "${HIL_WAYPOINT_DB:?compose.hil.yaml Sound без HIL_WAYPOINT_DB}" > "$S/$s.wpdb"; else rm -f "$S/$s.wpdb"; fi
             done
@@ -150,7 +237,7 @@ run_hil() {  # run_hil "<cmd> [аргументы]" [VAR=val ...]
         HIL_MAIN_DIR="$WORK/main" HIL_VISION_DIR="$WORK/vision" HIL_SOUND_DIR="$WORK/sound" HIL_SANDBOX_REPO="$WORK/sbx" \
         HIL_MAPS_SNAPSHOT="$WORK/sndstate/prod_maps.before.txt" \
         HIL_LOCK="$WORK/tmp/hil.lock" HIL_REMOTE_DIR="$WORK/remote" HIL_MAPS_DIR="$WORK/hilmaps" \
-        HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 \
+        HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 HIL_PROBE_TIMEOUT_S=1 \
         "$@" bash "$HIL" "${cmd[@]}" > "$WORK/out.log" 2>&1
 }
 line_of() { grep -n -m1 -- "$1" "$2" | cut -d: -f1; }
@@ -192,6 +279,8 @@ check "on: Sound видит /data только как HIL-реестр и чте
 # Оверлей, который применяется на Main Pi, тоже не ссылается на боевые пути.
 check "compose.hil.yaml Main: /maps только из HIL_MAPS_DIR" \
     '! grep -E "^\s*- \./maps|/data" "$REPO_ROOT/docker/main/compose.hil.yaml" && [ "$(grep -c "HIL_MAPS_DIR:?" "$REPO_ROOT/docker/main/compose.hil.yaml")" -eq 2 ]'
+check "compose.hil.yaml Main: nav2 сохраняет том free_spin (#4475)" \
+    'grep -q "/home/ros2/rob_box_project/src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro" "$REPO_ROOT/docker/main/compose.hil.yaml"'
 
 # ── 4. замок уже есть ─────────────────────────────────────────────────────
 reset_state
@@ -200,11 +289,127 @@ run_hil on; rc=$?
 check "on при замке: отказ (rc=$rc), моторы и сим не тронуты" \
     '[ "$rc" -ne 0 ] && ! grep -q "stop" "$WORK/docker.log" && ! grep -q "compose" "$WORK/docker.log"'
 
+# ── 4a. два запуска с одной картой ────────────────────────────────────────
+reset_state
+token_a=0123456789abcdef0123456789abcdef
+token_b=abcdef0123456789abcdef0123456789
+run_hil on HIL_RUN_TOKEN="invalid token"; rc=$?
+check "on: некорректный токен отклонён до ssh" '[ "$rc" -ne 0 ] && [ ! -s "$WORK/ssh.log" ]'
+run_hil on HIL_RUN_TOKEN="$token_a"; rc=$?
+check "on: токен записан в полученный замок перед maps" \
+    '[ "$rc" -eq 0 ] && grep -qF " token=$token_a maps=$WORK/hilmaps" "$WORK/tmp/hil.lock"'
+: > "$WORK/docker.log"
+run_hil on HIL_RUN_TOKEN="$token_b"; rc=$?
+check "on: второй запуск с той же картой не меняет замок и сервисы" \
+    '[ "$rc" -ne 0 ] && grep -qF " token=$token_a maps=$WORK/hilmaps" "$WORK/tmp/hil.lock" && ! grep -Eq "^(stop|compose)" "$WORK/docker.log"'
+: > "$WORK/docker.log"
+run_hil off HIL_RUN_TOKEN="$token_b"; rc=$?
+check "off: чужой токен отклонён при той же карте до Docker" \
+    '[ "$rc" -ne 0 ] && grep -qF " token=$token_a maps=$WORK/hilmaps" "$WORK/tmp/hil.lock" && [ ! -s "$WORK/docker.log" ]'
+run_hil off HIL_RUN_TOKEN="$token_a"; rc=$?
+check "off: владелец освобождает замок" '[ "$rc" -eq 0 ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+
 # ── 5. два контроллера ────────────────────────────────────────────────────
 reset_state
 run_hil on FAKE_CM=2; rc=$?
 check "on при двух /controller_manager: выход 1, сим погашен" \
     '[ "$rc" -eq 1 ] && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+
+# ── 5b. два подписчика cmd_vel_unstamped (§5.1) ───────────────────────────
+reset_state
+run_hil on FAKE_CMD_VEL_SUBS=2; rc=$?
+check "on при двух подписчиках cmd_vel_unstamped: выход 1, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ] && grep -q "cmd_vel_unstamped подписчиков: 2" "$WORK/out.log"'
+reset_state
+run_hil on >/dev/null
+run_hil status; rc=$?
+check "status: один подписчик cmd_vel_unstamped (rc=$rc)" \
+    'grep -qE "cmd_vel_unstamped подписчиков: 1 \(норма" "$WORK/out.log"'
+reset_state
+run_hil on FAKE_ZENOH_LOG=1 FAKE_CMD_VEL_SUBS=2 >/dev/null; rc=$?
+check "on: два подписчика cmd_vel_unstamped ловятся и при zenoh-логе (rc=$rc)" \
+    '[ "$rc" -eq 1 ] && grep -q "cmd_vel_unstamped подписчиков: 2" "$WORK/out.log"'
+
+# ── 5c. таймаут гейта контроллера называет причину и оставляет сырьё (#5138) ──
+# FAKE_CM=0: счётчик не становится 1, за HIL_WAIT_CM_S=5 гейт истекает.
+# (а) контейнер перезапускался — RestartCount>0, код выхода в строке die.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_RESTART=2 FAKE_GZ_EXIT=137 FAKE_GZ_STATUS=running \
+    FAKE_GZ_LOGS='gzserver: killed' FAKE_TOPICS='/clock'; rc=$?
+check "гейт (а): перезапуск — ExitCode=137 в причине, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "Gazebo перезапускался (RestartCount=2, ExitCode=137, Status=running)" "$WORK/out.log" && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (а): сырьё inspect, лог и топики в выводе" \
+    'grep -q "сырьё gazebo inspect: Status=running RestartCount=2" "$WORK/out.log" && grep -q "gzserver: killed" "$WORK/out.log" && grep -q "сырьё sim: /clock есть, /sim/ground_truth/odom нет, /diff_drive_controller/odom нет, топиков 1; /odom здесь не проверяем: его в симе нет" "$WORK/out.log"'
+# (б) контейнер жив, нет ни /clock, ни /sim/ground_truth/odom — модель/плагин не поднялись.
+# Голый /odom в графе нарочно есть: старый код по нему соврал бы «мир идёт».
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/rosout
+/scan
+/odom'; rc=$?
+check "гейт (б): жив без /clock и ground_truth — причина про модель/плагин, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись (нет /sim/ground_truth/odom и /clock)" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (б): сырьё говорит, что /clock и ground_truth нет, и /odom не проверяем" \
+    'grep -q "сырьё gazebo inspect: Status=running RestartCount=0" "$WORK/out.log" && grep -q "сырьё sim: /clock нет, /sim/ground_truth/odom нет, /diff_drive_controller/odom нет, топиков 3; /odom здесь не проверяем: его в симе нет" "$WORK/out.log"'
+# (в) /clock и /sim/ground_truth/odom есть, /diff_drive_controller/odom нет —
+# модель поднята, контроллера нет. Голого /odom нет: это реальный граф сима.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/clock
+/sim/ground_truth/odom
+/scan'; rc=$?
+check "гейт (в): /clock и ground_truth есть, diff_drive odom нет — причина про ros2_control, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "мир идёт, ros2_control не поднял контроллеры (нет /diff_drive_controller/odom)" "$WORK/out.log" && ! grep -q "модель/плагин не поднялись" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (в): сырьё говорит clock и ground_truth есть, diff_drive нет, /odom не проверяем" \
+    'grep -q "сырьё sim: /clock есть, /sim/ground_truth/odom есть, /diff_drive_controller/odom нет, топиков 3; /odom здесь не проверяем: его в симе нет" "$WORK/out.log" && grep -q "сырьё gazebo logs" "$WORK/out.log"'
+# (г) определить не удалось: inspect пуст, топиков нет — прежнее сообщение, сырьё честно пустое.
+reset_state
+run_hil on FAKE_CM=0 FAKE_INSPECT_BLANK=1 FAKE_TOPICS=__NONE__; rc=$?
+check "гейт (г): сырья нет — прежнее сообщение, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "за 5 с контроллер Gazebo не появился" "$WORK/out.log" && ! grep -q "модель/плагин" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (г): сырьё говорит, что inspect и topic list не ответили, и /odom не проверяем" \
+    'grep -q "сырьё gazebo inspect: inspect не ответил" "$WORK/out.log" && grep -q "ros2 topic list пуст или не ответил (/clock нет, /sim/ground_truth/odom нет, /diff_drive_controller/odom нет, топиков 0); /odom здесь не проверяем: его в симе нет" "$WORK/out.log"'
+# Успешный путь не задет: контроллер есть — причины таймаута в выводе нет,
+# и штатный off не звался (моторы остановлены, sim time стоит, замок держится).
+reset_state
+run_hil on; rc=$?
+check "гейт: успешный on не печатает причину таймаута (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q "сырьё gazebo" "$WORK/out.log"'
+check "гейт: успешный on не возвращает робота в бой" \
+    '[ "$rc" -eq 0 ] && ! grep -q "возвращаю робота в бой" "$WORK/out.log" && ! grep -q "HIL выключен" "$WORK/out.log" && [ -f "$WORK/tmp/hil.lock" ] && [ "$(cat "$WORK/state/ros2-control")" = exited ] && [ "$(cat "$WORK/state/nav2.simt")" = true ]'
+
+# ── 5d. проба / старт / Creating — разные строки; отказ гейта возвращает робота (#5138) ──
+# Проба не ответила: контейнер жив, docker exec висит дольше срока пробы.
+reset_state
+run_hil on FAKE_CM_HANG=30; rc=$?
+check "гейт: проба не ответила — своя строка, rc=$rc, контейнера не осталось" \
+    '[ "$rc" -eq 1 ] && grep -q "контейнер gazebo жив, проба контроллера не ответила за 1 с" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт: проба не ответила — робот возвращён (sim time снят, моторы подняты, замок снят)" \
+    '[ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ "$(cat "$WORK/state/lslidar")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "HIL выключен, робот в боевом режиме" "$WORK/out.log"'
+# Проба ответила 0 при живой модели — это не «не ответила» и не «модель не поднялась».
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/clock
+/sim/ground_truth/odom
+/scan'; rc=$?
+check "гейт: проба ответила 0 — не путается с «проба не ответила» (rc=$rc)" \
+    '[ "$rc" -eq 1 ] && grep -q "мир идёт, ros2_control не поднял контроллеры (нет /diff_drive_controller/odom)" "$WORK/out.log" && ! grep -q "проба контроллера не ответила" "$WORK/out.log" && ! grep -q "модель/плагин не поднялись" "$WORK/out.log"'
+check "гейт: проба ответила 0 — робот тоже возвращён" \
+    '[ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+# Контейнер создан и не стартовал: пробы не было, строка своя.
+reset_state
+run_hil on FAKE_COMPOSE_STAYS_CREATED=1 FAKE_GZ_STATUS=created; rc=$?
+check "гейт: контейнер не стартовал — своя строка, rc=$rc, контейнера не осталось" \
+    '[ "$rc" -eq 1 ] && grep -q "контейнер gazebo не стартовал (created 0): пробы контроллера не было" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт: контейнер не стартовал — робот возвращён" \
+    '[ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+# compose завис на Creating: up падает, контейнер создан и не запущен, down его не снимает.
+reset_state
+run_hil on FAKE_COMPOSE_CREATED=1; rc=$?
+check "гейт: Creating — своя строка, не общее «compose up не прошёл» (rc=$rc)" \
+    '[ "$rc" -eq 1 ] && grep -q "gazebo создан и не стартовал (compose завис на Creating" "$WORK/out.log" && ! grep -q "compose up не прошёл" "$WORK/out.log"'
+check "гейт: Creating — контейнер снят, робот возвращён (sim time снят, моторы подняты, замок снят)" \
+    '[ ! -f "$WORK/state/t-hil-gazebo" ] && [ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
 
 # ── 6. off ────────────────────────────────────────────────────────────────
 reset_state
@@ -357,7 +562,7 @@ reset_state
 broken_before followpath-watchdog
 run_hil on; rc=$?
 check "on со сломанным followpath-watchdog: выход 0 (rc=$rc), состояние «до» записано" \
-    '[ "$rc" -eq 0 ] && grep -qx "followpath-watchdog restarting" "$WORK/remote/pre_on_state.txt" && grep -qx "nav2 running" "$WORK/remote/pre_on_state.txt" && grep -qx "voice-assistant running" "$WORK/remote/pre_on_state.txt" && grep -qx "oak-d running" "$WORK/remote/pre_on_state.txt"'
+    '[ "$rc" -eq 0 ] && grep -qx "followpath-watchdog restarting:none" "$WORK/remote/pre_on_state.txt" && grep -qx "nav2 running:none" "$WORK/remote/pre_on_state.txt" && grep -qx "voice-assistant running:none" "$WORK/remote/pre_on_state.txt" && grep -qx "oak-d running:none" "$WORK/remote/pre_on_state.txt"'
 run_hil off; rc=$?
 check "off: сервис сломан и до on — предупреждение, выход 0 (rc=$rc), замок снят, реестр сверен" \
     '[ "$rc" -eq 0 ] && grep -q "followpath-watchdog restarting.*⚠️.*до on было: restarting" "$WORK/out.log" && grep -q "нерабочих и до on: 1" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "SELECT \* FROM maps) за HIL не изменился" "$WORK/out.log" && [ ! -e "$WORK/remote/pre_on_state.txt" ]'
@@ -383,6 +588,49 @@ run_hil on >/dev/null
 printf '%s\n' '1|aaaa-1111|мастерская|1793000000.0|0' > "$WORK/state/prod_maps"
 run_hil off; rc=$?
 check "off: предупреждение + изменённый maps → выход 3 (rc=$rc), замок снят" '[ "$rc" -eq 3 ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+
+# ── 9c. off судит возврат по свежему healthcheck, не по running (#5170) ──
+# $name.health — JSON-объект Health. Нет файла = нет HEALTHCHECK (none).
+# Свежая проба: Start = StartedAt, Output — текст, который обязан попасть в ❌.
+health_json() {  # health_json <status> <start> <output>
+    printf '{"Status":"%s","Log":[{"Start":"%s","Output":"%s"}]}' "$1" "$2" "$3"
+}
+# (1) до on healthy, после off свежий healthy — успех, «боевой режим», замок снят.
+reset_state
+run_hil on >/dev/null
+_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s\n' "$_started" > "$WORK/state/nav2.started"
+health_json healthy "$_started" "nav2 healthcheck ok" > "$WORK/state/nav2.health"
+sed -i 's/^nav2 running:none$/nav2 running:healthy/' "$WORK/remote/pre_on_state.txt"
+run_hil off; rc=$?
+check "off: свежий healthy после off — выход 0 (rc=$rc), боевой режим, замок снят" \
+    '[ "$rc" -eq 0 ] && grep -q "робот в боевом режиме" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "nav2 running USE_SIM_TIME=unset  ready=healthy" "$WORK/out.log"'
+# (2) до on healthy, после off running+unhealthy, окно 0 с (три минуты уже истекли).
+reset_state
+run_hil on >/dev/null
+_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s\n' "$_started" > "$WORK/state/nav2.started"
+health_json unhealthy "$_started" "controller_server SIGILL Configuring fails=13" > "$WORK/state/nav2.health"
+sed -i 's/^nav2 running:none$/nav2 running:healthy/' "$WORK/remote/pre_on_state.txt"
+run_hil off HIL_OFF_READY_S=0 HIL_OFF_READY_POLL_S=0; rc=$?
+check "off: running+unhealthy за 3 мин не healthy — выход не 0 (rc=$rc), замок, нет боевого режима" \
+    '[ "$rc" -ne 0 ] && [ -e "$WORK/tmp/hil.lock" ] && ! grep -q "робот в боевом режиме" "$WORK/out.log" && grep -q "controller_server SIGILL Configuring fails=13" "$WORK/out.log" && grep -q "nav2 running.*❌" "$WORK/out.log"'
+# (3) HEALTHCHECK нет, running — как раньше, успех.
+reset_state
+run_hil on >/dev/null
+run_hil off; rc=$?
+check "off: нет HEALTHCHECK и running — выход 0 (rc=$rc), боевой режим" \
+    '[ "$rc" -eq 0 ] && grep -q "робот в боевом режиме" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ]'
+# (4) проба прошлой жизни (Start раньше StartedAt) со статусом healthy — не PASS.
+reset_state
+run_hil on >/dev/null
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WORK/state/nav2.started"
+health_json healthy "2020-01-01T00:00:00Z" "healthy прошлой жизни" > "$WORK/state/nav2.health"
+sed -i 's/^nav2 running:none$/nav2 running:healthy/' "$WORK/remote/pre_on_state.txt"
+run_hil off HIL_OFF_READY_S=0 HIL_OFF_READY_POLL_S=0; rc=$?
+check "off: healthy прошлой жизни не считается — выход не 0 (rc=$rc), замок, нет боевого режима" \
+    '[ "$rc" -ne 0 ] && [ -e "$WORK/tmp/hil.lock" ] && ! grep -q "робот в боевом режиме" "$WORK/out.log" && grep -q "healthy прошлой жизни" "$WORK/out.log"'
+
 
 # ── 9b. restart: рестарт стека в работающем HIL (#4468) ──────────────────
 reset_state
@@ -444,6 +692,12 @@ mkdir -p "$WORK/vbin" "$WORK/vdir/out"
 cat > "$WORK/vbin/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "docker $*" >> "$VLOG"
+# runvideo.sh считает прогон успешным только при GOAL_START в логе route.py.
+# Фейк печатает маркер на сам вызов маршрута, не на pkill/cp — иначе проверка
+# «ошибка до GOAL_START» в обёртке здесь не видна.
+case "$*" in
+    *"/route.py"*) printf '12:00:00.000 GOAL_START M1 target=(1,2,0) sim=1.00 frame=-1\n' ;;
+esac
 exit 0
 EOF
 chmod +x "$WORK/vbin/docker"
@@ -513,6 +767,213 @@ check "деплой: шаг замка вызывает check_hil_lock.sh и н�
 U="$REPO_ROOT/docker/main/update_and_restart.sh"
 check "update_and_restart.sh: замок проверяется до down" \
     '[ "$(line_of "/tmp/hil.lock" "$U")" -lt "$(line_of "docker-compose down" "$U")" ]'
+
+# ── 9. e2e-режим робота: рекреация voice-assistant сбросит e2e_mode (#4686) ──
+# Fail-closed: продолжать on можно ТОЛЬКО по достоверному false. true, пустой/битый
+# вывод и ненулевой probe — отказ ДО любых записей на Pi (helpers/замок) и до
+# остановки моторов/сима. Проба — read-only и идёт до push_helpers. off только
+# предупреждает: restore — возврат робота с моторами, его не блокируем.
+no_side_effects() {  # ни lock/motor/compose, ни записей на Pi (rput пишет через «cat >»)
+    [ ! -f "$WORK/tmp/hil.lock" ] \
+        && ! grep -q "docker stop" "$WORK/docker.log" \
+        && ! grep -q "compose" "$WORK/docker.log" \
+        && ! grep -q "lock-take" "$WORK/ssh.log" \
+        && ! grep -q "cat >" "$WORK/ssh.log"
+}
+reset_state
+run_hil on FAKE_E2E_MODE='Boolean value is: True'; rc=$?
+check "on при e2e_mode=true: отказ (rc=$rc), ни lock/motors/compose, ни записей на Pi" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
+check "on при e2e_mode=true: причина в сообщении (#4686)" 'grep -q "#4686" "$WORK/out.log"'
+reset_state
+run_hil on FAKE_E2E_MODE='это не ответ узла'; rc=$?
+check "on при битом ответе пробы: отказ (rc=$rc), side effects нет" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
+reset_state
+run_hil on FAKE_E2E_MODE=''; rc=$?
+check "on при пустом ответе пробы: отказ (rc=$rc), side effects нет" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
+reset_state
+run_hil on FAKE_E2E_MODE='__PROBE_FAIL__'; rc=$?
+check "on при ненулевой пробе (rc=$rc): отказ, side effects нет" \
+    '[ "$rc" -ne 0 ] && no_side_effects'
+reset_state
+run_hil on FAKE_E2E_MODE='Boolean value is: False'; rc=$?
+check "on при e2e_mode=false: штатно, выход 0 (rc=$rc)" '[ "$rc" -eq 0 ]'
+check "e2e-проба поднимает ROS environment внутри docker exec" \
+    'grep -q "source /opt/ros/humble/setup.bash" "$WORK/ssh.log" && grep -q "source /ws/install/setup.bash" "$WORK/ssh.log"'
+reset_state
+run_hil on >/dev/null
+: > "$WORK/docker.log"; : > "$WORK/ssh.log"
+run_hil off FAKE_E2E_MODE='Boolean value is: True'; rc=$?
+check "off при e2e_mode=true: предупреждение в логе, restore проходит (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "#4686" "$WORK/out.log" && grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
+reset_state
+run_hil on >/dev/null
+: > "$WORK/docker.log"; : > "$WORK/ssh.log"
+run_hil off FAKE_E2E_MODE='__PROBE_FAIL__'; rc=$?
+check "off при ненулевой пробе: предупреждение, restore проходит (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "#4686" "$WORK/out.log" && grep -q "up -d --no-deps --pull never voice-assistant" "$WORK/docker.log"'
+
+# ── pin: один ключ на сервис (дубль docker ps / повторный pin) ────────────
+# Живой баг 2026-11-18: recreate оставил abe6c83d1f0a_imu-filter; pin писал
+# nav2 дважды → compose «mapping key "nav2" already defined», off exit 1, замок.
+PINWORK="$(mktemp -d)"
+mkdir -p "$PINWORK/bin" "$PINWORK/compose"
+cat > "$PINWORK/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+# Фикстура docker ps: nav2 дважды (склейка/осиротевший recreate), образ разный.
+case "$1" in
+    ps)
+        echo "nav2 ghcr.io/krikz/rob_box:nav2-first"
+        echo "imu-filter ghcr.io/krikz/rob_box:imu-v1"
+        echo "nav2 ghcr.io/krikz/rob_box:nav2-dup"
+        ;;
+esac
+exit 0
+EOF
+chmod +x "$PINWORK/bin/docker"
+PIN_PATH="$PINWORK/bin:$PATH"
+PIN_OUT="$PINWORK/main.images.yaml"
+PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compose" "$PIN_OUT" \
+    >"$PINWORK/pin1.log" 2>&1
+pin_rc=$?
+check "pin: выход 0 при дубле nav2 в docker ps (rc=$pin_rc)" '[ "$pin_rc" -eq 0 ]'
+check "pin: ключ nav2 ровно один" \
+    '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ]'
+check "pin: первый образ nav2 (newest first), не dup" \
+    'grep -A1 "^  nav2:" "$PIN_OUT" | grep -q "nav2-first" && ! grep -q "nav2-dup" "$PIN_OUT"'
+check "pin: imu-filter на месте, image: ровно два" \
+    '[ "$(grep -c "^  imu-filter:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
+# compose отклоняет дубли ключей; сверка через python (без silent overwrite).
+check "pin: уникальные ключи services (как compose)" \
+    'python3 -c "import re,sys; t=open(sys.argv[1]).read(); ks=re.findall(r\"(?m)^  ([^ :]+):\", t); assert len(ks)==len(set(ks))==2 and ks[0]==\"nav2\" and \"nav2-first\" in t" "$PIN_OUT"'
+# Повторный pin перезаписывает out — снова один nav2, не дописывает.
+PATH="$PIN_PATH" bash "$REPO_ROOT/scripts/hil/remote_pi.sh" pin "$PINWORK/compose" "$PIN_OUT" \
+    >"$PINWORK/pin2.log" 2>&1
+check "повторный pin: nav2 по-прежнему один ключ" \
+    '[ "$(grep -c "^  nav2:" "$PIN_OUT")" -eq 1 ] && [ "$(grep -c "image:" "$PIN_OUT")" -eq 2 ]'
+rm -rf "$PINWORK"
+
+# ── 12. штатный Depot сам выставляет HIL_EXPECT_WORLD; Polygon без env молчит (#4694) ──
+# run_depot.sh on без заранее выставленного env: копия Compose — обычный Polygon →
+# WORLD_MISMATCH до hil.sh (фейковый HIL_CMD не должен вызваться, цель не уходит).
+DEPOT="$REPO_ROOT/scripts/hil/video/run_depot.sh"
+POLY="$WORK/poly-sbx"
+mkdir -p "$POLY/docker/sim"
+cp "$REPO_ROOT/docker/sim/compose.hil.yaml" "$POLY/docker/sim/compose.hil.yaml"
+printf '#!/bin/sh\necho HIL_ON >> "$FAKE_HIL_LOG"\n' > "$WORK/bin/fake_hil"
+chmod +x "$WORK/bin/fake_hil"
+: > "$WORK/fake_hil.log"
+env -u HIL_EXPECT_WORLD HIL_CMD="$WORK/bin/fake_hil" HIL_SANDBOX_REPO="$POLY" \
+    FAKE_HIL_LOG="$WORK/fake_hil.log" \
+    bash "$DEPOT" on > "$WORK/depot-poly.log" 2>&1
+rc=$?
+check "Depot-сценарий без env на обычном Polygon: WORLD_MISMATCH до hil.sh (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && grep -q WORLD_MISMATCH "$WORK/depot-poly.log" && [ ! -s "$WORK/fake_hil.log" ]'
+check "Depot-сценарий без env: цель не отправлена" \
+    '! grep -q "runvideo\\|GOAL" "$WORK/depot-poly.log"'
+
+# Та же команда на Depot-копии (точный world:= и том /sim_video): env выставлен, hil.sh вызван.
+DEPOT_SBX="$WORK/depot-sbx"
+mkdir -p "$DEPOT_SBX/docker/sim"
+python3 - "$REPO_ROOT/docker/sim/compose.hil.yaml" "$DEPOT_SBX/docker/sim/compose.hil.yaml" <<'PY'
+import pathlib, sys
+src, dst = sys.argv[1:]
+text = pathlib.Path(src).read_text(encoding="utf-8")
+old = """    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - /hil_run.sh
+      - world:=/sim_worlds/${SIM_WORLD:-polygon}.sdf
+"""
+new = """    volumes:
+      - ./hil_run.sh:/hil_run.sh:ro
+      - /home/ros2/rob_box_hilvideo/out:/sim_video
+    command:
+      - /ros_scripts/ros_with_namespace.sh
+      - bash
+      - -c
+      - python3 /mkdepot.py && exec /hil_run.sh world:=/sim_video/world.sdf x:=0.0 y:=0.0 yaw:=0.0
+"""
+if old not in text:
+    raise SystemExit("compose block not found")
+pathlib.Path(dst).write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+ART="$WORK/depot-art"
+rm -rf "$ART"
+: > "$WORK/fake_hil.log"
+env -u HIL_EXPECT_WORLD HIL_CMD="$WORK/bin/fake_hil" HIL_SANDBOX_REPO="$DEPOT_SBX" \
+    HIL_WORLD_CHECK_DIR="$ART" FAKE_HIL_LOG="$WORK/fake_hil.log" \
+    bash "$DEPOT" on > "$WORK/depot-on.log" 2>&1
+rc=$?
+check "Depot-сценарий без env на Depot-копии: сам выставил depot и позвал hil.sh (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "^HIL_ON$" "$WORK/fake_hil.log" && grep -qx "HIL_EXPECT_WORLD=depot" "$ART/expect_world.txt"'
+check "Depot-сценарий: каталог Compose записан до hil.sh" \
+    '[ "$(cat "$ART/compose_dir.txt")" = "$DEPOT_SBX" ]'
+
+# goals без PASS мира — цель не уходит (фейковый runvideo не вызывается).
+printf '#!/bin/sh\necho GOAL >> "$FAKE_GOAL_LOG"\n' > "$WORK/bin/fake_route"
+chmod +x "$WORK/bin/fake_route"
+: > "$WORK/fake_goal.log"
+env -u HIL_EXPECT_WORLD HIL_WORLD_CHECK_DIR="$WORK/no-such-world" RUNVIDEO="$WORK/bin/fake_route" \
+    FAKE_GOAL_LOG="$WORK/fake_goal.log" \
+    bash "$DEPOT" goals M1 > "$WORK/depot-goals.log" 2>&1
+rc=$?
+check "Depot goals без проверки мира: WORLD_MISMATCH, цель не отправлена (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && grep -q WORLD_MISMATCH "$WORK/depot-goals.log" && [ ! -s "$WORK/fake_goal.log" ]'
+
+# goals после FAIL-вердикта — тоже не шлёт. После PASS — шлёт.
+printf 'FAIL: WORLD_MISMATCH: args missing\n' > "$ART/verdict.txt"
+env HIL_WORLD_CHECK_DIR="$ART" RUNVIDEO="$WORK/bin/fake_route" FAKE_GOAL_LOG="$WORK/fake_goal.log" \
+    bash "$DEPOT" goals M1 > "$WORK/depot-goals-fail.log" 2>&1
+rc=$?
+check "Depot goals при WORLD_MISMATCH: цель не отправлена (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && [ ! -s "$WORK/fake_goal.log" ]'
+printf 'PASS: depot: args world.sdf, mount /sim_video, sdf Depot_vid\n' > "$ART/verdict.txt"
+env HIL_WORLD_CHECK_DIR="$ART" RUNVIDEO="$WORK/bin/fake_route" FAKE_GOAL_LOG="$WORK/fake_goal.log" \
+    bash "$DEPOT" goals M1 > "$WORK/depot-goals-pass.log" 2>&1
+rc=$?
+check "Depot goals после PASS: первая цель ушла (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && grep -q "^GOAL$" "$WORK/fake_goal.log"'
+
+# Голый hil.sh on — точка входа runvideo и одиночных M1/R7 (#4694).
+# Без env копия Compose сама решает, обязателен ли гейт.
+# Потеря overlay: обычный Polygon вместо Depot — WORLD_MISMATCH до цели.
+SDF="$WORK/gazebo.sdf"
+printf '%s\n' "<?xml version='1.0'?><sdf><world name='polygon'><model name='polygon_walls'/></world></sdf>" > "$SDF"
+printf '%s\n' "world:=/sim_worlds/polygon.sdf" > "$WORK/state/t-hil-gazebo.args"
+printf '%s\n' "/sim_worlds" > "$WORK/state/t-hil-gazebo.mounts"
+printf '%s\n' "sha256:polygon" > "$WORK/state/t-hil-gazebo.image"
+ARTP="$WORK/art-poly"
+rm -rf "$ARTP"
+run_hil on HIL_WORLD_CHECK_DIR="$ARTP" FAKE_GAZEBO_SDF="$SDF"; rc=$?
+check "голый hil.sh on, обычный Polygon без env: гейт молчит, выход 0 (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q WORLD_MISMATCH "$WORK/out.log"'
+check "голый hil.sh on, Polygon: вердикта мира нет" \
+    '[ ! -f "$ARTP/verdict.txt" ]'
+
+# Копия Compose — штатный Depot (mkdepot + /sim_video, как живые M1/R7),
+# контейнер поднялся с polygon.sdf. Env не выставлен. Гейт обязателен.
+# reset_state снимает замок прошлого on; факты gazebo пишем заново.
+reset_state
+printf '%s\n' "world:=/sim_worlds/polygon.sdf" > "$WORK/state/t-hil-gazebo.args"
+printf '%s\n' "/sim_worlds" > "$WORK/state/t-hil-gazebo.mounts"
+printf '%s\n' "sha256:polygon" > "$WORK/state/t-hil-gazebo.image"
+cp "$DEPOT_SBX/docker/sim/compose.hil.yaml" "$WORK/sbx/docker/sim/compose.hil.yaml"
+ARTD="$WORK/art-depot"
+rm -rf "$ARTD"
+run_hil on HIL_WORLD_CHECK_DIR="$ARTD" FAKE_GAZEBO_SDF="$SDF"; rc=$?
+check "голый hil.sh on, Depot-копия без env, args polygon: WORLD_MISMATCH (rc=$rc)" \
+    '[ "$rc" -ne 0 ] && grep -q WORLD_MISMATCH "$WORK/out.log"'
+check "голый hil.sh on, Depot-копия: сим погашен, цель не логировалась" \
+    '[ ! -f "$WORK/state/t-hil-gazebo" ] && ! grep -q "HIL включён" "$WORK/out.log"'
+check "голый hil.sh on, Depot-копия: артефакты compose/args/image" \
+    '[ -f "$ARTD/compose_dir.txt" ] && [ -f "$ARTD/gazebo_command.txt" ] && [ -f "$ARTD/sdf.sha256" ]'
+# вернуть обычную копию, чтобы хвост файла не зависел от Depot
+cp "$REPO_ROOT/docker/sim/compose.hil.yaml" "$WORK/sbx/docker/sim/compose.hil.yaml"
+rm -f "$WORK/state/t-hil-gazebo.args" "$WORK/state/t-hil-gazebo.mounts"
 
 echo
 echo "итог: $pass PASS, $failures FAIL"

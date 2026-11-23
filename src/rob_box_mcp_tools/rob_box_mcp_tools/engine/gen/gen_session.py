@@ -1049,13 +1049,16 @@ class GenSetMaker:
 
 
 def slot_genres(heard_text: Optional[str], styles: Sequence[str], style: str) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
-    """``(стили по порядку, непонятые слова)``: слова человека (``source.set_genres``) важнее ``styles`` LLM, те —
-    стиля сета (``dj_set``: слова реплики, ключ LLM, строка темы); стиль не из ``GEN_STYLES`` — ``DEFAULT_STYLE``."""
+    """``(стили по порядку, непонятые слова)``: слово стиля в реплике (``source.set_genres``) важнее ключа; ключ
+    ``dj_set.style`` кроме ``auto`` важнее мусора реплики без слова стиля (#4479, ADR-0148) и ``styles`` LLM. ``club``
+    сам по себе слово стиля не называет: «клуб» в реплике по-прежнему перечень. Стиль не из ``GEN_STYLES`` —
+    ``DEFAULT_STYLE``. Непонятые слова перечня реплики остаются для фразы кода."""
     from rob_box_music.source import set_genres
 
     heard, unknown = set_genres(heard_text or "")
     llm = tuple(g for g in dict.fromkeys(styles) if g in kn.GEN_STYLES)
-    return heard or llm or ((style if style in kn.GEN_STYLES else kn.DEFAULT_STYLE),), unknown
+    named = () if not style or style == "auto" or style not in kn.GEN_STYLES else (style,)
+    return heard or named or llm or ((kn.DEFAULT_STYLE if style not in kn.GEN_STYLES else style),), unknown
 
 
 def slot_count(styles: int, length: int, named: bool, seconds: Optional[float]) -> int:

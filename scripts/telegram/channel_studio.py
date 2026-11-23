@@ -503,6 +503,14 @@ def apply_post_action(state: dict, post_id: str, action: str) -> str:
             ACTION_VIDEO: "Собираю видео.",
         }.get(action, "Переделываю.")
     record = posts.setdefault(post_id, {})
+    if record.get("status") == "expired":
+        # Черновик протух: молчание — не отказ. Факт вернулся в ожидание,
+        # и следующая сессия соберёт по нему свежий черновик. Нажатие на
+        # старую кнопку не должно ни падать, ни молчать.
+        return (
+            f"Черновик {post_id} протух — товарищ Шифу не ответил за 48 ч. "
+            f"Это не отказ: материал вернулся в очередь, студия пришлёт свежий черновик."
+        )
     if action == ACTION_PUBLISH:
         if record.get("status") == "rejected":
             return f"Пост {post_id} уже отклонён — вернуть его в публикацию можно только новой идеей."
@@ -1141,6 +1149,10 @@ def produce_post_for_idea(bot: StudioBot, state_path: Path, idea_id: str, out=pr
         "tags": post.get("tags") or [],
         "media_ref": idea.get("media_ref", ""),
         "fact_keys": idea.get("fact_keys") or [],
+        # Метка появления черновика: по ней считается TTL (студия не должна
+        # висеть с непроверенным постом вечно — товарищ Шифу мог просто не
+        # ответить, и это не отказ).
+        "created_at": _now(),
     }
     for key in ("queue_file", "message_id"):
         if existing.get(key):
@@ -1317,6 +1329,11 @@ def register_post(state_path: Path, post: dict) -> None:
         for key in POST_FIELDS:
             if post.get(key):
                 record[key] = post[key]
+        # Факт, показанный черновиком, должен лежать в ожидании: без этого
+        # проигнорированный черновик терял событие навсегда (разбор 11.11,
+        # факт pr:4555) — публикатор ждал его, а вернуть было нечего.
+        if record.get("status") == "proposed" and not record.get("queue_file"):
+            st.save_pending(state, record.get("fact_dicts") or [], post_id)
 
 
 # Поля черновика, которые переносятся из post.json в состояние.
@@ -1326,6 +1343,9 @@ POST_FIELDS = (
     "media_path",
     "media_choice",
     "fact_keys",
+    # Полные факты черновика: нужны, чтобы вернуть событие в ожидание,
+    # если товарищ Шифу не ответил (TTL).
+    "fact_dicts",
     "show",
     "message_id",
     "message_kind",

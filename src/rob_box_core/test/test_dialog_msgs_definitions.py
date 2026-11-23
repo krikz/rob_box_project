@@ -25,7 +25,8 @@ EXPECTED_MSGS = {
 }
 BUILTIN = {"bool", "string", "float32", "float64", "uint8", "uint16", "uint32", "uint64",
            "int8", "int16", "int32", "int64"}
-FIELD = re.compile(r"^(?P<type>[\w/]+(?:\[\])?)\s+(?P<name>\w+)(?:=(?P<value>.+))?$")
+#: Поле, константа (``ИМЯ=значение``) или поле со значением по умолчанию (``имя значение``, rosidl).
+FIELD = re.compile(r"^(?P<type>[\w/]+(?:\[\])?)\s+(?P<name>\w+)(?:=(?P<value>.+)|\s+(?P<default>\S.*))?$")
 SNAKE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 UPPER = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$")
 CAMEL = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -115,3 +116,18 @@ def test_json_fields_exist_only_where_the_adr_allows_open_dictionaries():
         "ActionResult": ["data_json"],
         "Intent": ["args_json"],
     }
+
+
+def test_field_defaults_are_scalar_literals_rosidl_accepts():
+    """Значение по умолчанию (``float32 confidence -1.0``) - только у скаляров, числом для чисел (#4017 шаг C1)."""
+    defaults = {}
+    for path in _files():
+        for number, line, _ in _lines(path):
+            match = FIELD.match(line)
+            if match["default"] is None:
+                continue
+            assert match["type"] in BUILTIN, f"{path.name}:{number}: умолчание у не-скаляра {match['type']}"
+            if match["type"].startswith(("float", "int", "uint")):
+                float(match["default"])
+            defaults[f"{path.stem}.{match['name']}"] = match["default"]
+    assert defaults == {"Utterance.confidence": "-1.0"}

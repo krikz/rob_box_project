@@ -13,6 +13,26 @@ marathon_has_marker() {
     grep -qE "(^|[[:space:]])[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z (>>> )?(${markers})([[:space:]]|\$)" "$log" 2>/dev/null
 }
 
+# marathon_foundation_decision <log>  → печатает одно слово: stop | continue.
+#
+# Акт 1-2 упал (conclusion != success). Останавливать марафон или идти дальше
+# решает маркер харнесса, а не отсутствие стоп-маркера:
+#   continue — в логе есть настоящий E2E_FEATURE_FAIL: робот ответил, ассерт
+#              не выполнен, это находка и следующие акты диагностичны;
+#   stop     — всё остальное: E2E_FATAL, E2E_INFRA_FAIL, E2E_NO_REACTION,
+#              E2E_STAND_FAIL и провал без единого маркера вердикта (харнесс
+#              упал раньше вердикта). Продолжать такой марафон — плодить
+#              страницы no_accept без фактов.
+# Эхо исходника шага workflow маркером не считается — то же правило, что у
+# marathon_has_marker (issue #5076, run 44973642247).
+marathon_foundation_decision() {
+    if marathon_has_marker "$1" 'E2E_FEATURE_FAIL'; then
+        printf 'continue'
+    else
+        printf 'stop'
+    fi
+}
+
 # marathon_summary_value <log> <key>  → значение «key=…» из последней строки-маркера E2E_SUMMARY харнесса
 # (#3989: recovered — шаги, прошедшие после восстановления; act_recover — что чинили на старте акта, виды
 # маркера «E2E_RECOVER <вид> at_act_start»: music, silenced). Нет строки или ключа — «-».

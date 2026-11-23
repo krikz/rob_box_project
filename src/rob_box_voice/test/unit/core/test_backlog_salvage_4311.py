@@ -1,6 +1,7 @@
 """#4311 (марафон-9 04.11, n903): подхват бэклога голым «робот» → «а теперь сирену и мигалку покажи, напугаем Валеру».
-Модель ответила действиями (``play_sound`` + ``play_animation``) и речью про них — ``speech_with_actions`` (речь при
-громких действиях не звучит, §4.1). На повторе она прислала те же действия без речи, но с лишней ``}`` в JSON:
+Модель ответила действиями (``play_sound`` + ``play_animation``) и речью про них. С #5020 ``play_sound`` тихий
+(звук слышен сам, «Виу-виу!» больше не затирает слова) — речь рядом законна, повтора из-за неё нет. На повторе
+по другой причине она прислала те же действия без речи, но с лишней ``}`` в JSON:
 адаптер DeepSeek отдал пустые аргументы ``command`` — ``bad_json``, и ход закрылся «Не понял, как это сделать».
 
 Код решает (ADR-0148): (1) объект, за которым только лишние закрывающие скобки, — целый объект, не ``bad_json``;
@@ -36,7 +37,7 @@ def _tool(name: str) -> Mapping[str, Any]:
 
 
 TOOLS = [_tool(n) for n in ("memory_save", "memory_search", "get_current_time", "search_web", "play_animation",
-                            "play_sound", "get_sound_info")]
+                            "play_sound", "get_sound_info", "stop_music", "set_music_volume")]
 
 
 class _Inner:
@@ -95,26 +96,40 @@ def test_tail_other_than_closers_stays_bad_json_and_cut_object_stays_truncated()
 
 
 def test_n903_retry_with_empty_arguments_runs_the_first_answers_actions_without_its_speech():
-    """Повтор отдал пустые аргументы (``bad_json``) — ход получает действия первого ответа, речи нет."""
-    out, requests, log = _answer(_reply(N903_FIRST), _reply({}))
+    """Повтор отдал пустые аргументы (``bad_json``) — ход получает действия первого ответа, речи нет.
+
+    С #5020 первый ответ n903 (речь + ``play_sound`` + мигалка) уже валиден и повтора не просит.
+    Подхват salvage проверяем на громком ``stop_music``: речь рядом с ним по-прежнему нарушение,
+    пустой повтор отдаёт его действие без речи.
+    """
+    loud = {"actions": [{"tool": "stop_music", "args": {}}], "speech": "Останавливаю."}
+    out, requests, log = _answer(_reply(loud), _reply({}))
     assert len(requests) == 2 and isinstance(out.command, Invalid) and out.command.reason == "bad_json"
-    assert _actions(out) == ["play_sound", "play_animation"]
+    assert _actions(out) == ["stop_music"]
     assert any("retry=1 violations=['speech_with_actions'] → verdict=invalid:bad_json" in line
-               and "salvage=['play_sound', 'play_animation']" in line for line in log)
+               and "salvage=['stop_music']" in line for line in log)
 
 
 def test_n903_retry_parsed_as_whole_object_is_a_valid_command_with_the_actions():
-    out, _, _ = _answer(_reply(N903_FIRST), _reply(ds._safe_json(N903_RETRY_RAW)))
-    assert isinstance(out.command, Command) and not out.command.speech
+    """Первый ответ n903 с #5020 уже команда: речь рядом с сиреной и мигалкой законна, повтора нет."""
+    out, requests, _ = _answer(_reply(N903_FIRST), _reply(ds._safe_json(N903_RETRY_RAW)))
+    assert len(requests) == 1 and isinstance(out.command, Command)
+    assert out.command.speech == N903_FIRST["speech"]
     assert _actions(out) == ["play_sound", "play_animation"]
 
 
 def test_retry_with_its_own_valid_actions_keeps_them_not_the_first_ones():
-    """Повтор невалиден, но со своими допустимыми действиями — исполняются его, а не первого ответа."""
-    own = {"actions": [{"tool": "play_sound", "args": {"sound": "robot_alert"}}], "speech": "Вот!"}
-    out, _, _ = _answer(_reply(N903_FIRST), _reply(own))
+    """Повтор невалиден, но со своими допустимыми действиями — исполняются его, а не первого ответа.
+
+    Оба действия громкие (#5020: ``play_sound`` рядом с речью больше не нарушение) и разные:
+    ``stop_music`` у первого ответа, ``set_music_volume`` у повтора. Имя в salvage — доказательство,
+    что взяты действия повтора, а не первого.
+    """
+    first = {"actions": [{"tool": "stop_music", "args": {}}], "speech": "Стою."}
+    own = {"actions": [{"tool": "set_music_volume", "args": {"action": "louder"}}], "speech": "Вот!"}
+    out, _, _ = _answer(_reply(first), _reply(own))
     assert isinstance(out.command, Invalid) and out.command.reason == kn.VIOLATION_SPEECH_WITH_ACTIONS
-    assert _actions(out) == ["play_sound"]
+    assert _actions(out) == ["set_music_volume"]
 
 
 def test_first_answer_without_valid_actions_still_closes_invalid_with_nothing_to_run():

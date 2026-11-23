@@ -37,6 +37,10 @@ def rap(backing="beat", segments=SEGS):
     return Performance(kind="rap", segments=segments, backing=backing)
 
 
+def song(backing="beat", segments=SEGS):
+    return Performance(kind="song", segments=segments, backing=backing)
+
+
 def on_bar(sim, t):
     k = (t - sim.track_started_at) / BAR_S
     return abs(k - round(k)) < 1e-6
@@ -77,6 +81,19 @@ def test_rap_with_beat_every_line_starts_on_a_bar_and_beat_outros():
     assert sim.block.summary()["spoken_chars"] == sum(len(s) for s in SEGS)
     segments = [e for _, e in sim.effects if isinstance(e, Say) and not e.key]
     assert {e.beat_s for e in segments} == {BAR_S}  # пред-синтез и звучание — с тактом подложки
+
+
+def test_rap_over_playing_music_does_not_replace_or_stop_it():
+    """#4694 n810: рэп с ``backing=beat`` поверх играющего трека — без ``AskReplace``, без своего бита и без остановки
+    чужой музыки."""
+    sim = Sim(rap())  # backing=beat
+    sim.start(playing="Existing Beat")
+    sim.run(300)
+    assert sim.asks == []
+    assert sim.backings() == []
+    assert sim.music_stops() == []
+    assert sim.block.end_reason == "done"
+    assert [h.text for h in sim.segments_heard()] == list(SEGS)
 
 
 def test_without_backing_reads_back_to_back_and_honestly_unsynced():
@@ -572,6 +589,26 @@ def test_context_block_has_done_and_active_verbatim_and_first_pending_number():
     assert sim.block.active_segment is None
 
 
+def test_3930_stream_break_is_not_a_finished_segment():
+    """Обрыв потока после звука (#3930): сегмент не дочитан и не успешный.
+
+    ``rejected`` с долей сказанного закрывает строку сразу. Иначе ``overdue`` через ``PLAN_WAIT_SLACK_S``
+    ставит ``done`` на всю длину — хвост, которого не было, считается прозвучавшим."""
+    block = PerformBlock(rap(backing="none"), "b1", log=lambda _: None)
+    first = next(e for e in block.start(0.0) if isinstance(e, Say) and not e.key)
+    block.on_speech("synthesized", first.speech_id, 0.5, duration_ms=0)
+    block.on_speech("started", first.speech_id, 1.0, duration_ms=0)
+    spoken = 12
+    effects = block.on_speech("rejected", first.speech_id, 2.0, spoken_chars=spoken)
+    finished = [e for e in effects if getattr(e, "kind", "") == "segment_finished"]
+    assert len(finished) == 1 and finished[0].reason == "cancelled" and finished[0].spoken_chars == spoken
+    line = block.lines.find(first.speech_id)
+    assert line is not None and line.state == "cancelled"
+    assert block.summary()["segments_done"] == 0
+    assert block.tick(2.0 + kn.PLAN_WAIT_SLACK_S + 1) == []  # дочитанным задним числом не становится
+    assert block.summary()["spoken_chars"] == spoken
+
+
 def test_lost_events_end_the_block():
     """Сегмент звучит без длительности (поток, #3930), а ``finished`` не пришёл и событий больше нет: выступление не
     висит вечно — снимается по сроку ``RESOURCE_STALE_S``. Владелец, молчащий с самого начала (ни synthesized, ни
@@ -639,7 +676,7 @@ def _asked(sim):
 
 
 def test_yes_replaces_the_playing_music_with_the_beat():
-    sim = Sim(rap())
+    sim = Sim(song())  # песня с beat поверх чужой музыки — по-прежнему спрашивает (контроль #4694)
     _asked(sim)
     sim.apply(sim.block.answer(True, sim.t))
     (backing,) = sim.backings()
@@ -650,7 +687,7 @@ def test_yes_replaces_the_playing_music_with_the_beat():
 
 
 def test_no_reads_over_the_playing_music_without_a_beat():
-    sim = Sim(rap())
+    sim = Sim(song())  # песня с beat — отказ на AskReplace, читаем без своего бита поверх чужой музыки
     _asked(sim)
     sim.apply(sim.block.answer(False, sim.t))
     sim.run(300)
@@ -660,7 +697,7 @@ def test_no_reads_over_the_playing_music_without_a_beat():
 
 
 def test_silence_after_the_question_is_no():
-    sim = Sim(rap())
+    sim = Sim(song())  # песня с beat — молчание в окне ответа трактуется как «нет»
     t0 = sim.t
     _asked(sim)
     sim.run(300)

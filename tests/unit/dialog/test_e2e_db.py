@@ -83,6 +83,7 @@ def test_turn_metrics_db_report(db, capsys):
     out = capsys.readouterr().out
     assert "Ходов в e2e-БД: 3; с агрегатом: 3; без LLM (Tier-1 и др.): 1." in out
     assert "| A1 `llm_calls` на ход (p50 = 1, p100 ≤ 3) | 3 | 1 | 2 | 2 |" in out
+    assert "неуспех по факту" in out and "0." in out.split("неуспех по факту", 1)[1][:80]
     assert "- A13 служебный текст в начатой речи: 1" in out
     assert "- A14 `minimax`: ответов 2, невалидных 1 (50 %; порог ≤ 10 %)." in out
 
@@ -91,6 +92,18 @@ def test_honesty_audit_db_flags_claim_without_action(db, capsys):
     assert honesty_audit.main(["--db", str(db)]) == 1
     findings = honesty_audit.audit_db(e2e_db.load(db))
     assert [(f.turn, f.rule, f.verdict) for f in findings] == [(3, "memory_saved", "claim_without_tool")]
+
+
+def test_speech_requested_without_start_is_not_kept(tmp_path):
+    """Ход обещал речь в динамики, SpeechEvent started нет: отчёт не успех."""
+    ev = open_events(str(tmp_path / "e2e.db"), "s1")
+    ev.write("user", turn_id="t9", epoch=0, agent="personality", text="привет")
+    ev.write("speech_requested", turn_id="t9", epoch=0, agent="personality", text="Привет!",
+             data={"speech_id": "sp1", "awaits_start": True})
+    ev.write("turn", turn_id="t9", epoch=0, agent="personality", data={"status": "finished"})
+    ev.close()
+    turn = e2e_db.load(tmp_path / "e2e.db")[0]
+    assert turn.kept() is False
 
 
 def test_log_mode_still_requires_log():

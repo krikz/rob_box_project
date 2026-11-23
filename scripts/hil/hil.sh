@@ -9,6 +9,8 @@
 #
 # on:
 #   1. проверки: ssh до четырёх машин, настройки, пути карт и реестра (не боевые), образ сима;
+#      read-only проба e2e_mode робота (e2e_probe) до любых записей на Pi — продолжает ТОЛЬКО
+#      по достоверному false: рекреация voice-assistant сбросила бы e2e_mode марафона (#4686);
 #   2. замок HIL_LOCK (/tmp/hil.lock) на Main Pi — деплой его видит и не идёт;
 #   3. Main: docker stop ros2-control lslidar — моторы (CAN → VESC) получают команды
 #      только от ros2-control; Vision: docker stop oak-d ceiling-camera;
@@ -21,14 +23,25 @@
 #      В контейнере gazebo сторож (docker/sim/hil_run.sh): при живом /controller_manager
 #      робота Gazebo не стартует, второй контроллер позже — Gazebo гасится;
 #   6. ждём: в графе ровно один /controller_manager, контейнер ros2-control не работает —
-#      значит, единственный контроллер — Gazebo. Иначе сим гасится, робот остаётся без моторов.
-# off: сим гасится первым, затем на Main, Vision и Sound `docker compose up -d --no-deps` тех же
-#   сервисов с теми же образами (закреплены по работающим контейнерам), замок снимается;
+#      значит, единственный контроллер — Gazebo; у /diff_drive_controller/cmd_vel_unstamped
+#      ровно один подписчик (§5.1). Иначе сим гасится, робот остаётся без моторов.
+# off: сим гасится первым, затем на Main — Created-контейнеры MAIN_SIM_TIME (в т.ч. с
+#   hash-префиксом вроде abe6c83d1f0a_imu-filter) docker rm, иначе следующий recreate
+#   Conflict; дальше Vision и Sound `docker compose up -d --no-deps` тех же сервисов с
+#   теми же образами (закреплены по работающим контейнерам), замок снимается;
+#   восстановление пересоздаёт voice-assistant — активный e2e_mode сбросится: громкое
+#   предупреждение в логе, сам off не блокируем (restore возвращает моторы, #4686);
 #   последним — сверка боевого `SELECT * FROM maps` со снапшотом on: изменился — выход 3.
-#   Состояние «до»: сразу после замка on пишет running|restarting|exited|absent каждого затрагиваемого
-#   сервиса в HIL_PRE_STATE (Main Pi). off сверяет с ним: сервис был нерабочим до on и таким остался —
-#   предупреждение, не провал; провал только у сервиса, который до on работал, а после off нет.
-#   Сверка реестра идёт всегда; замок снимается, если не провалился ни один бывший рабочий сервис.
+#   Состояние «до»: сразу после замка on пишет «имя status:health» каждого затрагиваемого
+#   сервиса в HIL_PRE_STATE (Main Pi). health — healthy|unhealthy|starting|none|absent
+#   (none = у контейнера нет HEALTHCHECK). off сверяет с ним: сервис был нерабочим до on
+#   и таким остался — предупреждение, не провал. Сервис с HEALTHCHECK вернулся не по
+#   running, а по свежему Health.Status этого запуска (#5170): до on был healthy, а за
+#   окно старта (HIL_OFF_READY_S, до 3 минут) не вышел в healthy — провал, замок не
+#   снимается, «робот в боевом режиме» не печатается. Старый PRE_STATE без поля health
+#   (файл прошлой версии) — готовность до HIL неизвестна: не PASS.
+#   Сверка реестра идёт всегда; замок снимается, если не провалился ни один бывший рабочий
+#   и ни один бывший healthy сервис.
 #
 # Настройки — scripts/hil/hil.conf (переопределяются переменными окружения или HIL_CONF).
 # Пароли не используются: ssh -o BatchMode=yes, нужен ключ в authorized_keys.
@@ -46,6 +59,12 @@ fi
 
 HIL_SSH="${HIL_SSH:-ssh}"
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+# Окно старта после off, с: свежий healthcheck этого запуска, не запись прошлой жизни (#5170).
+# 3 минуты — слово товарища Шифу (бриф #5170): нормальный подъём nav2. Дольше не ждём.
+: "${HIL_OFF_READY_S:=180}"
+# Пауза между пробами Health.Status. Короче interval healthcheck nav2 (15 с) смысла нет,
+# но 5 с ловит healthy раньше, если проба уже легла в Health.Log.
+: "${HIL_OFF_READY_POLL_S:=5}"
 
 MAIN_STOP=(ros2-control lslidar)
 VISION_STOP=(oak-d ceiling-camera)
@@ -55,7 +74,29 @@ SIM_SERVICES=(zenoh-router gazebo)
 SOUND_SWITCH=(voice-assistant)
 
 log() { printf '[hil %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
-die() { printf '❌ %s\n' "$*" >&2; exit 1; }
+# die после взятого замка сам возвращает робота в бой (#5138): подсказка «hil.sh off»
+# строкой не гасит USE_SIM_TIME и не поднимает моторы. До замка — только печать.
+# HIL_ABORTING не даёт die внутри cmd_off зайти в возврат второй раз.
+die() {
+    printf '❌ %s\n' "$*" >&2
+    if [ "${HIL_LOCK_HELD:-}" = 1 ] && [ "${HIL_ABORTING:-}" != 1 ]; then
+        HIL_ABORTING=1
+        hil_abort_restore || true
+    fi
+    exit 1
+}
+# Вернуть робота штатным off и не оставить контейнер, который compose down не снял.
+# Created-но-не-запущенный gazebo (compose завис на Creating) down не удаляет —
+# cmd_off тогда отказывает «робота не возвращаю» и бросает робота в полу-HIL.
+hil_abort_restore() {
+    log "гейт отказал: возвращаю робота в бой (штатный off)"
+    sim_down
+    local name
+    for name in "$HIL_SIM_PREFIX-gazebo" "$HIL_SIM_PREFIX-zenoh-router"; do
+        rsh "$HIL_SANDBOX_HOST" "docker rm -f $(q "$name")" >/dev/null 2>&1 || true
+    done
+    cmd_off
+}
 
 rsh() {  # rsh <host> <команда>
     local host="$1"; shift
@@ -78,38 +119,97 @@ rpi() {  # rpi <host> <подкоманда> <аргументы>...
     rsh "$host" "bash $REMOTE_PI ${args[*]}"
 }
 
+# e2e_probe: read-only проба e2e_mode /speaker_id_node внутри ${SOUND_SWITCH[0]}.
+# stdout — «true|false» только по подтверждённому ответу узла; rc≠0 — пробы не было
+# (нет контейнера/ros, пустой или битый вывод). Ничего на Pi не пишет и от Pi ничего
+# не требует (в отличие от remote_pi.sh) — зовётся до push_helpers, чтобы отказ не
+# оставил следов на Pi (#4686).
+e2e_probe() {
+    # Одинарные кавычки в q('...') намеренны: этот скрипт раскрывается удалённым
+    # bash -c на Sound Pi, локального раскрытия $( ) и $out здесь быть не должно.
+    # shellcheck disable=SC2016
+    rsh "$HIL_SOUND_HOST" "docker exec $(q "${SOUND_SWITCH[0]}") bash -c $(q 'source /opt/ros/humble/setup.bash; source /ws/install/setup.bash; out=$(ros2 param get /speaker_id_node e2e_mode --no-daemon 2>/dev/null | grep -aoE "Boolean value is: (True|False)" | tail -1); [ -n "$out" ] || exit 9; case "$out" in *True*) printf true ;; *) printf false ;; esac')"
+}
+
+# e2e_guard: on/off пересоздают ${SOUND_SWITCH[@]} (docker compose up -d), а рекреация
+# контейнера поднимает speaker_id_node с e2e_mode=false по умолчанию — марафон/e2e-прогон
+# теряет режим посреди актов (#4686). Fail-closed: продолжать можно только по достоверному
+# false; true, пустой/битый вывод и ненулевой probe — отказ/предупреждение.
+e2e_guard() {  # $1 = abort|warn
+    local st rc=0
+    st=$(e2e_probe 2>/dev/null) || rc=$?
+    if [ "$rc" -ne 0 ] || [ "$st" != false ]; then
+        if [ "$1" = abort ]; then
+            die "на Sound Pi не подтверждён выключенный e2e-режим (${SOUND_SWITCH[0]}: probe rc=$rc, ответ='${st:-пусто}'): пересоздание контейнера сбросит e2e_mode и сломает e2e-прогон; дождись его конца или сними режим вручную (issue #4686)"
+        fi
+        log "⚠️ e2e-режим ${SOUND_SWITCH[0]} не подтверждён выключенным (probe rc=$rc, ответ='${st:-пусто}'): restore всё равно сбросит e2e_mode (#4686) — чужой e2e-прогон придётся повторить"
+    fi
+}
+
 # ── Состояние сервисов «до on» (решение «сломан до on → предупреждение» принимает код) ──
 
-# Снимок «имя статус» для всех сервисов, которые HIL останавливает или пересоздаёт.
+# Снимок «имя status:health» для всех сервисов, которые HIL останавливает или пересоздаёт.
+# health читает код (off_ready.py --readiness) из docker inspect, не shell: у контейнера
+# без HEALTHCHECK слово none, и off судит его по running, как раньше.
 pre_state_snapshot() {
-    local line n st
-    {
-        rpi "$HIL_MAIN_HOST" state "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}"
-        rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}"
-        rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}"
-    } | while read -r line; do
-        [ -n "$line" ] || continue
-        # «имя статус USE_SIM_TIME=…» → «имя статус»
-        read -r n st _ <<<"$line"
-        printf '%s %s
-' "$n" "$st"
+    local line n st host ready
+    for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST"; do
+        case "$host" in
+            "$HIL_MAIN_HOST") rpi "$host" state "${MAIN_STOP[@]}" "${MAIN_SIM_TIME[@]}" ;;
+            "$HIL_VISION_HOST") rpi "$host" state "${VISION_STOP[@]}" ;;
+            *) rpi "$host" state "${SOUND_SWITCH[@]}" ;;
+        esac | while read -r line; do
+            [ -n "$line" ] || continue
+            read -r n st _ <<<"$line"
+            ready=$(svc_ready_word "$host" "$n")
+            printf '%s %s:%s\n' "$n" "$st" "$ready"
+        done
     done
 }
 
-# PRE_STATE (текст «имя статус») → статус сервиса до on; нет записи — running (старое поведение: ждём работающим).
-pre_status_of() {
-    local name="$1" st
-    st=$(printf '%s
-' "${PRE_STATE:-}" | awk -v n="$name" '$1 == n { print $2; exit }')
-    printf '%s' "${st:-running}"
+# PRE_STATE (текст «имя status:health») → поле сервиса до on.
+# Нет записи — running:- (старое поведение: ждём работающим; готовность неизвестна).
+pre_field_of() {
+    local name="$1" field
+    field=$(printf '%s\n' "${PRE_STATE:-}" | awk -v n="$name" '$1 == n { print $2; exit }')
+    printf '%s' "${field:-running:-}"
 }
 
-# svc_verdict <имя> <статус после off>: ok — работает; warn — не работает, но не работал и до on; fail — иначе.
+# Статус контейнера до on (первое поле). Старый файл без «:» — вся строка и есть статус.
+pre_status_of() {
+    local field before
+    field=$(pre_field_of "$1")
+    before="${field%%:*}"
+    printf '%s' "${before:-running}"
+}
+
+# Готовность до on. «-» и отсутствие поля — неизвестна (старый PRE_STATE).
+pre_ready_of() {
+    local field
+    field=$(pre_field_of "$1")
+    case "$field" in
+        *:*) printf '%s' "${field#*:}" ;;
+        *) printf '%s' "-" ;;
+    esac
+}
+
+# svc_verdict <имя> <статус после off> [готовность после off].
+# ok — running и (healthy|none); warn — не работает, но и до on не работал и не был healthy;
+# fail — иначе, в том числе running+unhealthy. Готовность не передана — none (старые вызовы).
 svc_verdict() {
-    local name="$1" after="$2" before
-    if [ "$after" = running ]; then echo ok; return 0; fi
+    local name="$1" after="$2" ready="${3:-none}" before prior
+    if [ "$after" = running ] && { [ "$ready" = healthy ] || [ "$ready" = none ]; }; then
+        echo ok
+        return 0
+    fi
+    if [ "$ready" = starting ]; then echo wait; return 0; fi
     before=$(pre_status_of "$name")
-    if [ "$before" = running ]; then echo fail; else echo warn; fi
+    prior=$(pre_ready_of "$name")
+    if [ "$after" != running ] && [ "$before" != running ] && [ "$prior" != healthy ]; then
+        echo warn
+    else
+        echo fail
+    fi
 }
 
 # ── Проверки настроек (до любого действия) ────────────────────────────────
@@ -249,20 +349,226 @@ sim_compose() {  # sim_compose <args compose>...
 sim_gazebo_state() {
     rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo") 2>/dev/null | grep . || echo 'absent -'"
 }
-# Число /controller_manager в графе — глазами сторожа внутри gazebo; «-» — gazebo не работает.
+# Топики сима, по которым гейт судит мир (#5138). Голого /odom в симе нет:
+# его публикует rtabmap icp_odometry на роботе, в HIL-симе этого нет.
+# Модель/плагин подняты = мост Gazebo дал /sim/ground_truth/odom или идёт /clock.
+# Контроллер поднят = есть /diff_drive_controller/odom.
+SIM_TRUTH_ODOM="/sim/ground_truth/odom"
+SIM_DRIVE_ODOM="/diff_drive_controller/odom"
+# Сырьё гейта контроллера (#5138): снимается ДО гашения сима, пока контейнер ещё есть.
+# Строка inspect + хвост логов + три топика сима. Пустой ответ поля — «?», не выдумка.
+sim_gate_evidence() {
+    local gz="$HIL_SIM_PREFIX-gazebo" line topics
+    line=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$gz")" 2>/dev/null | grep . || true)
+    printf 'сырьё gazebo inspect: %s\n' "${line:-inspect не ответил}" >&2
+    printf 'сырьё gazebo logs (tail 30):\n' >&2
+    rsh "$HIL_SANDBOX_HOST" "docker logs --tail 30 $(q "$gz")" >&2 2>&1 || printf 'docker logs не ответил\n' >&2
+    topics=$(sim_exec_bounded "$gz" "/entrypoint.sh ros2 topic list 2>/dev/null" || true)
+    if [ -z "$topics" ]; then
+        printf 'сырьё sim: ros2 topic list пуст или не ответил (/clock нет, %s нет, %s нет, топиков 0); /odom здесь не проверяем: его в симе нет\n' \
+            "$SIM_TRUTH_ODOM" "$SIM_DRIVE_ODOM" >&2
+        return 0
+    fi
+    local n clock=нет truth=нет drive=нет
+    n=$(printf '%s\n' "$topics" | grep -c .)
+    if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=есть; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_TRUTH_ODOM"; then truth=есть; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_DRIVE_ODOM"; then drive=есть; fi
+    printf 'сырьё sim: /clock %s, %s %s, %s %s, топиков %s; /odom здесь не проверяем: его в симе нет\n' \
+        "$clock" "$SIM_TRUTH_ODOM" "$truth" "$SIM_DRIVE_ODOM" "$drive" "$n" >&2
+}
+# Причина таймаута гейта — из сырья, не общая фраза. Код печатает одну строку.
+# (а) контейнер перезапускался или вышел с кодом;
+# (б) жив, но нет ни /sim/ground_truth/odom, ни /clock — модель/плагин не поднялись;
+# (в) модель есть (/clock или ground_truth), а /diff_drive_controller/odom нет;
+# иначе — прежнее сообщение. Голый /odom не смотрим: в симе его нет.
+sim_cm_timeout_cause() {  # sim_cm_timeout_cause <inspect-строка> <topic-list>
+    local inspect="$1" topics="$2" status rc restart
+    status=$(printf '%s\n' "$inspect" | sed -n 's/.*Status=\([^ ]*\).*/\1/p' | head -n 1)
+    rc=$(printf '%s\n' "$inspect" | sed -n 's/.*ExitCode=\([^ ]*\).*/\1/p' | head -n 1)
+    restart=$(printf '%s\n' "$inspect" | sed -n 's/.*RestartCount=\([^ ]*\).*/\1/p' | head -n 1)
+    case "$restart" in
+        ''|*[!0-9]*) restart=0 ;;
+    esac
+    if [ "$restart" -gt 0 ] || { [ -n "$rc" ] && [ "$rc" != 0 ]; }; then
+        printf 'Gazebo перезапускался (RestartCount=%s, ExitCode=%s, Status=%s): смотри сырьё выше; hil.sh off' \
+            "${restart:-?}" "${rc:-?}" "${status:-?}"
+        return 0
+    fi
+    local clock=0 truth=0 drive=0
+    if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=1; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_TRUTH_ODOM"; then truth=1; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_DRIVE_ODOM"; then drive=1; fi
+    if [ "$status" = running ] && [ "$truth" = 0 ] && [ "$clock" = 0 ]; then
+        printf 'Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись (нет %s и /clock); hil.sh off' \
+            "$SIM_TRUTH_ODOM"
+        return 0
+    fi
+    if { [ "$clock" = 1 ] || [ "$truth" = 1 ]; } && [ "$drive" = 0 ]; then
+        printf 'мир идёт, ros2_control не поднял контроллеры (нет %s); hil.sh off' "$SIM_DRIVE_ODOM"
+        return 0
+    fi
+    printf 'за %s с контроллер Gazebo не появился; hil.sh off' "$HIL_WAIT_CM_S"
+}
+# docker exec внутри гейта ограничен по времени (#5138): живой заход 22.11 держал
+# `hil count --settle 3` 234 с, и цикл из 5 с за это время не проверял ничего.
+# «timeout» — проба не ответила; пусто — exec упал. Код вызывает сам решает.
+sim_exec_bounded() {  # sim_exec_bounded <контейнер> <команда внутри>
+    rsh "$HIL_SANDBOX_HOST" "timeout $(q "$HIL_PROBE_TIMEOUT_S") docker exec $(q "$1") $2"
+}
+# Число /controller_manager в графе — глазами сторожа внутри gazebo.
+# «-» — gazebo не работает или ответ не число; «timeout» — проба не ответила за срок.
 sim_cm_count() {
-    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -" || echo -
+    local out rc=0
+    out=$(sim_exec_bounded "$HIL_SIM_PREFIX-gazebo" \
+        "/entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null") || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo timeout
+        return 0
+    fi
+    printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -
+}
+# Подписчики /diff_drive_controller/cmd_vel_unstamped (§5.1): норма HIL — 1 (только Gazebo).
+# «-» — gazebo не работает или topic info не ответил.
+CMD_VEL_UNSTAMPED="/diff_drive_controller/cmd_vel_unstamped"
+sim_cmd_vel_subs() {
+    local out rc=0
+    out=$(sim_exec_bounded "$HIL_SIM_PREFIX-gazebo" \
+        "/entrypoint.sh ros2 topic info $(q "$CMD_VEL_UNSTAMPED") 2>/dev/null") || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo timeout
+        return 0
+    fi
+    printf '%s\n' "$out" | sed -n 's/^Subscription count: *//p' | tail -n 1 | grep -E '^[0-9]+$' || echo -
 }
 sim_down() {
     log "песочница: гашу zenoh-router и gazebo ($HIL_SIM_PROJECT)"
     sim_compose down --timeout 20 || log "⚠️  compose down на песочнице вернул ошибку"
 }
+# Мир до первой цели Depot (#4694): PASS только по трём фактам (args/mount/SDF).
+# Обязательность решает код (world_check.py --gate-required): HIL_EXPECT_WORLD=depot
+# или точный world:=/sim_video/world.sdf. Обычный polygon без переменной — молчит.
+# world.sdf.old гейт не включает.
+sim_world_gate_required() {  # sim_world_gate_required <expect> <args>
+    local ans
+    ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --gate-required "$1" --args "$2" 2>/dev/null || true)
+    [ "$ans" = required ]
+}
+# Копия Compose на песочнице — штатный Depot? (полный маршрут, M1, R7).
+# Код печатает required|skip. Пустой ответ — не «skip»: файл не прочитан.
+sim_on_must_check_depot() {  # sim_on_must_check_depot <expect> <локальный файл compose>
+    local ans
+    ans=$(python3 -X utf8 "$HERE/checks/world_check.py" --on-must-check "$1" --compose-file "$2" 2>/dev/null || true)
+    [ "$ans" = required ]
+}
+sim_check_expect_world() {
+    local expect="$1" gz="$HIL_SIM_PREFIX-gazebo" args mounts wpath sdf image line rc=0 tmp
+    args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$gz")" 2>/dev/null || true)
+    mounts=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' $(q "$gz")" 2>/dev/null || true)
+    image=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.Image}}' $(q "$gz")" 2>/dev/null || true)
+    wpath=""
+    case "$args" in
+        *world:=*) wpath="${args#*world:=}"; wpath="${wpath%% *}" ;;
+    esac
+    sdf=""
+    if [ -n "$wpath" ]; then
+        sdf=$(rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$gz") cat $(q "$wpath") 2>/dev/null" || true)
+    fi
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        mkdir -p "$HIL_WORLD_CHECK_DIR"
+        # Бриф 15:44 UTC: каталог Compose, команда Gazebo, SHA SDF, ID образа.
+        printf '%s\n' "$HIL_SANDBOX_REPO" >"$HIL_WORLD_CHECK_DIR/compose_dir.txt"
+        printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_args.txt"
+        printf '%s\n' "$args" >"$HIL_WORLD_CHECK_DIR/gazebo_command.txt"
+        printf '%s\n' "$mounts" >"$HIL_WORLD_CHECK_DIR/gazebo_mounts.txt"
+        printf '%s\n' "$image" >"$HIL_WORLD_CHECK_DIR/gazebo_image_id.txt"
+        if [ -n "$sdf" ]; then
+            printf '%s' "$sdf" | sha256sum | awk '{print $1}' >"$HIL_WORLD_CHECK_DIR/sdf.sha256"
+        else
+            printf 'missing\n' >"$HIL_WORLD_CHECK_DIR/sdf.sha256"
+        fi
+    fi
+    tmp=$(mktemp -d)
+    printf '%s\n' "$mounts" >"$tmp/mounts"
+    printf '%s' "$sdf" >"$tmp/sdf"
+    line=$(python3 -X utf8 "$HERE/checks/world_check.py" "$expect" \
+        --args "$args" --mounts-file "$tmp/mounts" --sdf-file "$tmp/sdf") || rc=$?
+    rm -rf "$tmp"
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        printf '%s\n' "$line" >"$HIL_WORLD_CHECK_DIR/verdict.txt"
+    fi
+    if [ "$rc" -ne 0 ]; then
+        sim_down
+        die "$line; hil.sh off"
+    fi
+    log "мир: $line"
+}
 
 # ── Main Pi: контур навигации в HIL ───────────────────────────────────────
 
+# created_containers_to_rm: stdin «ID NAMES STATUS…» (как docker ps --format),
+# аргументы — имена сервисов. stdout — ID со статусом Created, чьё имя равно
+# сервису или оканчивается на _сервис / -сервис (hash-префикс compose v1,
+# project-svc[-N] v2). Up/Exited/Paused не трогаем — только Created.
+created_containers_to_rm() {
+    local id name status cand tail svc
+    while read -r id name status _; do
+        [ -n "${id:-}" ] && [ -n "${name:-}" ] || continue
+        case "$status" in
+            Created | created) ;;
+            *) continue ;;
+        esac
+        cand="$name"
+        tail="${name##*-}"
+        case "$tail" in
+            "" | *[!0-9]*) ;;
+            *) cand="${name%-*}" ;;
+        esac
+        for svc in "$@"; do
+            case "$name" in
+                "$svc" | *_"$svc" | *-"$svc") printf '%s\n' "$id"; continue 2 ;;
+            esac
+            if [ "$cand" != "$name" ]; then
+                case "$cand" in
+                    "$svc" | *_"$svc" | *-"$svc") printf '%s\n' "$id"; continue 2 ;;
+                esac
+            fi
+        done
+    done
+}
+
+# Убрать Created-контейнеры MAIN_SIM_TIME на Main до recreate: осиротевший
+# abe6c83d1f0a_imu-filter (и аналоги) иначе даёт Conflict на следующем up.
+main_rm_created_sim() {
+    local list ids line
+    list=$(rsh "$HIL_MAIN_HOST" "docker ps -a --format '{{.ID}} {{.Names}} {{.Status}}'") || true
+    ids=$(printf '%s\n' "$list" | created_containers_to_rm "${MAIN_SIM_TIME[@]}")
+    [ -n "$ids" ] || return 0
+    line=$(printf '%s\n' "$ids" | tr '\n' ' ')
+    line=${line% }
+    log "Main: docker rm Created контура HIL: $line"
+    # shellcheck disable=SC2086
+    rsh "$HIL_MAIN_HOST" "docker rm $line" || log "⚠️  docker rm Created не полностью ($line)"
+}
+
 # compose up сервисов контура (on и restart): sim time, карта HIL_MAPS_DIR, режим rtabmap HIL_RTABMAP_MODE.
+# HIL_NAV2TUNE_COMPOSE — необязательный четвёртый -f (повтор M1, #4694). Пусто — три файла, как раньше.
+# HIL_GOAL_PROBE_COMPOSE — необязательный пятый -f (проба goal-checker, #4945), только вместе с
+# M1_GOAL_PROBE_MOUNT: compose пробы требует переменную (${M1_GOAL_PROBE_MOUNT:?}).
+# off эти файлы не читает: боевой nav2 поднимается без оверлея и без пробы.
 main_sim_up() {  # main_sim_up [флаги compose up] <сервисы>...
-    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") up -d --no-deps --pull never $*"
+    main_rm_created_sim
+    local extra=""
+    local probe_env=""
+    if [ -n "${HIL_NAV2TUNE_COMPOSE:-}" ]; then
+        extra="-f $(q "$HIL_NAV2TUNE_COMPOSE")"
+    fi
+    if [ -n "${HIL_GOAL_PROBE_COMPOSE:-}" ]; then
+        extra="$extra -f $(q "$HIL_GOAL_PROBE_COMPOSE")"
+        probe_env="M1_GOAL_PROBE_MOUNT=$(q "${M1_GOAL_PROBE_MOUNT:-}")"
+    fi
+    # shellcheck disable=SC2086
+    rsh "$HIL_MAIN_HOST" "cd $(q "$HIL_MAIN_DIR") && HIL_MAPS_DIR=$(q "$HIL_MAPS_DIR") HIL_RTABMAP_MODE=$(q "$HIL_RTABMAP_MODE") HIL_GUARD_SOUND=$(q "$HIL_GUARD_SOUND") NAV2TUNE_OVERLAYS=$(q "${NAV2TUNE_OVERLAYS:-}") $probe_env docker compose -f docker-compose.yaml -f $(q "$HIL_REMOTE_DIR/main.images.yaml") -f $(q "$HIL_REMOTE_DIR/main.hil.yaml") $extra up -d --no-deps --pull never $*"
 }
 
 # ── Команды ───────────────────────────────────────────────────────────────
@@ -282,12 +588,35 @@ preflight() {
     log "ROBOT_ID=$HIL_ROBOT_ID, песочница $HIL_SANDBOX_IP (iface=${HIL_SANDBOX_IFACE:-—}), роутеры робота: $HIL_ROBOT_ROUTERS"
 }
 
+validate_hil_run_token() {
+    if [ -n "${HIL_RUN_TOKEN:-}" ] && ! [[ "$HIL_RUN_TOKEN" =~ ^[0-9a-f]{32}$ ]]; then
+        die "HIL_RUN_TOKEN: ожидались 32 строчных шестнадцатеричных цифры"
+    fi
+}
+
+check_hil_off_owner() {
+    validate_hil_run_token
+    [ -n "${HIL_RUN_TOKEN:-}" ] || return 0
+    local lock
+    lock=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_LOCK") 2>/dev/null") || die "off: замок HIL не прочитан"
+    [[ "$lock" == "HIL on since "*" token=$HIL_RUN_TOKEN maps=$HIL_MAPS_DIR" ]] \
+        || die "off: замок HIL принадлежит другому запуску"
+}
+
 cmd_on() {
+    validate_hil_run_token
     preflight
+    e2e_guard abort
     push_helpers
     local who
-    who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP maps=$HIL_MAPS_DIR"
+    who="HIL on since $(date -u +%FT%TZ) by ${USER:-${USERNAME:-?}}@$(hostname) sandbox=$HIL_SANDBOX_IP"
+    if [ -n "${HIL_RUN_TOKEN:-}" ]; then
+        who+=" token=$HIL_RUN_TOKEN"
+    fi
+    who+=" maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
+    # Замок взят: дальше любой die возвращает робота штатным off, а не подсказкой (#5138).
+    HIL_LOCK_HELD=1
 
     log "состояние сервисов до on → $HIL_MAIN_HOST:$HIL_PRE_STATE"
     local pre
@@ -330,36 +659,99 @@ cmd_on() {
         *" running "*) die "ros2-control снова работает ($st) — Gazebo не поднимаю; hil.sh off" ;;
     esac
 
-    log "песочница: поднимаю ${SIM_SERVICES[*]} (мир $HIL_SIM_WORLD)"
-    sim_compose up -d --no-build "${SIM_SERVICES[@]}" || { sim_down; die "песочница: compose up не прошёл; робот без моторов, hil.sh off"; }
+    # До compose up: копия — штатный Depot (runvideo, M1, R7) или expect=depot.
+    # Гейт обязателен и при потере overlay (#4694). Polygon без env — молчит.
+    _depot_compose=$(mktemp)
+    if ! rsh "$HIL_SANDBOX_HOST" "cat $(q "$HIL_SANDBOX_REPO/docker/sim/compose.hil.yaml")" >"$_depot_compose"; then
+        rm -f "$_depot_compose"
+        die "WORLD_MISMATCH: compose.hil.yaml не прочитан, Gazebo не поднимаю"
+    fi
+    if sim_on_must_check_depot "${HIL_EXPECT_WORLD:-}" "$_depot_compose"; then
+        export HIL_EXPECT_WORLD=depot
+        log "мир: копия Compose — Depot, проверка обязательна до первой цели"
+    elif [ -n "${HIL_EXPECT_WORLD:-}" ] && [ "${HIL_EXPECT_WORLD}" != depot ]; then
+        rm -f "$_depot_compose"
+        die "WORLD_MISMATCH: HIL_EXPECT_WORLD=${HIL_EXPECT_WORLD} (только depot или пусто)"
+    fi
+    if [ -n "${HIL_WORLD_CHECK_DIR:-}" ]; then
+        mkdir -p "$HIL_WORLD_CHECK_DIR"
+        cp "$_depot_compose" "$HIL_WORLD_CHECK_DIR/compose.hil.yaml"
+        printf '%s\n' "$HIL_SANDBOX_REPO" >"$HIL_WORLD_CHECK_DIR/compose_dir.txt"
+    fi
+    rm -f "$_depot_compose"
 
-    log "жду ровно один /controller_manager (Gazebo), до $HIL_WAIT_CM_S с"
-    local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz
+    log "песочница: поднимаю ${SIM_SERVICES[*]} (мир $HIL_SIM_WORLD)"
+    if ! sim_compose up -d --no-build "${SIM_SERVICES[@]}"; then
+        # #5138, второй заход: compose завис на Creating — контейнер создан и не стартовал.
+        # Это не «compose up не прошёл»: причина своя, контейнер down не снимает.
+        _up_gz=$(sim_gazebo_state)
+        case "$_up_gz" in
+            created* | Created*)
+                die "песочница: gazebo создан и не стартовал (compose завис на Creating, состояние $_up_gz); робот без моторов" ;;
+            *)
+                die "песочница: compose up не прошёл (gazebo: $_up_gz); робот без моторов" ;;
+        esac
+    fi
+
+    log "жду ровно один /controller_manager и одного подписчика $CMD_VEL_UNSTAMPED (§5.1), до $HIL_WAIT_CM_S с"
+    local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz subs
     while :; do
         gz=$(sim_gazebo_state)
         case "$gz" in
             running*) ;;
+            created* | Created*)
+                die "контейнер gazebo не стартовал ($gz): пробы контроллера не было" ;;
             *)
                 rsh "$HIL_SANDBOX_HOST" "docker logs --tail 30 $(q "$HIL_SIM_PREFIX-gazebo")" || true
-                sim_down
-                die "gazebo не работает ($gz): сторож отказал или Gazebo упал — см. лог выше; hil.sh off" ;;
+                die "gazebo не работает ($gz): сторож отказал или Gazebo упал — см. лог выше" ;;
         esac
         cm=$(sim_cm_count)
+        if [ "$cm" = timeout ]; then
+            # #5138: контейнер жив, единственная проба не ответила. Цикл не ждёт её до конца.
+            sim_gate_evidence
+            die "контейнер gazebo жив, проба контроллера не ответила за ${HIL_PROBE_TIMEOUT_S} с"
+        fi
         st=$(rpi "$HIL_MAIN_HOST" state ros2-control)
         case "$st" in
             *" running "*) sim_down; die "ros2-control робота работает ($st) — Gazebo погашен; hil.sh off" ;;
         esac
         if [ "$cm" = 1 ]; then
-            log "✅ /controller_manager ровно один, ros2-control робота: ${st#ros2-control }"
-            break
+            # §5.1: один подписчик cmd_vel_unstamped (Gazebo); два — ещё слушает ros2-control.
+            subs=$(sim_cmd_vel_subs)
+            if [ "$subs" = 1 ]; then
+                log "✅ /controller_manager ровно один, $CMD_VEL_UNSTAMPED подписчиков: 1, ros2-control робота: ${st#ros2-control }"
+                break
+            fi
+            if [ "$subs" = timeout ]; then
+                sim_gate_evidence
+                die "контейнер gazebo жив, проба подписчиков $CMD_VEL_UNSTAMPED не ответила за ${HIL_PROBE_TIMEOUT_S} с"
+            fi
+            if [ "$subs" != 0 ] && [ "$subs" != - ]; then
+                die "$CMD_VEL_UNSTAMPED подписчиков: $subs (ждали 1)"
+            fi
+        elif [ "$cm" != 0 ] && [ "$cm" != - ]; then
+            die "/controller_manager в графе: $cm (ждали 1)"
         fi
-        if [ "$cm" != 0 ] && [ "$cm" != - ]; then
-            sim_down
-            die "/controller_manager в графе: $cm (ждали 1) — Gazebo погашен; hil.sh off"
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            if [ "$cm" = 1 ]; then
+                sim_gate_evidence
+                die "за $HIL_WAIT_CM_S с у $CMD_VEL_UNSTAMPED не ровно 1 подписчик (сейчас ${subs:--})"
+            fi
+            # #5138: сырьё и причина — пока контейнер жив. sim_down после, иначе логи уже не снять.
+            _cm_inspect=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null | grep . || true)
+            _cm_topics=$(sim_exec_bounded "$HIL_SIM_PREFIX-gazebo" "/entrypoint.sh ros2 topic list 2>/dev/null" || true)
+            sim_gate_evidence
+            die "$(sim_cm_timeout_cause "${_cm_inspect:-}" "${_cm_topics:-}")"
         fi
-        [ "$(date +%s)" -lt "$deadline" ] || { sim_down; die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"; }
         sleep 5
     done
+    # Гейт до «HIL включён» / первой цели. Обязательность решает код, не case в shell:
+    # HIL_EXPECT_WORLD=depot (штатный сценарий сам его выставляет) или точный
+    # world:=/sim_video/world.sdf. Обычный polygon без переменной и world.sdf.old — молчит (#4694).
+    _depot_args=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{join .Args \" \"}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null || true)
+    if sim_world_gate_required "${HIL_EXPECT_WORLD:-}" "$_depot_args"; then
+        sim_check_expect_world depot
+    fi
     log "HIL включён. Сторож в gazebo следит дальше (docker logs $HIL_SIM_PREFIX-gazebo | grep hil-guard)."
     cmd_status
 }
@@ -400,7 +792,99 @@ cmd_restart() {
     rpi "$HIL_MAIN_HOST" state "$@"
 }
 
+# Готовность одного контейнера словом кода (off_ready.py --readiness).
+# Пустой/битый inspect — starting, не healthy: молчание docker не выдаём за готовность.
+svc_ready_word() {  # svc_ready_word <host> <контейнер>
+    local raw word
+    raw=$(rpi "$1" health "$2" 2>/dev/null) || raw=""
+    word=$(printf '%s\n' "$raw" | python3 -X utf8 "$HERE/checks/off_ready.py" --readiness --inspect - 2>/dev/null) || word=""
+    case "$word" in
+        healthy|unhealthy|starting|none|absent) printf '%s' "$word" ;;
+        *) printf '%s' starting ;;
+    esac
+}
+
+# off ждёт готовности: свежий Health.Status этого запуска, окно HIL_OFF_READY_S.
+# Пишет в OFF_READY_FAIL строки «имя<TAB>причина». Пусто — каждый сервис с HEALTHCHECK
+# вышел в healthy (или HEALTHCHECK нет и контейнер running). starting на границе окна —
+# ещё не готовность: последняя проба допишет fail.
+# set -- здесь нельзя: затрёт позиционные параметры off.
+off_wait_ready() {  # off_wait_ready <момент возврата RFC3339>
+    local returned="$1" deadline now host name line reason waiting names
+    OFF_READY_FAIL=""
+    deadline=$(( $(date +%s) + HIL_OFF_READY_S ))
+    while :; do
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        OFF_READY_FAIL=""
+        waiting=0
+        for host in "$HIL_MAIN_HOST" "$HIL_VISION_HOST" "$HIL_SOUND_HOST"; do
+            case "$host" in
+                "$HIL_MAIN_HOST") names="${MAIN_STOP[*]} ${MAIN_SIM_TIME[*]}" ;;
+                "$HIL_VISION_HOST") names="${VISION_STOP[*]}" ;;
+                *) names="${SOUND_SWITCH[*]}" ;;
+            esac
+            for name in $names; do
+                line=$(off_ready_one "$host" "$name" "$returned" "$now") || true
+                case "$line" in
+                    wait) waiting=1 ;;
+                    fail*|unknown*)
+                        reason=${line#*$'\t'}
+                        OFF_READY_FAIL="${OFF_READY_FAIL}${name}"$'\t'"${reason}"$'\n' ;;
+                esac
+            done
+        done
+        [ "$waiting" = 1 ] || return 0
+        [ "$(date +%s)" -ge "$deadline" ] && return 0
+        sleep "$HIL_OFF_READY_POLL_S"
+    done
+}
+
+# Поле готовности из OFF_READY_FAIL (его пишет off_wait_ready). Нет строки — none:
+# сервис без HEALTHCHECK, либо свежий healthy (оба для svc_verdict — ok при running).
+# Слово healthy без пробы не печатаем: это была бы ложь (ADR-0018).
+off_fail_ready_of() {  # off_fail_ready_of <имя>
+    local name="$1" row ready
+    row=$(printf '%s\n' "$OFF_READY_FAIL" | awk -F '\t' -v n="$name" '$1 == n { print; exit }')
+    if [ -z "$row" ]; then
+        # Нет строки FAIL. С HEALTHCHECK и свежим healthy модуль сказал ready —
+        # печатаем healthy. Без HEALTHCHECK (до on none) — none. Не угадываем.
+        case "$(pre_ready_of "$name")" in
+            healthy) printf '%s' healthy ;;
+            *) printf '%s' none ;;
+        esac
+        return 0
+    fi
+    ready=$(printf '%s\n' "$row" | sed -n 's|.*/\([a-z]*\); healthcheck:.*|\1|p')
+    case "$ready" in
+        healthy|unhealthy|starting|none|absent) printf '%s' "$ready" ;;
+        *) printf '%s' unhealthy ;;
+    esac
+}
+
+off_fail_reason_of() {  # off_fail_reason_of <имя> <статус> <готовность>
+    local name="$1" st="$2" ready="$3" row reason prior
+    row=$(printf '%s\n' "$OFF_READY_FAIL" | awk -F '\t' -v n="$name" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }')
+    prior=$(pre_field_of "$name")
+    if [ -n "$row" ]; then
+        printf '%s' "$row"
+        return 0
+    fi
+    reason="до on было: ${prior}, после off — ${st}/${ready}"
+    printf '%s' "$reason"
+}
+
+# Одна проба: stdout — ready | warn | wait | fail<TAB>причина | unknown<TAB>причина.
+off_ready_one() {  # off_ready_one <host> <контейнер> <returned-at> <now>
+    local host="$1" name="$2" returned="$3" now="$4" raw before
+    raw=$(rpi "$host" health "$name" 2>/dev/null) || raw=""
+    before=$(pre_field_of "$name")
+    printf '%s\n' "$raw" | python3 -X utf8 "$HERE/checks/off_ready.py" \
+        --inspect - --before "$before" --returned-at "$returned" --now "$now" \
+        | awk 'NR==1 { w=$0; next } { printf "%s\t%s\n", w, $0; found=1 } END { if (!found) print w }'
+}
+
 cmd_off() {
+    check_hil_off_owner
     check_net
     check_hil_registry
     local host
@@ -408,6 +892,7 @@ cmd_off() {
         rsh "$host" true || die "нет ssh до $host"
     done
     resolve_robot_id
+    e2e_guard warn
     push_helpers
     # Сначала сим: иначе вернувшийся ros2-control встретит второй /controller_manager.
     sim_down
@@ -420,6 +905,7 @@ cmd_off() {
 
     log "Main: возвращаю ${MAIN_SIM_TIME[*]} ${MAIN_STOP[*]} (боевое окружение, те же образы)"
     rpi "$HIL_MAIN_HOST" pin "$HIL_MAIN_DIR" "$HIL_REMOTE_DIR/main.images.yaml"
+    main_rm_created_sim
     rpi "$HIL_MAIN_HOST" compose "$HIL_MAIN_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/main.images.yaml" \
         up -d --no-deps --pull never "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}"
     log "Vision: возвращаю ${VISION_STOP[*]}"
@@ -431,17 +917,27 @@ cmd_off() {
     rpi "$HIL_SOUND_HOST" compose "$HIL_SOUND_DIR" -f docker-compose.yaml -f "$HIL_REMOTE_DIR/sound.images.yaml" \
         up -d --no-deps --pull never "${SOUND_SWITCH[@]}"
 
+    # Момент возврата — до первой пробы health. Health.Log старше этого момента
+    # принадлежит прошлой жизни контейнера и готовностью не считается (#5170).
+    local returned_at
+    returned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
     # Каждый сервис: работает и без sim time. Строк должно прийти ровно столько, сколько сервисов.
     # Нерабочий сервис, который не работал и до on (PRE_STATE), — предупреждение, не провал.
-    local bad=0 warn=0 line n=0 main_state vision_state sound_state wpdb name st verdict
+    # Сервис с HEALTHCHECK — ещё и healthy по свежей пробе этого запуска.
+    local bad=0 warn=0 line n=0 main_state vision_state sound_state wpdb name st verdict ready
     PRE_STATE=$(rsh "$HIL_MAIN_HOST" "cat $(q "$HIL_PRE_STATE") 2>/dev/null" || true)
     if [ -n "$PRE_STATE" ]; then
         log "состояние до on (из $HIL_MAIN_HOST:$HIL_PRE_STATE):"
         printf '%s
 ' "$PRE_STATE" | sed 's/^/    до on  /'
     else
-        log "⚠️  $HIL_MAIN_HOST:$HIL_PRE_STATE нет (on не доходил до записи?) — все сервисы ждём работающими"
+        log "⚠️  $HIL_MAIN_HOST:$HIL_PRE_STATE нет (on не доходил до записи?) — готовность до HIL неизвестна, «в боевом режиме» не объявляю"
     fi
+    # Окно старта: nav2 (и любой сервис с HEALTHCHECK) должен дать свежий healthy
+    # этого запуска. starting внутри окна — ждём; unhealthy — сразу fail, не ждём.
+    log "жду готовность (свежий healthcheck этого запуска), до ${HIL_OFF_READY_S} с"
+    off_wait_ready "$returned_at"
     main_state=$(rpi "$HIL_MAIN_HOST" state "${MAIN_SIM_TIME[@]}" "${MAIN_STOP[@]}") || bad=1
     vision_state=$(rpi "$HIL_VISION_HOST" state "${VISION_STOP[@]}") || bad=1
     sound_state=$(rpi "$HIL_SOUND_HOST" state "${SOUND_SWITCH[@]}") || bad=1
@@ -451,20 +947,24 @@ cmd_off() {
         local label="$1" l="$2" kind="$3"
         read -r name st _ <<<"$l"
         n=$((n + 1))
-        verdict=$(svc_verdict "$name" "$st")
+        ready=$(off_fail_ready_of "$name")
+        verdict=$(svc_verdict "$name" "$st" "$ready")
         case "$verdict" in
             ok)
-                echo "  $label $l"
+                case "$ready" in
+                    none) echo "  $label $l  ready=none" ;;
+                    *) echo "  $label $l  ready=healthy" ;;
+                esac
                 case "$kind" in
                     sim) case "$l" in *" running USE_SIM_TIME=unset" | *" running USE_SIM_TIME=false") ;; *) bad=1 ;; esac ;;
                     wpdb) [ "$wpdb" = unset ] || bad=1 ;;
                 esac ;;
             warn)
                 warn=$((warn + 1))
-                echo "  $label $l  ⚠️  до on было: $(pre_status_of "$name"), не работает и сейчас — не провал off" ;;
+                echo "  $label $l  ⚠️  до on было: $(pre_field_of "$name"), не работает и сейчас — не провал off" ;;
             *)
                 bad=1
-                echo "  $label $l  ❌ до on работал (running), после off — $st" ;;
+                echo "  $label $l  ❌ $(off_fail_reason_of "$name" "$st" "$ready")" ;;
         esac
     }
     while read -r line; do
@@ -485,8 +985,11 @@ cmd_off() {
     local reg=0
     sound_verify_maps || reg=$?
     if [ "$bad" != 0 ]; then
+        log "❌ возврат не готов — замок $HIL_LOCK НЕ снимаю"
+        printf '%s\n' "$OFF_READY_FAIL" | sed '/^$/d; s/^/    /' >&2 || true
         die "не всё вернулось (см. выше: ❌) — замок $HIL_LOCK оставлен"
     fi
+    check_hil_off_owner
     rsh "$HIL_MAIN_HOST" "rm -f -- $(q "$HIL_PRE_STATE")" || true
     rpi "$HIL_MAIN_HOST" lock-release "$HIL_LOCK"
     local tail_note=""
@@ -531,7 +1034,9 @@ cmd_status() {
     local gz
     gz=$(sim_gazebo_state)
     case "$gz" in
-        running*) echo "── /controller_manager в графе (сторож в gazebo): $(sim_cm_count) (норма HIL — 1)" ;;
+        running*)
+            echo "── /controller_manager в графе (сторож в gazebo): $(sim_cm_count) (норма HIL — 1)"
+            echo "── $CMD_VEL_UNSTAMPED подписчиков: $(sim_cmd_vel_subs) (норма HIL — 1)" ;;
         *) echo "── gazebo: $gz" ;;
     esac
 }

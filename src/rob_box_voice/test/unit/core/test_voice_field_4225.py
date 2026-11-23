@@ -106,14 +106,17 @@ def test_catalogue_is_the_role_voices_without_the_robot_voice():
 
 
 def test_n404_speech_with_the_current_voice_is_valid_at_once_and_sounds_in_the_session_voice():
+    """#5103 (решение Шифу 22.11.2026): ``alena`` есть в каталоге провайдера, который видит модель, — поле остаётся.
+    Раньше (#4225) его сбрасывали, потому что каталог ролей текущего голоса не содержал. Пустое поле и имя из каталога
+    звучат одним голосом сессии: TTS без ``voice`` берёт применённый ``set_voice``, с ``alena`` — тот же id."""
     agg, node, lines, inner = _turn({"speech": SPEECH, "voice": "alena", "expression": {"emotion": "happy"}})
     assert inner.asked == 1 and agg.llm_calls == 1, "без повтора: голос реплики - не нарушение"
     assert (agg.stage, agg.status) == ("done", "finished")
     (said,) = node.pubs["/voice/speech/request"].sent
     assert said.text == f"{SPEECH}"
-    assert said.voice == "", "голос реплики не задан - TTS говорит голосом сессии (alena, yandex), а не чужим"
+    assert said.voice == "alena", "названный голос из каталога провайдера остаётся (#5103): это голос сессии"
     (verdict,) = [line for line in lines if line.startswith(cb.COMMAND_LOG_MARK) and "verdict=" in line]
-    assert "verdict=speech" in verdict and "fields_dropped=['voice']" in verdict and "invalid" not in verdict
+    assert "verdict=command" in verdict and "fields_dropped" not in verdict and "invalid" not in verdict
 
 
 def test_foreign_voice_name_is_dropped_too_and_never_reaches_tts():

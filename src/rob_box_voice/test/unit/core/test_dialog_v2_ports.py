@@ -197,6 +197,17 @@ class _DeadLLM(_LLM):
         raise self.error
 
 
+class _SingleProvider:
+    """Один провайдер без цепочки: ``answered_by`` нет, имя — на самом провайдере (колонка, #29)."""
+
+    def __init__(self, error):
+        self.name = "deepseek"
+        self.error = error
+
+    async def complete(self, messages, tools=(), settings=None):
+        raise self.error
+
+
 def test_dead_provider_chain_is_provider_failed_and_turn_says_it_at_once():
     """В31: цепочка провайдеров отказала — не «провайдер жив», ход закрывается фразой с именем, а не ждёт потолка;
     ошибка кода (не провайдера) — не маскируется под отказ провайдера, ход падает громко."""
@@ -220,6 +231,20 @@ def test_dead_provider_chain_is_provider_failed_and_turn_says_it_at_once():
     bug = V2Ports(_Node(), _DeadLLM(IndexError("pop from empty list"), counter), counter, _Tools())
     with pytest.raises(IndexError):
         asyncio.run(bug.ask([{"role": "user", "content": "x"}], [], 60.0))
+
+    # #29: один провайдер без цепочки не ставит answered_by. Имя всё равно известно — фраза называет его,
+    # а не врёт «долго думаю» (understand.timeout выбирается только при пустом имени).
+    lone = V2Ports(_Node(), _SingleProvider(ProviderError("402")), counter, _Tools())
+    with pytest.raises(ProviderFailed) as failed:
+        asyncio.run(lone.ask([{"role": "user", "content": "x"}], [], 60.0))
+    assert failed.value.provider == "deepseek" and lone.provider() == "deepseek"
+
+    node = _Node()
+    lone = V2Ports(node, _SingleProvider(ProviderError("402")), counter, _Tools())
+    agg = asyncio.run(TurnEngine(Session("personality"), lone).run(Addressed("расскажи что-нибудь", VOICE)))
+    said = [s.text for s in node.pubs["/voice/speech/request"].sent]
+    assert said == [f"{phrases.text('understand.provider_failed', provider='deepseek')}"]
+    assert "долго думаю" not in said[0] and agg.status == "failed"
 
 
 def test_tier1_stop_publishes_stop_motion_intent_and_cancel():
@@ -462,6 +487,38 @@ def test_4083_expression_duration_from_the_model_reaches_the_expression_request(
     assert json.loads(done.face_json) == {**expr["face"], "duration_s": 8.0}
     assert lines[-1] == ("🎭 [turn-v2] лицо команды на done: emotion=sleep gesture=- face=llm ttl_ms=8000 "
                          f"turn={agg.turn_id}")
+
+
+class _PerformHost:
+    """Выступление без бита: ``stop`` возвращает True (блок открыт), но бита нет — ответ стопа остаётся False."""
+
+    owns_backing = False
+
+    def stop(self, keep_backing: bool = False) -> bool:
+        return True
+
+    def halt(self, keep_backing: bool = False) -> bool:
+        return True
+
+
+def test_stop_perform_aborts_chimera_by_json_and_keeps_the_backing_answer():
+    """Стоп диалога публикует ``{"abort": "chimera"}``, не голый ``STOP``: тот закрывает стрим рации.
+
+    Ответ про бит не меняется: выступление без своего бита — ``False``, даже если ``stop`` вернул True.
+    """
+    node = _Node()
+    published = []
+
+    def publish() -> bool:
+        published.append(json.dumps({"abort": "chimera"}))
+        return True
+
+    node.publish_chimera_abort = publish
+    ports = V2Ports(node, _LLM([], CallCounter()), CallCounter(), _Tools(), performer=lambda: _PerformHost())
+    assert ports.stop_perform("stop") is False
+    assert published == ['{"abort": "chimera"}']
+    assert ports.stop_perform("halt", keep_backing=True) is False
+    assert published == ['{"abort": "chimera"}', '{"abort": "chimera"}']
 
 
 def test_4083_show_queue_only_for_done_with_a_batch():

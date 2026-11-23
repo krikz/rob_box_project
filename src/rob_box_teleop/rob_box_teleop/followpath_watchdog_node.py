@@ -1,7 +1,11 @@
-"""followpath_watchdog_node — сторож «сирот» FollowPath для любого источника цели NavigateToPose (#4458).
+"""followpath_watchdog_node — сторож «сирот» FollowPath для любого источника цели (#4458).
 
 Тонкая нода (контейнер ``followpath-watchdog`` на образе teleop). Решает всё ``followpath_orphan.decide``:
-нода подаёт туда статусы ``/navigate_to_pose/_action/status`` и ``/follow_path/_action/status`` и время.
+нода подаёт туда статусы родительских action и ``/follow_path/_action/status`` и время.
+
+Родитель — action, из которого дерево bt_navigator зовёт FollowPath. Голос, Quest и HIL-цель
+``NavigateToPose`` и полоса HIL ``NavigateThroughPoses`` идут одним правилом: код не различает клиента.
+Там же финальный подъезд к цели (#4694, ``YawAtGoal``): держит цель, едет, twist в ``/cmd_vel_yaw``.
 
 Срабатывание — как у тулов навигации (#4456): отмена цели ``controller_server`` через
 ``/follow_path/_action/cancel_goal`` (по ``goal_id``) и нулевой ``Twist`` в ``/cmd_vel`` (имена — общие,
@@ -23,12 +27,19 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rob_box_core.follow_path_halt import FOLLOW_PATH_CANCEL_SRV, NAV_CMD_VEL_TOPIC, ZERO_TWIST_REPEATS
 from rob_box_teleop import followpath_orphan as fo
 
-NAV_STATUS_TOPIC = "/navigate_to_pose/_action/status"
+#: Action, из которых дерево зовёт FollowPath. Новый источник — строка сюда, не новая ветка правила.
+PARENT_STATUS_TOPICS = (
+    ("navigate_to_pose", "/navigate_to_pose/_action/status"),
+    ("navigate_through_poses", "/navigate_through_poses/_action/status"),
+)
 FOLLOW_STATUS_TOPIC = "/follow_path/_action/status"
 
 _DEFAULTS = {
     "orphan_timeout_s": 1.5,
     "check_rate_hz": 10.0,
+    # #4694: разворот у цели. Файл — тот же, что у Nav2 (том ./config).
+    "nav2_params_file": "/config/nav2/nav2_params.yaml",
+    "tf_timeout_s": 0.05,
 }
 
 
@@ -53,24 +64,39 @@ class FollowPathWatchdogNode(Node):
         rate = float(self.get_parameter("check_rate_hz").value)
 
         self._state = fo.WatchState()
-        self._nav: list = []
+        self._parents: dict = {source: [] for source, _ in PARENT_STATUS_TOPICS}
         self._follow: list = []
         self._follow_infos: dict = {}  # goal_id (hex) -> GoalInfo для запроса отмены
 
         # QoS статусов action: transient_local — поздний подписчик сразу получает последние статусы.
-        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.create_subscription(GoalStatusArray, NAV_STATUS_TOPIC, self._on_nav, qos)
+        qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        for source, topic in PARENT_STATUS_TOPICS:
+            self.create_subscription(
+                GoalStatusArray,
+                topic,
+                lambda msg, src=source: self._on_parent(src, msg),
+                qos,
+            )
         self.create_subscription(GoalStatusArray, FOLLOW_STATUS_TOPIC, self._on_follow, qos)
         self._cancel_client = self.create_client(CancelGoal, FOLLOW_PATH_CANCEL_SRV)
         self._cmd_vel = self.create_publisher(Twist, NAV_CMD_VEL_TOPIC, 10)
         self.create_timer(1.0 / max(rate, 1.0), self._tick)
-        self.get_logger().info(f"#4458 сторож сирот FollowPath: orphan_timeout_s={self._timeout}")
+        # Импорт здесь: yaw_at_goal_node берёт PARENT_STATUS_TOPICS из этого модуля.
+        from rob_box_teleop.yaw_at_goal_node import YawAtGoal  # noqa: PLC0415
+
+        self._yaw = YawAtGoal(self)
+        sources = ", ".join(source for source, _ in PARENT_STATUS_TOPICS)
+        self.get_logger().info(f"#4458 сторож сирот FollowPath: orphan_timeout_s={self._timeout} источники={sources}")
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def _on_nav(self, msg) -> None:
-        self._nav = _goals(msg)
+    def _on_parent(self, source: str, msg) -> None:
+        self._parents[source] = _goals(msg)
 
     def _on_follow(self, msg) -> None:
         self._follow = _goals(msg)
@@ -78,7 +104,8 @@ class FollowPathWatchdogNode(Node):
 
     def _tick(self) -> None:
         now = self._now()
-        decision = fo.decide(self._state, now, self._nav, self._follow, self._timeout)
+        parents = tuple((source, goals) for source, goals in self._parents.items())
+        decision = fo.decide(self._state, now, parents, self._follow, self._timeout)
         if decision.cancel and not self._cancel_client.service_is_ready():
             self.get_logger().warning("#4458 сирота есть, но cancel_goal controller_server недоступен — повтор")
             return  # состояние не меняем: попробуем на следующем такте
@@ -87,10 +114,11 @@ class FollowPathWatchdogNode(Node):
             self._halt(goal_id, now, decision)
 
     def _halt(self, goal_id: str, now: float, decision: fo.Decision) -> None:
-        nav_status = fo.STATUS_NAMES.get(decision.nav_status, decision.nav_status)
+        parent_status = fo.STATUS_NAMES.get(decision.parent_status, decision.parent_status)
         self.get_logger().warning(
-            f"#4458 сирота FollowPath goal_id={goal_id} t={now:.3f}: NavigateToPose {decision.nav_goal} "
-            f"в {nav_status} дольше {self._timeout} с — отмена follow_path и cmd_vel=0"
+            f"#4458 сирота FollowPath goal_id={goal_id} t={now:.3f}: "
+            f"{decision.parent_source} {decision.parent_goal} в {parent_status} дольше {self._timeout} с "
+            f"— отмена follow_path и cmd_vel=0"
         )
         request = CancelGoal.Request()
         request.goal_info = self._follow_infos[goal_id]

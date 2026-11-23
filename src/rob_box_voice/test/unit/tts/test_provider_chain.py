@@ -475,12 +475,15 @@ def test_stream_speaker_reply_plays_through_play_stream_not_play_audio(monkeypat
 
 
 def test_stream_broken_after_sound_closes_reply_with_error(monkeypatch) -> None:
-    from rob_box_voice.core import tts_stream
+    from rob_box_voice.core import tts_cut, tts_stream
 
     node, _ = _stream_node(monkeypatch, outcome=tts_stream.BROKEN)
-    _run_and_play(node)
+    said = []
+    monkeypatch.setattr(tts_cut, "say", lambda n, error, speech_id: said.append((error, speech_id)) or True)
+    TTSNode._synthesize_and_play(node, "длинная фраза", "dlg", "sid-cut")
     kwargs = node._publish_tts_finished.call_args.kwargs
     assert kwargs["success"] is False and kwargs["error"] == tts_stream.BROKEN
+    assert said == [(tts_stream.BROKEN, "sid-cut")]
 
 
 def test_stream_failure_before_sound_falls_back_to_yandex(monkeypatch) -> None:

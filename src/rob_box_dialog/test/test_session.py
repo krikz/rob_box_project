@@ -91,10 +91,27 @@ def test_reset_bumps_epoch_and_keeps_voice_speaker_music(session):
     session.set_speaker(SpeakerRef(person_ref="spk_1", name="Саша", name_state="confirmed"))
     session.push_scene("Silence", "user")
     session.set_pending_ask(Ask(expects="name", text="Как тебя зовут?"))
+    session.identity_asked["spk_1"] = 1
     session.reset()
     snap = session.snapshot
     assert snap.epoch == 1 and snap.scenes == () and snap.pending_ask is None
     assert snap.voice.applied == "ermil" and snap.speaker.name == "Саша"
+    assert session.identity_asked == {}
+
+
+def test_reset_speaker_memory_visibility_modes(session):
+    """#4694 n1009: три режима сброса. Tier-1 «новая сессия» прячет автоматическую память на эпоху
+    (``speaker_memory_visible=False``), служебный сброс перед актом снова показывает её (``True``),
+    сброс окна (idle/e2e, голый ``reset()``) режим не трогает."""
+    assert session.snapshot.speaker_memory_visible is True
+    session.reset(speaker_memory_visible=False)
+    assert session.snapshot.speaker_memory_visible is False
+    session.reset()  # сброс окна: скрытая остаётся скрытой
+    assert session.snapshot.speaker_memory_visible is False
+    session.reset(speaker_memory_visible=True)  # сброс перед актом: память снова в снимке
+    assert session.snapshot.speaker_memory_visible is True
+    session.reset()  # сброс окна: показанная остаётся показанной
+    assert session.snapshot.speaker_memory_visible is True
 
 
 def test_voice_requested_and_applied_are_separate(session):

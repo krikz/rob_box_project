@@ -5,7 +5,7 @@
 # Автоматическая настройка Vision Pi с нуля
 #
 # Использование:
-#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup_vision_pi.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/krikz/rob_box_project/develop/scripts/setup/setup_vision_pi.sh | bash
 #
 # Что делает скрипт:
 #   1. Проверяет и устанавливает Docker + Docker Compose
@@ -289,14 +289,15 @@ MOTDEOF
 
 # Настройка автозапуска Docker контейнеров
 #
-# Контракт устойчивости (issue #2610 / t_51c4b1a9):
+# Контракт устойчивости (issues #2610, #4533):
 #   - docker compose up -d без --pull never + registry offline → весь стек падает
 #     и systemd (Type=oneshot без Restart) больше не пытается.
 #   - Фикс:
-#     * ExecStartPre: best-effort `docker compose pull --policy always --ignore-pull-failures` —
-#       попытаться обновить образы, но не падать, если registry недоступен.
 #     * ExecStart: `docker compose up -d --pull never` — гарантированно работать
-#       на локальном кэше, даже если registry лежит.
+#       на локальном кэше, даже если registry лежит. Образы обновляет деплой,
+#       автозапуск не делает pull и не ждёт registry.
+#     * After= только docker.service. network-online.target в After= без Wants=
+#       не поднимает сеть и не держит docker (issue #4533).
 #     * ExecStartPost: логировать `docker compose ps` (exit-codes) в journal для
 #       диагностики, какие именно сервисы не поднялись.
 #     * Restart=on-failure + RestartSec=30 + StartLimitBurst=5 за 600s:
@@ -313,11 +314,13 @@ setup_autostart() {
     sudo tee "$SERVICE_FILE" > /dev/null << SERVICEEOF
 [Unit]
 Description=ROBBOX Vision Pi Docker Containers
-After=docker.service network-online.target
+# LED не ждёт сеть (issue #4533): After=network-online без Wants=
+# не поднимает wait-online и не держит docker.service.
+After=docker.service
 Requires=docker.service
 
 # Rate limit: не более 5 стартов за 10 минут (см. Restart=on-failure ниже).
-# Защищает от зацикливания, если registry лежит долго.
+# Защищает от зацикливания при повторяющемся сбое compose.
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
@@ -328,7 +331,7 @@ WorkingDirectory=$COMPOSE_DIR
 User=$USER
 
 # Логирование: всё в journal. Это даёт \`journalctl -u robbox-vision.service\`
-# единый источник stdout/stderr юнита + ExecStartPre/ExecStart/ExecStartPost.
+# единый источник stdout/stderr юнита + ExecStart/ExecStartPost.
 # t_5ab5e44a: явно фиксируем, чтобы избежать silent drop в syslog
 # на дистрибутивах с nojournald (хотя на Vision Pi journal всегда есть).
 StandardOutput=journal
@@ -337,12 +340,6 @@ StandardError=journal
 # не раздувался на INFO от docker compose. Префикс '-' в Exec* гасит
 # exit-code, но уровень логирования — независимая директива (т_5ab5e44а).
 LogLevelMax=info
-
-# Best-effort: попытаться обновить образы. Если registry недоступен —
-# игнорировать и идти дальше на локальном кэше (issue #2610).
-# --policy always: иначе pull_policy: if_not_present в compose пропускает
-# уже скачанные теги и образы никогда не обновляются.
-ExecStartPre=-/usr/bin/docker compose pull --policy always --ignore-pull-failures
 
 # Гарантированный запуск стека на локальном кэше, без сетевых pull.
 ExecStart=/usr/bin/docker compose up -d --pull never
@@ -366,10 +363,16 @@ ExecStartPost=-/usr/local/bin/robbox_vision_health_check.sh --json
 ExecStop=/usr/bin/docker compose down
 
 # Рестарт-политика: при падении повторить через 30s. Это даёт стеку шанс
-# восстановиться, если registry временно лежал (issue #2610: oneshot без Restart
+# восстановиться после временного сбоя compose (issue #2610: oneshot без Restart
 # = одно падение и навсегда, а с Restart=on-failure + rate-limit — устойчиво).
 Restart=on-failure
 RestartSec=30
+# issue #4533: дефолт TimeoutStartSec=90s короче ожидания service_healthy
+# (vision-hailo / vision-face ждут zenoh-router). На холодном старте
+# systemd убивает ExecStart, лимит повторов сжигает попытки, лицо не зажигается.
+# 900 с — тот же потолок, что у robbox-sound.service / robbox-main.service.
+# Происхождение: незакоммиченная правка worktree agent-a7c8ca1138b8d0728.
+TimeoutStartSec=900
 
 [Install]
 WantedBy=multi-user.target

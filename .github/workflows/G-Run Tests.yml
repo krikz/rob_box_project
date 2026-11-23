@@ -150,10 +150,14 @@ jobs:
           # 20+ PRs). tools is here for tools/gen_tool_catalog.py, imported by
           # src/rob_box_harness/test/test_skill_catalog.py — without it those
           # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
-          # real contract regression as a green CI. Guard against the next
+          # real contract regression as a green CI.
+          # sound_pack is here for sound_pack/chimera (#5152): the voice
+          # test walks up to the package, and parents[N] inside test_ws
+          # misses the checkout. Without this copy: FileNotFoundError.
+          # Guard against the next
           # occurrence:
           #   python3 scripts/ci/validate_test_ws_dirs.py
-          for d in docker migrations docs .github scripts tools; do
+          for d in docker migrations docs .github scripts tools sound_pack; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
@@ -543,23 +547,6 @@ jobs:
             --pytest-args ' -m' 'not linter' \
             || { echo "❌ rob_box_perception FAILED (rc=$?)"; exit 1; }
 
-      # Шаг 1 сима (docs/research/2026-11-04-gazebo-sim-navigation.md §6):
-      # rob_box.xacro получил аргумент sim. Тест сверяет URDF робота (sim:=false)
-      # с эталоном src/rob_box_description/test/golden/rob_box_real.urdf и
-      # проверяет сим-ветку. В образе rob-box-ci нет xacro — ставим здесь;
-      # без xacro тест молча скипнулся бы (skipif), отсюда проверка which.
-      - name: URDF sim-arg test (rob_box_description)
-        run: |
-          set -eo pipefail
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends ros-humble-xacro
-          source /opt/ros/humble/setup.bash
-          command -v xacro
-          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
-          echo "=== pytest: rob_box_description (xacro sim arg) ==="
-          timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
-            src/rob_box_description/test/
-
       - name: Display test results
         if: always()
         run: |
@@ -593,6 +580,38 @@ jobs:
             ${{ github.workspace }}/test_ws/build/*/coverage.xml
             ${{ github.workspace }}/test_ws/build/*/htmlcov/
           retention-days: 30
+
+  # URDF sim-arg (docs/research/2026-11-04-gazebo-sim-navigation.md §6).
+  # Отдельный job: apt-get ros-humble-xacro внутри unit-tests съел остаток
+  # timeout-minutes 15 и убил job после зелёных тестов (run 44476445101).
+  urdf-sim-arg:
+    name: URDF sim-arg (rob_box_description)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/krikz/rob-box-ci:humble
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+      - name: Install xacro and run golden URDF test
+        run: |
+          set -eo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ros-humble-xacro
+          source /opt/ros/humble/setup.bash
+          command -v xacro
+          # apt launch_testing собран под pytest 6 и падает на pytest 9
+          # (run 44480562216: unknown hook pytest_launch_collect_makemodule).
+          # -p no:launch_testing его не глушит — только удаление, как в unit-tests.
+          pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+          python3 -m pip uninstall -y launch_testing launch_testing_ros 2>/dev/null || true
+          export PYTHONPATH="/usr/local/lib/python3.10/dist-packages:$PYTHONPATH"
+          timeout 120 python3 -m pytest -v -p no:cacheprovider -p no:launch_testing -o addopts= \
+            src/rob_box_description/test/
 
   # ============================================================================
   # Integration Tests (optional, only on develop/main)
@@ -642,7 +661,7 @@ jobs:
           # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
           # tools is here for the same reason as in unit-tests above
           # (tools/gen_tool_catalog.py, test_skill_catalog.py).
-          for d in docker migrations docs .github scripts tools; do
+          for d in docker migrations docs .github scripts tools sound_pack; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
           cd ${{ github.workspace }}/test_ws
@@ -861,37 +880,31 @@ jobs:
   # ============================================================================
   # Test Summary
   # ============================================================================
+  # #5116: сводка не выдаёт skipped Integration Tests за пройденные.
+  # Интеграция воротами PR не становится (решение Шифу 22.11.2026): условие
+  # джобы по ref не трогаем. На PR она skipped, и skipped не красит прогон.
+  # В needs она есть, чтобы на push (develop/main) сводка видела реальный
+  # result, а не писала «не запускались» про уже прогнанную джобу.
+  # Текст строит scripts/ci/test_summary.py.
   test-summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards]
+    needs: [unit-tests, mcp-tools-unit-tests, e2e-contract-guards, urdf-sim-arg, integration-tests]
     if: always()
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
       - name: Generate summary
         run: |
-          echo "## 🧪 Test Results Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests (rob_box_mcp_tools) | ${{ needs.mcp-tools-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| E2E Contract Guards | ${{ needs.e2e-contract-guards.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ needs.unit-tests.result }}" != "success" ] \
-             || [ "${{ needs.mcp-tools-unit-tests.result }}" != "success" ] \
-             || [ "${{ needs.e2e-contract-guards.result }}" != "success" ]; then
-            echo "⚠️ **Tests failed!** Check logs above for details." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔧 Quick Debug" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "# Run tests locally" >> $GITHUB_STEP_SUMMARY
-            echo "cd ~/voice_ws" >> $GITHUB_STEP_SUMMARY
-            echo "colcon test --packages-select rob_box_voice" >> $GITHUB_STEP_SUMMARY
-            echo "colcon test-result --verbose" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "✅ All tests passed!" >> $GITHUB_STEP_SUMMARY
-          fi
+          set -eo pipefail
+          export LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=utf-8
+          python3 scripts/ci/test_summary.py \
+            --event "${{ github.event_name }}" \
+            --suite "Unit Tests=${{ needs.unit-tests.result }}" \
+            --suite "Unit Tests (rob_box_mcp_tools)=${{ needs.mcp-tools-unit-tests.result }}" \
+            --suite "E2E Contract Guards=${{ needs.e2e-contract-guards.result }}" \
+            --suite "URDF sim-arg=${{ needs.urdf-sim-arg.result }}" \
+            --integration-result "${{ needs.integration-tests.result }}" \
+            | tee -a "$GITHUB_STEP_SUMMARY"

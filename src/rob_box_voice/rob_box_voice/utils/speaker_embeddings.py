@@ -458,6 +458,61 @@ class UnnamedOutcome(NamedTuple):
     evicted: Tuple[str, ...] = ()
 
 
+def _conflict_bound(score: float) -> str:
+    """Как score стоит относительно порога слияния: ``>=`` или ``<`` (ADR-0127, #5019)."""
+    return ">=" if score >= REGISTER_MATCH_THRESHOLD else "<"
+
+
+def _log_name_conflict(match: "SpeakerMatch", name: str) -> None:
+    """Предупреждение конфликта имён: слияния нет, заводится отдельный профиль (ADR-0127, #5019)."""
+    shown = match.name or "безымянный профиль"
+    logger.warning(
+        f"⚠️ register_or_merge: голос похож на '{shown}' "
+        f"(id={match.speaker_id[:8]}, score={match.confidence:.3f} {_conflict_bound(match.confidence)} "
+        f"{REGISTER_MATCH_THRESHOLD}), но регистрируют как {name!r} — "
+        f"конфликт имён, слияния НЕ делаю, завожу отдельный профиль "
+        f"(ADR-0127). Если это один человек — склеить вручную: "
+        f"merge_speakers(src=<новый>, dst={match.speaker_id})"
+    )
+
+
+def _match_after_claim(
+    match: Optional["SpeakerMatch"], claimed: Optional["RegisterOutcome"]
+) -> Tuple[Optional["SpeakerMatch"], Optional["RegisterOutcome"]]:
+    """Что делать с исходом ``claim``: отказ ниже порога становится матчем для ветки конфликта (#5019).
+
+    Имя claim не записал. Отдельный профиль заводит ветка конфликта ADR-0127 -- ей нужен этот матч,
+    а ``identify(0.75)`` безымянный профиль в полосе 0.72-0.75 не отдаёт. Успешный claim возвращается
+    как есть (второй элемент); иначе второй элемент ``None``, и ``register_or_merge`` идёт дальше.
+    """
+    if claimed is not None and claimed.name_conflict:
+        return (
+            SpeakerMatch(
+                speaker_id=claimed.conflict_speaker_id,
+                name=claimed.conflict_name or "",
+                confidence=float(claimed.conflict_score or 0.0),
+            ),
+            None,
+        )
+    return match, claimed
+
+
+def _refuse_unnamed_claim(match: "SpeakerMatch") -> "RegisterOutcome":
+    """Голос опознан безымянным ниже порога слияния: имя не писать (ADR-0127, #5019).
+
+    В БД ничего не меняет. ``speaker_id`` исхода -- безымянный профиль; ``register_or_merge`` по
+    ``name_conflict`` заводит отдельный профиль и пишет предупреждение. Чужое имя в исход не входит:
+    на этот профиль оно не садится, его получит новый профиль.
+    """
+    return RegisterOutcome(
+        match.speaker_id,
+        False,
+        conflict_name=match.name,
+        conflict_speaker_id=match.speaker_id,
+        conflict_score=match.confidence,
+    )
+
+
 def _twin_score(db: "SpeakerDatabase", embedding: np.ndarray, twin: Optional[Tuple[str, str]]) -> Optional[float]:
     """Косинус эмбеддинга против галереи тёзки (``twin`` = ``(speaker_id, name)``); нет тёзки -- ``None``."""
     return db._score_for(embedding, twin[0]) if twin is not None else None
@@ -528,19 +583,26 @@ class UnnamedProfiles:
         embedding: np.ndarray,
         duration_sec: Optional[float],
     ) -> Optional["RegisterOutcome"]:
-        """Человек представился: если его голос опознаётся профилем без имени, имя достаётся ЭТОМУ профилю.
+        """Человек представился: имя безымянному профилю — только от порога слияния.
 
         ``match`` -- результат ``identify(threshold=REGISTER_MATCH_THRESHOLD)`` из ``register_or_merge``. Не
-        нашёлся -- смотрим обычный порог (0.72): «голос только что опознавался безымянным по 0.72» и «представился»
-        -- одно событие, дубль безымянного + именованного профиля как раз и есть то, что чинить нечем. Слияние с
-        ИМЕНОВАННЫМ профилем по-прежнему от 0.75 (``claim`` его не трогает: вернёт ``None``). Тот же ``speaker_id``,
-        кличка и накопленное остаются; эмбеддинг представления дописывается в галерею. Имя, которое уже есть у
-        ДРУГОГО профиля (тёзка), присвоению не мешает -- наружу уезжает ``name_twin`` (повод переспросить).
+        нашёлся -- смотрим обычный порог (0.72), но имя пишем ТОЛЬКО если косинус дотянул до
+        ``REGISTER_MATCH_THRESHOLD`` (0.75, тот же порог, что у конфликта именованного профиля, ADR-0127).
+        Обычное опознание для присвоения имени слишком дёшево. Живой прогон 21.11.2026 (issue #5019, акт 2c,
+        n721): чужой голос сел на безымянный профиль другого человека при cos=0.746, ``claim`` записал имя, и
+        ветка конфликта ADR-0127 в ``register_or_merge`` стала недостижима. Теперь такой голос -- конфликт:
+        имя не пишется, безымянный профиль остаётся безымянным, наружу уезжает ``name_conflict``, чтобы
+        вызывающий код завёл отдельный профиль. Слияние с ИМЕНОВАННЫМ профилем ``claim`` по-прежнему не
+        трогает (вернёт ``None``). Тот же ``speaker_id``, кличка и накопленное остаются, только когда косинус
+        дотянул до порога; эмбеддинг представления дописывается в галерею. Имя, которое уже есть у ДРУГОГО
+        профиля (тёзка), присвоению не мешает -- наружу уезжает ``name_twin`` (повод переспросить).
         """
         if match is None:
             match = self._db.identify(embedding)
         if match is None or match.named:
             return None
+        if match.confidence < REGISTER_MATCH_THRESHOLD:
+            return _refuse_unnamed_claim(match)
         clean = _validate_speaker_name(name)
         if not clean:
             raise ValueError(f"speaker_embeddings.register: invalid speaker name {name!r}")
@@ -855,8 +917,9 @@ class SpeakerDatabase:
         # #3801: рост галереи профиль не переименовывает — имя берётся из БД, а ``name`` (снимок сессии роста,
         # открытой до переименования) — только для профиля, которого ещё нет. Живой робот 21.10: «зови меня
         # Денчик» → Renamed, следующая реплика дописала эмбеддинг под старым именем и вернула «Энджик».
-        self.register(_stored_name(self._conn, speaker_id, name), embedding, speaker_id=speaker_id)
-        return True
+        # #5019: безымянный профиль ``register`` не принимает (пустое имя —
+        # мусор, #2348). Как дописать, не меняя имя, решает функция модуля.
+        return _grow_gallery(self, speaker_id, name, embedding)
 
     def register(
         self,
@@ -980,7 +1043,7 @@ class SpeakerDatabase:
             )
 
         match = self.identify(embedding, threshold=REGISTER_MATCH_THRESHOLD)
-        claimed = self.unnamed.claim(match, name, embedding, duration_sec)
+        match, claimed = _match_after_claim(match, self.unnamed.claim(match, name, embedding, duration_sec))
         if claimed is not None:
             return claimed
         if match is not None and _same_speaker_name(match.name, name):
@@ -1010,14 +1073,7 @@ class SpeakerDatabase:
             # (высокий cos + новое имя). Выбираем ошибку, которая
             # ОБРАТИМА: лишний профиль оператор склеит merge_speakers(),
             # а затёртое имя не восстановит никто.
-            logger.warning(
-                f"⚠️ register_or_merge: голос похож на '{match.name}' "
-                f"(id={match.speaker_id[:8]}, score={match.confidence:.3f} >= "
-                f"{REGISTER_MATCH_THRESHOLD}), но регистрируют как {name!r} — "
-                f"конфликт имён, слияния НЕ делаю, завожу отдельный профиль "
-                f"(ADR-0127). Если это один человек — склеить вручную: "
-                f"merge_speakers(src=<новый>, dst={match.speaker_id})"
-            )
+            _log_name_conflict(match, name)
             new_id = self.register(
                 name, embedding, speaker_id=None, duration_sec=duration_sec
             )
@@ -1447,6 +1503,36 @@ def _isolated_write(shared: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         tx.close()
+
+
+def _grow_gallery(db: "SpeakerDatabase", speaker_id: str, name: str, embedding: np.ndarray) -> bool:
+    """Дописать эмбеддинг в уже существующий профиль, имя не меняя (#3801, #5019).
+
+    Именованный профиль идёт через ``register`` (имя из БД, не из снимка сессии).
+    Безымянный ``register`` не принимает: пустое имя для него мусор (#2348).
+    Профиля нет — ``False``.
+    """
+    stored = _stored_name(db._conn, speaker_id, name)
+    if stored:
+        db.register(stored, embedding, speaker_id=speaker_id)
+        return True
+    return _append_embedding_row(db._conn, speaker_id, db._ndarray_to_blob(embedding))
+
+
+def _append_embedding_row(conn: Any, speaker_id: str, blob: bytes) -> bool:
+    """Дописать эмбеддинг в уже существующий профиль, имя не трогая (#5019)."""
+    now = time.time()
+    with _isolated_write(conn) as tx:
+        row = tx.execute(
+            "SELECT 1 FROM speakers WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        tx.execute(
+            "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+            (speaker_id, blob, now),
+        )
+    return True
 
 
 def _stored_name(conn: Any, speaker_id: str, fallback: str) -> str:

@@ -2,7 +2,7 @@
 
 DoD-1: «личность, запросившая ``operator.*``-инструмент, получает отказ
 от ``mcp_server`` (не показ схем, а исполнение)». То есть когда
-``dialogue_node`` (sender имеет только ``core`` + ``personality``) шлёт
+``dialog_node`` (sender имеет только ``core`` + ``personality``) шлёт
 ``/mcp/execute`` с ``tool_name='say'`` (срез ``operator.speech``),
 mcp_server должен ответить ``success=False`` и не звать
 ``registry.execute`` — это и есть срез на транспорте.
@@ -177,10 +177,10 @@ class _InMsg:
 
 
 def test_say_blocked_for_dialogue_node():
-    """DoD-1: dialogue_node пытается вызвать 'say' (operator.speech) → отказ.
+    """DoD-1: dialog_node пытается вызвать 'say' (operator.speech) → отказ.
 
-    'say' объявлен в ``operator.speech``. dialogue_node имеет срезы
-    ``core`` + ``personality``. Объединение срезов dialogue_node не
+    'say' объявлен в ``operator.speech``. dialog_node имеет срезы
+    ``core`` + ``personality``. Объединение срезов dialog_node не
     содержит 'say' → slice-гард обязан вернуть ``allowed=False`` и
     опубликовать success=False на /mcp/result.
     """
@@ -203,7 +203,7 @@ def test_say_blocked_for_dialogue_node():
     assert resp["tool_name"] == "say"
     assert resp["request_id"] == "req-001"
     assert resp["result"]["success"] is False
-    # в логе — причина отказа (sender 'dialogue_node' имеет срезы
+    # в логе — причина отказа (sender 'dialog_node' имеет срезы
     # core + personality, в них 'say' нет → отказ)
     assert "не принадлежит ни одному срезу" in resp["result"]["error"]
     assert "dialogue_node" in resp["result"]["error"]
@@ -248,7 +248,7 @@ def test_unknown_sender_blocked():
 
 
 def test_personality_tool_allowed_for_dialogue_node():
-    """Sanity: dialogue_node может звать 'speak_text' (personality)."""
+    """Sanity: dialog_node может звать 'speak_text' (personality)."""
     server = _ServerStub()
     request = {
         "tool_name": "speak_text",
@@ -298,7 +298,7 @@ def test_synthetic_classifier_used_in_tests():
 @pytest.mark.parametrize(
     "sender, tool, should_be_allowed",
     [
-        # dialogue_node (core + personality)
+        # dialog_node (core + personality)
         ("dialogue_node", "speak_text", True),
         ("dialogue_node", "play_animation", True),
         ("dialogue_node", "say", False),                # operator.speech
@@ -355,7 +355,7 @@ def test_matrix_against_bundled_yaml(sender, tool, should_be_allowed):
 # Регрессия закрывается одной строкой в ``slice_policy.yaml``:
 # ``- show_metrics`` в ``slices.operator.admin``. После этого
 # ``avatar_supervisor`` (есть operator.admin) → allowed, а
-# ``dialogue_node`` / ``harness`` (нет operator.admin) → запрет.
+# ``dialog_node`` / ``harness`` (нет operator.admin) → запрет.
 # ---------------------------------------------------------------------------
 
 
@@ -377,7 +377,7 @@ def test_issue_2184_avatar_supervisor_can_call_show_metrics():
 
 
 def test_issue_2184_dialogue_node_blocked_from_show_metrics():
-    """dialogue_node НЕ может вызвать show_metrics (нет operator.admin).
+    """dialog_node НЕ может вызвать show_metrics (нет operator.admin).
 
     Та же картина, что и для read_logs: «громкий» операторский тул
     не должен утекать к LLM-личности — slice-guard режет до FSM/execute.
@@ -393,19 +393,19 @@ def test_issue_2184_dialogue_node_blocked_from_show_metrics():
     reason = decision.reason
     assert "show_metrics" in reason
     assert "dialogue_node" in reason
-    # dialogue_node имеет срезы core + personality — именно они
+    # dialog_node имеет срезы core + personality — именно они
     # перечислены в причине. ``operator.admin`` в списке быть не должно,
-    # иначе что-то изменилось в политике (для dialogue_node операторские
+    # иначе что-то изменилось в политике (для dialog_node операторские
     # срезы в принципе недоступны).
     assert "core" in reason and "personality" in reason
     assert "operator.admin" not in reason
 
 
 def test_dialogue_node_can_call_melody_tools():
-    """dialogue_node обязан видеть lookup_melody / search_melody.
+    """dialog_node обязан видеть lookup_melody / search_melody.
 
     Регрессия (live 10.09): тулы RTTTL-библиотеки были зарегистрированы в
-    каталоге, но не добавлены в ``slices.personality`` — dialogue_node получал
+    каталоге, но не добавлены в ``slices.personality`` — dialog_node получал
     «tool 'lookup_melody' не принадлежит ни одному срезу sender'а», и LLM на
     «сыграй гимн СССР» импровизировал вместо точной мелодии.
     """

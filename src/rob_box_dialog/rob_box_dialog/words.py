@@ -36,6 +36,7 @@ from rob_box_dialog.knowledge import (
     MUSIC_PROMISES,
     MUSIC_SILENCE_CLAIM_HEADS,
     MUSIC_SILENCE_CLAIM_LEADS,
+    MUSIC_SILENCE_RETELL_LEADS,
     MUSIC_STOP_CLAIM,
     MUSIC_STOP_CLAIM_UNLESS,
     MUSIC_STOP_UNWOKEN_FORMS,
@@ -52,6 +53,8 @@ from rob_box_dialog.knowledge import (
     REQUEST_LEADS,
     SEARCH_PROMISES,
     SELF_MEMORY_ASK,
+    SILENCE_NOUN_FILLER,
+    SILENCE_NOUN_FORMS,
     SILENCE_WORDS,
     STOP_LEAD_WORDS,
     STOP_QUESTION_PARTICLES,
@@ -294,6 +297,33 @@ def asked_level(text: str) -> str:
     return asked.pop() if len(asked) == 1 else ""
 
 
+def _fact_excluded(text: str, tokens: Sequence[str], at: int, claim: MusicPromise) -> bool:
+    """Глагол записи факта здесь — не факт: вопрос, объект чужого вида, знакомство или счёт.
+
+    ``unless_after`` и ``_promises`` смотрят объект только у ``with_near`` и только после глагола. «Запомнил?»
+    кончается глаголом (вопрос — по «?» исходной фразы, как у остальных утверждений), «точку запомнил» несёт
+    объект до него, «запомнил двоих» — счёт после. Свои виды (``waypoint_save``, ``remember_person``) такие
+    фразы ловят сами.
+    """
+    if at + 1 == len(tokens) and text.rstrip().endswith("?"):
+        return True
+    # голый глагол без объекта факта — не утверждение записи: «Записала» в чат рядом со звуком (#3698).
+    # «Запомнил!» объект несёт само: восклицание 1-го лица о факте. Вопрос снят строкой выше.
+    if at + 1 == len(tokens) and not text.rstrip().endswith("!"):
+        return True
+    window = (*tokens[max(0, at - MUSIC_PROMISE_WINDOW):at], *tokens[at + 1:at + 1 + MUSIC_PROMISE_WINDOW])
+    if any(word.startswith(("точк", "голос", "лиц", "человек")) for word in window):
+        return True
+    if "зовут" in window or "звать" in window:
+        return True
+    # имя ДО глагола — обращение, не объект факта: «Хорошо, Тамара, запомнил» (#4054). После глагола
+    # имя не снимает: «Запомнил, Борис: …» — как раз утверждение записи (n206).
+    before = tokens[max(0, at - MUSIC_PROMISE_WINDOW):at]
+    if set(before) & set(_kn.KNOWN_FIRST_NAMES):
+        return True
+    return bool(set(tokens[at + 1:at + 1 + MUSIC_PROMISE_WINDOW]) & set(claim.unless_after))
+
+
 def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
     """Обещает ли фраза ``tokens`` (:func:`name_tokens`) это действие: глагол из ``alone``, либо глагол из ``with_near`` и
     в ``MUSIC_PROMISE_WINDOW`` словах с любой стороны слово с основой из ``near``."""
@@ -301,6 +331,10 @@ def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
         if token in promise.alone:
             return True
         if token in promise.with_near and not set(tokens[max(0, i - 2):i]) & set(promise.unless_before):
+            # слово из unless_after в том же окне ПОСЛЕ глагола снимает обещание: объект - не то, что правило стережёт
+            # («запомнил двоих», «запомнил по голосу двоих» - счёт уже записанного, не новая запись)
+            if set(tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW]) & set(promise.unless_after):
+                continue
             around = (*tokens[max(0, i - MUSIC_PROMISE_WINDOW):i], *tokens[i + 1:i + 1 + MUSIC_PROMISE_WINDOW])
             if any(word.startswith(promise.near) for word in around):
                 return True
@@ -334,15 +368,21 @@ def search_promises(text: str) -> Tuple[str, ...]:
 
 
 def done_claims(text: str) -> Tuple[str, ...]:
-    """Виды утверждений о сделанном в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
-    ``motion``) - по словам, как :func:`music_promises`, но про прошедшее: «Готово, хил-окно удалена.», «сохранил
-    точку», «поехал». Слово с ``unless_before`` за одно-два слова до него («уже удалил», «не удалил») - не утверждение:
-    такие слова из фразы убираются до сверки. Тул, что утверждение делает правдой, судит валидатор команды
-    (``command._check_done_claim``)."""
+    """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
+    ``remember_fact``, ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
+    («Готово, хил-окно удалена.», «сохранил точку», «поехал», «говорю медленнее») и обещании отправки снимков
+    (#4505). Слово с ``unless_before`` за одно-два слова до
+    него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Слово из
+    ``unless_after`` в окне после глагола («запомнил двоих», «запомнил по голосу двоих») - тоже не утверждение. Тул,
+    что утверждение делает правдой, судит валидатор команды (``command._check_done_claim``)."""
     tokens = name_tokens(text)
     found = []
     for kind, claim in DONE_CLAIMS.items():
         kept = tuple("" if set(tokens[max(0, i - 2):i]) & set(claim.unless_before) else t for i, t in enumerate(tokens))
+        if kind == "remember_fact":
+            verbs = set(claim.alone) | set(claim.with_near)
+            kept = tuple(
+                "" if t in verbs and _fact_excluded(text, tokens, i, claim) else t for i, t in enumerate(kept))
         if _promises(kept, replace(claim, unless_before=())):
             found.append(kind)
     return tuple(found)
@@ -508,6 +548,24 @@ def asks_to_listen(text: str) -> bool:
     слушай и не влезай») или слово тишины ``knowledge.SILENCE_WORDS`` («помолчи»). «Не молчи», «слушай, а как…» -
     нет."""
     return has_form(text, LISTEN_ONLY_FORMS) or has_word(text, SILENCE_WORDS)
+
+
+def silence_noun_asked(text: str, wake_words: Optional[Sequence[str]] = None) -> bool:
+    """Попросил ли человек тишины существительным (#5105, #5115): после снятия вейка и пунктуации
+    (``strip_wake_word``, ``name_tokens``) во фразе есть форма из ``knowledge.SILENCE_NOUN_FORMS`` («тишина»,
+    «тишину», «полная тишина»), а остальные слова — только служебные ``SILENCE_NOUN_FILLER`` («пожалуйста», «ну»,
+    «давай», «режим»). Упоминание («расскажи стих про тишину», «что такое тишина») и «не молчи» — не тишина: там
+    есть другие слова. «Помолчи»/«замолчи» решает Tier-1 по ``SILENCE_WORDS``, сюда они не входят. Таблица одна —
+    ``knowledge``; грамматике и ``tools_view`` один предикат, чтобы не плодить второй разбор."""
+    rest = name_tokens(strip_wake_word(text or "", wake_words))
+    forms, filler = SILENCE_NOUN_FORMS, SILENCE_NOUN_FILLER
+    return any(word in forms for word in rest) and all(word in forms or word in filler for word in rest)
+
+
+def asks_own_memory_condition(text: str) -> bool:
+    """Память о человеке — условие другой просьбы («учти то, что ты про меня знаешь»), а не её предмет."""
+    said = " ".join(name_tokens(text))
+    return has_word(said, SELF_MEMORY_ASK["condition"]) and has_form(said, SELF_MEMORY_ASK["self"])
 
 
 def asks_own_memory(text: str) -> bool:
@@ -708,9 +766,28 @@ def music_stop_claimed(text: str) -> bool:
         tokens = name_tokens(sentence)
         if sentence.rstrip().endswith("?") or set(tokens) & set(MUSIC_STOP_CLAIM_UNLESS):
             continue
-        if _promises(tokens, MUSIC_STOP_CLAIM) or any(_silence_heads(part) for part in _CLAIM_PART.split(sentence)):
+        if _promises(tokens, MUSIC_STOP_CLAIM) or _silence_heads_parts(_CLAIM_PART.split(sentence)):
             return True
     return False
+
+
+def _silence_heads_parts(parts: Sequence[str]) -> bool:
+    """Есть ли часть предложения, начинающаяся с «тишины» как утверждение, а не как подлежащее пересказа.
+    Часть-вводитель прямой речи ``MUSIC_SILENCE_RETELL_LEADS`` («мол, тишина давит») отменяет claim в следующей
+    части, потому что «тишина» там - объект чужой речи, а не сообщение робота о плеере."""
+    retold = False
+    for part in parts:
+        if _silence_heads(part) and not retold:
+            return True
+        retold = _retelling_introducer(part)
+    return False
+
+
+def _retelling_introducer(part: str) -> bool:
+    """Часть предложения - вводитель прямой речи (``MUSIC_SILENCE_RETELL_LEADS``) в отдельной части:
+    «мол», «дескать»; служебные слова ``MUSIC_SILENCE_CLAIM_LEADS`` перед ним не в счёт."""
+    tokens = [t for t in name_tokens(part) if t not in MUSIC_SILENCE_CLAIM_LEADS]
+    return len(tokens) == 1 and tokens[0] in MUSIC_SILENCE_RETELL_LEADS
 
 
 def _silence_heads(part: str) -> bool:

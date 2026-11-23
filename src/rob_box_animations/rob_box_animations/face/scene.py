@@ -39,6 +39,9 @@ class FaceContext:
     mood: str = 'neutral'
     #: RGB multiplier of eyes and mouth (DSL tint, PR-3c); None = palette as drawn
     tint: Optional[Tuple[float, float, float]] = None
+    #: имя слота ``tint`` из директора (``warm``, ``purple``); None = оттенка нет.
+    #: Радуга меняет RGB каждый кадр — лог смотрит на слот, не на множитель (#5143).
+    tint_slot: Optional[str] = None
     #: rear lights when the scene does not draw them (rear.THEMES)
     rear_theme: str = 'default'
     #: slots of the LLM face scene (``face_scene.FaceScene.slots()``) for ``dsl.face_scene``

@@ -4,6 +4,7 @@
 """
 
 import importlib.util
+import os
 import py_compile
 import shutil
 import subprocess
@@ -173,6 +174,97 @@ def test_tool_halt_not_triggered_without_failure():
     assert vd.v_tool_halt(probe, 2.0).status == vd.NOT_TRIGGERED
 
 
+@pytest.mark.parametrize("verdict", [vd.v_tool_halt, lambda p, g: vd.v_orphan_natural(p, [], g)])
+def test_halt_ignores_replayed_terminal_before_current_goal(verdict):
+    """Ночь 09.11: transient-local CANCELED старой цели ошибочно обвинил новый FollowPath (#4435)."""
+    probe = vd.parse_probe(
+        [
+            pr(858.722, "NAV_STATUS", goal="3442e84f", status="CANCELED"),
+            pr(858.792, "NAV_STATUS", goal="89360a90", status="EXECUTING"),
+            pr(858.812, "FP_STATUS", goal="4070df4b", status="EXECUTING"),
+            pr(859.862, "FP_STATUS", goal="d15a7809", status="EXECUTING"),
+            pr(859.862, "FP_STATUS", goal="4070df4b", status="ABORTED"),
+            pr(860.8, "MUX", v="+0.15", w="+0.0"),
+            pr(918.272, "FP_STATUS", goal="d15a7809", status="SUCCEEDED"),
+            pr(918.302, "NAV_STATUS", goal="89360a90", status="SUCCEEDED"),
+            pr(918.302, "NAV_RESULT", status="SUCCEEDED"),
+        ]
+    )
+    assert verdict(probe, 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_tool_halt_replayed_terminal_alone_is_not_a_checked_failure():
+    probe = vd.parse_probe([pr(0, "NAV_STATUS", goal="old", status="CANCELED")])
+    assert vd.v_tool_halt(probe, 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_tool_halt_next_goal_before_grace_has_no_stop_window():
+    probe = _fail_then(
+        [
+            pr(10.1, "FP_STATUS", goal="f1", status="CANCELED"),
+            pr(10.2, "NAV_STATUS", goal="n2", status="EXECUTING"),
+            pr(10.3, "FP_STATUS", goal="f2", status="EXECUTING"),
+            pr(12.1, "MUX", v="+0.2", w="+0.0"),
+        ]
+    )
+    assert vd.v_tool_halt(probe, 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_tool_halt_observed_failure_after_replay_still_fails_on_orphan():
+    probe = vd.parse_probe(
+        [
+            pr(0, "NAV_STATUS", goal="old", status="CANCELED"),
+            pr(0.1, "NAV_STATUS", goal="current", status="EXECUTING"),
+            pr(0.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+            pr(1, "NAV_STATUS", goal="current", status="ABORTED"),
+            pr(4, "MUX", v="+0.15", w="+0.0"),
+        ]
+    )
+    assert vd.v_tool_halt(probe, 2.0).status == vd.FAIL
+    assert vd.v_orphan_natural(probe, [], 2.0).status == vd.FAIL
+
+
+def test_halt_counts_both_failures_when_the_same_goal_runs_twice():
+    """Проба шлёт переход статуса один раз (probe.py on_status). Та же цель наблюдалась активной,
+    ушла в ABORTED, снова стала EXECUTING и снова ABORTED. Оба провала — в этой пробе: первый,
+    после которого робот ехал, не должен потеряться из-за повторной активации."""
+    probe = vd.parse_probe(
+        [
+            pr(0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+            pr(0.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+            pr(5, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(5.2, "FP_STATUS", goal="f1", status="CANCELED"),
+            pr(8, "MUX", v="+0.15", w="+0.0"),
+            pr(9, "NAV_STATUS", goal="n1", status="EXECUTING"),
+            pr(9.2, "FP_STATUS", goal="f2", status="EXECUTING"),
+            pr(12, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(12.2, "FP_STATUS", goal="f2", status="CANCELED"),
+            pr(15, "MUX", v="+0.000", w="+0.000"),
+        ]
+    )
+    bad, checked = vd.halt_violations(probe, 2.0)
+    assert [round(vd._sim(e), 1) for e in checked] == [5.0, 12.0]
+    assert any("sim=5.00" in line and "twist_mux" in line for line in bad)
+    assert not any("sim=12.00" in line for line in bad)
+
+
+def test_halt_counts_a_goal_seen_only_as_accepted():
+    """ACTIVE — это ACCEPTED и EXECUTING (verdicts.py). Цель, которую проба видела только принятой,
+    а не исполняемой, всё равно наблюдалась: её ABORTED считается, а не отбрасывается как повтор чужой цели."""
+    probe = vd.parse_probe(
+        [
+            pr(0, "NAV_STATUS", goal="n1", status="ACCEPTED"),
+            pr(0.5, "FP_STATUS", goal="f1", status="ACCEPTED"),
+            pr(3, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(6, "MUX", v="+0.0", w="+0.2"),
+        ]
+    )
+    bad, checked = vd.halt_violations(probe, 2.0)
+    assert [e.fields.get("goal") for e in checked] == ["n1"]
+    assert any("FollowPath ещё активен: f1" in line for line in bad)
+    assert any("twist_mux" in line for line in bad)
+
+
 GOAL = "0123456789abcdef0123456789abcdef"
 
 
@@ -244,6 +336,168 @@ def test_orphan_natural_pass_when_watchdog_cleans_up():
     assert v.status == vd.PASS and "сирот (FollowPath активен после провала цели): 1" in v.line()
 
 
+# ── abort контроллера: FollowPath уже принят, progress checker абортит (#4770) ──────────────
+
+
+def _abort_probe(nav_end="ABORTED", fp_end="ABORTED", arrived=False, extra=()):
+    """Цель принята, FollowPath ехал, корпус удержан, контроллер абортил."""
+    rows = [
+        pr(0.0, "HOLD_START", ahead="1.50"),
+        pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+        pr(1.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+        pr(1.5, "MUX", v="+0.080", w="+0.000"),
+        pr(2.0, "FP_HELD", goal="f1"),
+        pr(2.0, "HOLD", v="+0.00", w="+0.00"),
+        pr(32.0, "NAV_PROGRESS", n="1"),
+        pr(32.0, "FP_STATUS", goal="f1", status=fp_end),
+        pr(32.1, "NAV_STATUS", goal="n1", status=nav_end),
+        pr(32.2, "NAV_RESULT", status=nav_end),
+        pr(33.0, "MUX", v="+0.000", w="+0.000"),
+        pr(34.0, "HOLD_END"),
+    ]
+    if arrived:
+        rows.append(pr(32.3, "NAV_RESULT", status="SUCCEEDED"))
+    rows += list(extra)
+    return vd.parse_probe(rows)
+
+
+ABORT_NAV2 = [
+    dk(32.0, "[ERROR] [32.0] [controller_server]: Failed to make progress"),
+    dk(32.0, "[WARN] [32.0] [follow_path]: Aborting handle"),
+]
+
+
+def test_controller_abort_pass_when_accepted_follow_aborts_and_stops():
+    v = vd.v_controller_abort(_abort_probe(), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.PASS, v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+    assert "проверок abort: 1" in v.line()
+
+
+def test_controller_abort_not_triggered_without_accepted_follow():
+    """План не построен — это nav_aborted, не abort контроллера. Не PASS."""
+    probe = vd.parse_probe(
+        [
+            pr(0.0, "HOLD_START", ahead="1.50"),
+            pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+            pr(40.0, "NAV_STATUS", goal="n1", status="ABORTED"),
+            pr(40.1, "NAV_RESULT", status="ABORTED"),
+        ]
+    )
+    v = vd.v_controller_abort(probe, [], 2.0, 30.0)
+    assert v.status == vd.NOT_TRIGGERED, v.line()
+    assert "FollowPath не был принят" in v.line()
+
+
+def test_controller_abort_fail_when_still_driving_after_grace():
+    extra = [pr(35.0, "MUX", v="+0.080", w="+0.000"), pr(35.0, "FP_STATUS", goal="f2", status="EXECUTING")]
+    v = vd.v_controller_abort(_abort_probe(extra=extra), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.FAIL, v.line()
+
+
+def test_controller_abort_fail_on_false_arrived():
+    v = vd.v_controller_abort(_abort_probe(arrived=True), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.FAIL and "ложный" in v.line()
+
+
+def test_controller_abort_fail_when_allowance_restarted():
+    """Без terminate_all progress checker снова даёт 30 с: второй Aborting handle — FAIL."""
+    nav2 = ABORT_NAV2 + [dk(62.0, "[WARN] [62.0] [follow_path]: Aborting handle")]
+    v = vd.v_controller_abort(_abort_probe(), vd.parse_docker(nav2), 2.0, 30.0)
+    assert v.status == vd.FAIL and "Aborting handle: 2" in v.line()
+
+
+def test_controller_abort_counts_only_observed_follow_goals():
+    """#4647: терминал без ACTIVE в этой пробе в счётчик не входит."""
+    rows = [
+        pr(0.0, "FP_STATUS", goal="replayed", status="ABORTED"),
+        pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+        pr(1.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+        pr(2.0, "FP_HELD", goal="f1"),
+        pr(2.0, "HOLD", v="+0.00", w="+0.00"),
+        pr(32.0, "NAV_PROGRESS", n="1"),
+        pr(32.0, "FP_STATUS", goal="f1", status="ABORTED"),
+        pr(32.1, "NAV_STATUS", goal="n1", status="ABORTED"),
+        pr(32.2, "NAV_RESULT", status="ABORTED"),
+        pr(33.0, "MUX", v="+0.000", w="+0.000"),
+    ]
+    v = vd.v_controller_abort(vd.parse_probe(rows), vd.parse_docker(ABORT_NAV2), 2.0, 30.0)
+    assert v.status == vd.PASS, v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+    assert "replayed" not in v.line()
+
+
+def test_controller_abort_not_triggered_when_goal_succeeds_despite_hold():
+    v = vd.v_controller_abort(_abort_probe(nav_end="SUCCEEDED", fp_end="SUCCEEDED"), [], 2.0, 30.0)
+    assert v.status == vd.NOT_TRIGGERED
+
+
+def test_controller_abort_no_data_without_probe():
+    assert vd.v_controller_abort([], [], 2.0, 30.0).status == vd.NO_DATA
+
+
+# ── kill клиента и отмена с хоста (#4435, матрица) ──────────────────────────────────────────
+
+
+def _drop_rows(killed=True, canceled=True, fp_end="CANCELED", mux_late=False, arrived=False):
+    rows = [
+        pr(1.0, "NAV_STATUS", goal="n1", status="EXECUTING"),
+        pr(1.2, "FP_STATUS", goal="f1", status="EXECUTING"),
+        pr(1.5, "CLIENT_PID", pid="4242"),
+        pr(2.0, "MUX", v="+0.080", w="+0.000"),
+    ]
+    if killed:
+        rows.append(pr(3.0, "CLIENT_KILLED", pid="4242", signal="TERM"))
+    if canceled:
+        rows.append(pr(3.0, "HOST_CANCEL", action="navigate_to_pose"))
+    rows += [
+        pr(3.4, "FP_STATUS", goal="f1", status=fp_end),
+        pr(3.5, "NAV_STATUS", goal="n1", status="CANCELED" if canceled or killed else "EXECUTING"),
+        pr(4.0, "MUX", v="+0.000", w="+0.000"),
+    ]
+    if mux_late:
+        rows.append(pr(6.5, "MUX", v="+0.050", w="+0.000"))
+    if arrived:
+        rows.append(pr(3.6, "NAV_RESULT", status="SUCCEEDED"))
+    return rows
+
+
+def test_client_kill_pass_when_follow_stops_without_cancel_goal():
+    rows = _drop_rows(canceled=False)
+    v = vd.v_client_kill(vd.parse_probe(rows), 2.0)
+    assert v.status == vd.PASS, v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+
+
+def test_client_kill_not_triggered_without_kill_or_follow():
+    assert vd.v_client_kill(vd.parse_probe(_drop_rows(killed=False, canceled=False)), 2.0).status == vd.NOT_TRIGGERED
+    bare = [pr(1.0, "CLIENT_KILLED", pid="1", signal="TERM"), pr(2.0, "NAV_STATUS", goal="n1", status="CANCELED")]
+    assert vd.v_client_kill(vd.parse_probe(bare), 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_client_kill_fail_when_still_driving_or_arrived():
+    assert vd.v_client_kill(vd.parse_probe(_drop_rows(canceled=False, mux_late=True)), 2.0).status == vd.FAIL
+    assert vd.v_client_kill(vd.parse_probe(_drop_rows(canceled=False, arrived=True)), 2.0).status == vd.FAIL
+
+
+def test_host_cancel_pass_and_not_triggered_without_cancel():
+    v = vd.v_host_cancel(vd.parse_probe(_drop_rows(killed=False)), 2.0)
+    assert v.status == vd.PASS, v.line()
+    assert vd.v_host_cancel(vd.parse_probe(_drop_rows(killed=False, canceled=False)), 2.0).status == vd.NOT_TRIGGERED
+
+
+def test_host_cancel_counts_only_observed_follow():
+    rows = [pr(0.0, "FP_STATUS", goal="replayed", status="ABORTED")] + _drop_rows(killed=False)
+    v = vd.v_host_cancel(vd.parse_probe(rows), 2.0)
+    assert v.status == vd.PASS and "replayed" not in v.line()
+    assert "наблюдавшихся целей FollowPath: 1" in v.line()
+
+
+def test_drop_no_data():
+    assert vd.v_client_kill([], 2.0).status == vd.NO_DATA
+    assert vd.v_host_cancel([], 2.0).status == vd.NO_DATA
+
+
 # ── фразы тулов движения (#3789) ─────────────────────────────────────────────────────────────
 
 ABORT_RAW = [
@@ -300,6 +554,70 @@ STOP_RAW = [
     dk(0.01, "[INFO] [1.0] [mcp_server]: [stop_navigation] Остановка навигации"),
     dk(0.02, "[INFO] [1.0] [mcp_server]: [stop_navigation] Отмена подтверждена: no_active_goal"),
 ]
+
+
+# ── #5160: move_direction, цель тула, не пробы ──────────────────────────────────────────────
+
+
+def _move_voice(frame="map", success=True):
+    rows = [
+        dk(0.0, "[INFO] [1.0] [dialog_node]: 📤 Отправлен запрос a1b2c3d4: move_direction"),
+        dk(
+            0.2,
+            f"[INFO] [1.0] [mcp_server]: [navigate_to_pose] цель: frame_id={frame} x=2.800 y=0.060 theta=0.000",
+        ),
+    ]
+    if success:
+        rows.append(dk(12.0, "[INFO] [1.0] [mcp_server]: ✅ Инструмент move_direction выполнен успешно"))
+    else:
+        rows.append(
+            dk(12.0, "[WARN] [1.0] [mcp_server]: ❌ Инструмент move_direction завершился с ошибкой: Nav2 прервал")
+        )
+    return rows
+
+
+def _tracks(x0, y0, x1, y1):
+    return [
+        pr(0.0, "TRACK", x=f"{x0:.3f}", y=f"{y0:.3f}", yaw="0.0", v="+0.000", w="+0.000"),
+        pr(8.0, "TRACK", x=f"{x1:.3f}", y=f"{y1:.3f}", yaw="0.0", v="+0.000", w="+0.000"),
+    ]
+
+
+def test_move_ahead_pass():
+    voice = vd.parse_docker(_move_voice())
+    probe = vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06))
+    v = vd.v_move_ahead(voice, probe)
+    assert v.status == vd.PASS, v.line()
+    assert "frame_id=map" in v.line()
+    assert "1.000 м" in v.line()
+
+
+def test_move_ahead_not_triggered_when_tool_silent():
+    voice = vd.parse_docker([dk(0.0, "[INFO] [1.0] [dialog_node]: tier1 kind=stop_all")])
+    probe = vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06))
+    v = vd.v_move_ahead(voice, probe)
+    assert v.status == vd.NOT_TRIGGERED
+    assert "не вызвался" in v.line()
+
+
+def test_move_ahead_no_data_when_empty():
+    v = vd.v_move_ahead([], [])
+    assert v.status == vd.NO_DATA
+
+
+def test_move_ahead_fail_when_shift_short_or_frame_not_map():
+    short = vd.v_move_ahead(vd.parse_docker(_move_voice()), vd.parse_probe(_tracks(1.80, 0.06, 2.10, 0.06)))
+    assert short.status == vd.FAIL and "вне [0.75, 1.25]" in short.line()
+    wrong = vd.v_move_ahead(
+        vd.parse_docker(_move_voice(frame="base_footprint")), vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06))
+    )
+    assert wrong.status == vd.FAIL and "не в map" in wrong.line()
+
+
+def test_move_ahead_fail_when_probe_sent_its_own_goal():
+    probe = vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06) + [pr(1.0, "NAV_SENT", x="2.80", y="0.06", yaw="0")])
+    v = vd.v_move_ahead(vd.parse_docker(_move_voice()), probe)
+    assert v.status == vd.FAIL and "NAV_SENT" in v.line()
 
 
 def test_stop_idle_lie_from_hil_2151_is_fail():
@@ -415,6 +733,78 @@ def test_guard_sound_env_mismatch_is_fail():
     assert v.status == vd.FAIL and "не в режиме off" in v.line()
 
 
+def _corner_guard(gap, y):
+    """Строка стопа защиты: зазор и точка, как их печатает нода (proximity_guard_node._log_transition)."""
+    return [
+        dk(
+            8.95,
+            f"[WARN] [1.0] [proximity_guard]: 🛡️ зона warn → stop (до корпуса {gap:.2f} м) "
+            f"в точке (+0.47, {y:+.2f}); v=+0.10 м/с w=+0.00 рад/с",
+        )
+    ]
+
+
+def test_zone_stop_inside_the_corridor_below_stop_m_is_fail():
+    """#4365: стоп должен случиться до 0.20 м. Зазор 0.16 м при точке внутри коридора хода
+    (|y| ≤ 0.3525) значит, защита пропустила порог — это FAIL, а не PASS."""
+    v = vd.v_zone(_run(guard=_corner_guard(0.16, 0.30)), PX)
+    assert v.status == vd.FAIL and "0.16" in v.line()
+
+
+def test_corner_stop_at_019_inside_the_corridor_passes():
+    """Сценарий C (#4631): стенка перекрывает левый угол и лежит в коридоре хода. Стоп с зазором
+    0.19 м — защита сработала не позже порога 0.20 (допуск на такт)."""
+    v = vd.v_corner_stop(vd.parse_docker(_corner_guard(0.19, 0.30)))
+    assert v.status == vd.PASS, v.line()
+
+
+def test_corner_stop_at_016_inside_the_corridor_fails():
+    """Сценарий C: зазор 0.16 м при точке внутри коридора (|y| ≤ 0.3525) — защита пропустила порог."""
+    v = vd.v_corner_stop(vd.parse_docker(_corner_guard(0.16, 0.30)))
+    assert v.status == vd.FAIL and "0.16" in v.line()
+
+
+def test_corner_point_outside_the_corridor_is_not_a_stop():
+    """Решение Шифу 10.11 (#4438): точка вне коридора хода с зазором 0.16–0.19 м — торец сбоку,
+    не стоп. Стоп по такой точке — FAIL: защита затормозила там, где Шифу велел проехать."""
+    v = vd.v_corner_stop(vd.parse_docker(_corner_guard(0.17, 0.40)))
+    assert v.status == vd.FAIL and "вне коридора" in v.line()
+
+
+def _door_probe(result="SUCCEEDED", xs=(0.5, 1.5, 2.5, 3.0)):
+    """Подъезд по оси к проёму x=2 и исход цели."""
+    rows = [pr(i, "TRACK", x=f"{x:.3f}", y="0.000", yaw="0.0", v="+0.150", w="+0.000") for i, x in enumerate(xs)]
+    rows.append(pr(len(xs), "NAV_RESULT", status=result))
+    return vd.parse_probe(rows)
+
+
+def _door_guard(when, x):
+    return dk(
+        when,
+        "[WARN] [1.0] [proximity_guard]: 🛡️ зона warn → stop (до корпуса 0.19 м) в точке (+0.50, +0.10); "
+        "v=+0.15 м/с w=+0.00 рад/с",
+    )
+
+
+def test_doorway_pass_when_goal_succeeded_and_no_stop_in_the_opening():
+    """Регресс проёма 0.90 м (#4365): цель доехала, а в проёме x∈[1.2, 2.8] защита не входила в stop."""
+    guard = vd.parse_docker([_door_guard(0.2, 0.5)])
+    v = vd.v_doorway(_door_probe(), guard, (1.2, 2.8))
+    assert v.status == vd.PASS, v.line()
+
+
+def test_doorway_fail_when_guard_stops_inside_the_opening():
+    """Стоп, пока корпус в проёме 0.90 м, — FAIL: косяк вне коридора хода не должен тормозить."""
+    guard = vd.parse_docker([_door_guard(1.0, 1.5)])
+    v = vd.v_doorway(_door_probe(), guard, (1.2, 2.8))
+    assert v.status == vd.FAIL and "stop" in v.line()
+
+
+def test_doorway_fail_when_the_goal_did_not_succeed():
+    v = vd.v_doorway(_door_probe(result="ABORTED"), vd.parse_docker([]), (1.2, 2.8))
+    assert v.status == vd.FAIL and "ABORTED" in v.line()
+
+
 # ── CLI и обвязка ───────────────────────────────────────────────────────────────────────────
 
 
@@ -444,6 +834,53 @@ def _bash_works() -> bool:
 @pytest.mark.skipif(not _bash_works(), reason="нет рабочего bash")
 def test_runner_syntax():
     subprocess.run(["bash", "-n", "run_checks.sh"], check=True, cwd=CHECKS)
+    subprocess.run(["bash", "-n", "run_cancel_matrix.sh"], check=True, cwd=CHECKS)
+
+
+def test_cancel_matrix_order_and_not_triggered_is_not_pass():
+    """Порядок матрицы отмен. zone/corner сюда не входят. NOT_TRIGGERED — не PASS."""
+    text = (CHECKS / "run_cancel_matrix.sh").read_text(encoding="utf-8")
+    order = (
+        "orphan",
+        "orphan_natural",
+        "nav_aborted",
+        "stop_idle",
+        "stop_active",
+        "controller_abort",
+        "client_kill",
+        "host_cancel",
+    )
+    body = text.split("MATRIX=", 1)[-1].split(")", 1)[0]
+    positions = [body.index(name) for name in order]
+    assert positions == sorted(positions), positions
+    assert "zone" not in body and "corner" not in body
+    assert "hil.sh on" in text and "hil.sh off" in text
+    assert "HIL_LOCK" in text
+    assert "NOT_TRIGGERED" in text and "не PASS" in text
+    assert text.index("preflight_matrix") < text.index("take_lock")
+
+
+@pytest.mark.skipif(not _bash_works(), reason="нет рабочего bash")
+def test_cancel_matrix_busy_lock_exits_without_hil_on(tmp_path):
+    """Занятый stand.lock — выход 3, hil.sh on не вызывается."""
+    lock = tmp_path / "stand.lock"
+    lock.write_text("other-slot 2026-11-19T00:00:00Z\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "HIL_CHECKS_OWNER": "cancel-matrix",
+        "STAND_LOCK": str(lock),
+        "HIL_CHECKS_OUT": str(tmp_path / "out"),
+    }
+    proc = subprocess.run(
+        ["bash", str(CHECKS / "run_cancel_matrix.sh")],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "hil.sh on" not in proc.stdout
+    assert "занят" in proc.stderr
 
 
 def test_runbook_linked_from_docs_readme():

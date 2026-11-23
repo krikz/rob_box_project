@@ -18,7 +18,7 @@ YAML-формат
 ::
 
     senders:
-      dialogue_node:        [core, personality]
+      dialog_node:        [core, personality]
       avatar_supervisor:    [core, personality, operator.speech, operator.admin]
       harness:              [core, personality]
 
@@ -70,7 +70,7 @@ class SliceDecision:
             отказа содержала имя без повторного lookup'а.
         sender: Отправитель (как пришёл в блоке ``auth``).
         reason: Человекочитаемое объяснение, **только** при отказе.
-            Например, ``"sender 'dialogue_node' не имеет среза
+            Например, ``"sender 'dialog_node' не имеет среза
             'operator.admin'"`` или ``"tool 'ros2_node_status' не
             принадлежит ни одному срезу sender'а 'harness'"``.
     """

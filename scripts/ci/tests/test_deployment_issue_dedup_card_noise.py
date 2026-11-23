@@ -35,8 +35,7 @@ GUARD_BLIND = (
     "зона НЕ контролируется"
 )
 GUARD_LIDAR = (
-    "[INFO] [1793883554.974008483] [proximity_guard]: лидар lslidar_n10 в base_footprint: "
-    "x=-0.171 y=-0.000 yaw=0.0°"
+    "[INFO] [1793883554.974008483] [proximity_guard]: лидар lslidar_n10 в base_footprint: " "x=-0.171 y=-0.000 yaw=0.0°"
 )
 GUARD_OK = "[INFO] [1793883559.193597327] [proximity_guard]: 🛡️ скан и одометрия идут — зона под контролем"
 
@@ -68,16 +67,44 @@ def test_proximity_guard_going_blind_again_after_recovery_stays_critical() -> No
     assert critical(logs, "main") == GUARD_BLIND
 
 
-def test_health_monitor_echo_of_guard_error_is_not_demoted_by_the_window() -> None:
-    # Эхо в perception (`[ERROR] proximity_guard (4s ago): ...`, run 42108080199) — не лог самой ноды:
-    # возврата оттуда не видно, оно остаётся critical.
-    echo = (
-        "[health_monitor-4]   [ERROR] proximity_guard (4s ago): 🛡️ нет свежих скана или одометрии (> 0.5 с) — "
+def _guard_echo(age_s: int = 4) -> str:
+    # Формат print_report: msg обрезан до 60 символов (health_monitor.py:137).
+    return (
+        f"[health_monitor-4]   [ERROR] proximity_guard ({age_s}s ago): 🛡️ нет свежих скана или одометрии (> 0.5 с) — "
         "зона НЕ контро"
     )
+
+
+def test_health_monitor_echo_of_guard_error_is_not_demoted_by_the_window() -> None:
+    """Эхо + строка возврата, но без собственной строки слепоты — critical.
+
+    Эхо health_monitor обрезано до 60 символов (`health_monitor.py:137`), возврата
+    из него не прочитать. Строка «зона под контролем» двигает окно только для
+    собственной строки ноды `[proximity_guard]: ...`. Самой строки слепоты в дампе
+    нет — понижать нечего, эхо остаётся единственным critical (run 42108080199).
+    Эхо само по себе окно возврата не двигает.
+    """
+    echo = _guard_echo()
     logs = "\n".join([echo, GUARD_OK])
 
     assert critical(logs, "main") == echo
+
+
+def test_health_monitor_echo_is_not_a_separate_critical_when_own_blind_line_is_present() -> None:
+    # Дамп как в #4979: эхо + собственная строка слепоты + возврат. Пункт один —
+    # собственная строка, и окно возврата понижает её. Эхо — дубль, не второй critical.
+    echo = _guard_echo(42)
+    logs = "\n".join([GUARD_BLIND, echo, GUARD_OK])
+
+    assert critical(logs, "main") is None
+    assert warning(logs, "main") == GUARD_BLIND
+
+
+def test_health_monitor_echo_alone_stays_critical() -> None:
+    # Только эхо: собственной строки слепоты нет, понижать нечем.
+    echo = _guard_echo(42)
+
+    assert critical(echo, "main") == echo
 
 
 def test_other_error_next_to_recovered_guard_still_surfaces() -> None:
@@ -87,10 +114,64 @@ def test_other_error_next_to_recovered_guard_still_surfaces() -> None:
     assert critical(logs, "main") == real
 
 
+# --- стартовый fail-fast, контейнер потом жив (issue #4989, run 44817771673) -------------
+
+# Форма строки — как в карточке #4989 (vision-hailo, gaze.py). Числа и топик не важны:
+# окно решает порядок «умер → стартовал и больше не падает», а не текст ошибки.
+FAILFAST = (
+    "[ERROR] [1795209099.065226069] [vision_hailo]: vision_hailo: Gaze source 'oak_d' не отдал "
+    "кадр за 10.0s (capability-honest, ADR-0018).. fail-fast (real-mode обязателен, gaze_source='oak_d')."
+)
+DIED = "[ERROR] [vision_hailo-1]: process has died [pid 57, exit code 1, cmd 'vision_hailo']."
+STARTED_AGAIN = "[INFO] [vision_hailo-1]: process started with pid [203]"
+XLINK = "[ERROR] [oak_d]: X_LINK_ERROR: camera link lost, no frames"
+
+
+def test_startup_failfast_then_healthy_does_not_create_candidate() -> None:
+    # (а) fail-fast, затем контейнер поднялся и больше не падает — кандидата нет.
+    logs = "\n".join([FAILFAST, DIED, STARTED_AGAIN, "[INFO] [vision_hailo]: subscribed to image_raw"])
+
+    assert critical(logs, "vision") is None
+
+
+def test_startup_failfast_without_recovery_creates_candidate() -> None:
+    # (б) fail-fast без подъёма: смерть есть, повторного старта нет.
+    logs = "\n".join([FAILFAST, DIED])
+
+    assert critical(logs, "vision") == FAILFAST
+
+
+def test_failfast_that_came_back_and_died_again_creates_candidate() -> None:
+    # (в) поднялся, но снова падает: restarts растут, «жив после» нет.
+    logs = "\n".join([FAILFAST, DIED, STARTED_AGAIN, DIED.replace("pid 57", "pid 203")])
+
+    assert critical(logs, "vision") == FAILFAST
+
+
+def test_familiar_failfast_line_without_alive_after_stays_critical() -> None:
+    # «Строка знакомая» недостаточна: нет свидетельства «жив после» — кандидат есть.
+    assert critical(FAILFAST, "vision") == FAILFAST
+
+
+def test_recovered_failfast_does_not_mask_a_real_xlink_error() -> None:
+    # Настоящий X_LINK рядом с оправившимся fail-fast карточку получает.
+    logs = "\n".join([FAILFAST, DIED, STARTED_AGAIN, XLINK])
+
+    assert critical(logs, "vision") == XLINK
+
+
+def test_crash_loop_without_failfast_marker_stays_critical() -> None:
+    # «process has died» само по себе не шум: без маркера fail-fast цикл
+    # (смерть, старт, снова смерть) остаётся critical.
+    logs = "\n".join([DIED, STARTED_AGAIN, DIED.replace("pid 57", "pid 203")])
+
+    assert critical(logs, "vision") == DIED
+
+
 # --- promtail → Loki 429 (runs 42288712543 … 42335902952, 06–07.11) --------------------
 
 PROMTAIL_429 = (
-    'level=warn ts=2026-11-06T20:32:23.903583867Z caller=client.go:419 component=client host=10.1.1.249:3100 '
+    "level=warn ts=2026-11-06T20:32:23.903583867Z caller=client.go:419 component=client host=10.1.1.249:3100 "
     'msg="error sending batch, will retry" status=429 tenant= error="server returned HTTP status 429 Too Many '
     "Requests (429): Ingestion rate limit exceeded for user fake (limit: 4194304 bytes/sec) while attempting to "
     "ingest '8985' lines totaling '1048497' bytes, reduce log volume or contact your Loki administrator to see if "
@@ -103,9 +184,7 @@ def test_promtail_loki_ingestion_rate_limit_is_not_critical() -> None:
 
 
 def test_promtail_loki_server_error_stays_critical() -> None:
-    line = PROMTAIL_429.replace("status=429", "status=500").replace(
-        "Ingestion rate limit exceeded", "internal error"
-    )
+    line = PROMTAIL_429.replace("status=429", "status=500").replace("Ingestion rate limit exceeded", "internal error")
     line = line.replace("Loki administrator", "operator")  # без слова «loki» общий шум-фильтр не сработает
 
     assert critical(line, "sound") == line

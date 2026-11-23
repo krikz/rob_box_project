@@ -127,7 +127,7 @@ def test_extract_relevant_log_line_ignores_without_error_message() -> None:
 def test_extract_relevant_log_line_ignores_dialogue_error_none_success_echo() -> None:
     """Retro 15.08 t_29230e6f / issue #1335 — also hits issue #1364 (round-129).
 
-    dialogue_node's normal turn completion line is
+    dialog_node's normal turn completion line is
     `process_input returned: ... error=None` — error=None means NO error.
     The bare \\berror\\b matcher would otherwise flag this INFO line as
     deploy-critical on a fully green round (deploy run 31886490619 SUCCESS +
@@ -992,7 +992,7 @@ def test_extract_relevant_log_line_ignores_supercollider_n_free_node_not_found()
 
 def test_extract_relevant_log_line_ignores_dialogue_user_input_payload_with_critical_word() -> None:
     """Issue #1737, deploy run 33308557595 (30.08 11:17, kanban t_fe19566c):
-    dialogue_node logs the full `user_input='...'` payload it forwards
+    dialog_node logs the full `user_input='...'` payload it forwards
     to the LLM. A user who literally says the words `[CRITICAL]`,
     `[ERROR]` or `traceback` in a sentence gets that text echoed
     verbatim into the container log, and the bare-word regex
@@ -1064,7 +1064,7 @@ def test_extract_relevant_log_line_ignores_dialogue_user_input_double_quoted_und
 def test_dialogue_user_input_double_quoted_with_real_crash_still_reports_critical() -> None:
     """Issue #1834 / issue #1737 — make sure widening the `user_input=`
     exclude to cover both quote styles does NOT silence a real
-    dialogue_node Python crash. The traceback header + exception
+    dialog_node Python crash. The traceback header + exception
     line below the payload still match CRITICAL_MATCH_RE via
     `traceback` / `Error`, and the deploy gate must keep surfacing
     them.
@@ -1119,7 +1119,7 @@ def test_extract_relevant_log_line_ignores_bare_traceback_with_logger_prefix() -
     """Issue #1737, deploy run 33315845764 (30.08 14:08, kanban t_fe19566c):
     the bare "Traceback (most recent call last):" header slips through
     when a ROS2 node logger prepends its tag (e.g.
-    `[dialogue_node-4] Traceback (most recent call last):`), because
+    `[dialog_node-4] Traceback (most recent call last):`), because
     the pre-existing #1335 rule anchors on `^traceback ...$`. The
     follow-up Python exception line (BrokenPipeError,
     ModuleNotFoundError, ...) still matches CRITICAL_MATCH_RE via
@@ -1136,7 +1136,7 @@ def test_extract_relevant_log_line_ignores_bare_traceback_with_logger_prefix() -
 
 def test_extract_relevant_log_line_still_catches_dialogue_python_exception_after_traceback() -> None:
     """Negative test for the bare-Traceback exclusion above: a real
-    dialogue_node Python crash MUST still surface a deploy-critical
+    dialog_node Python crash MUST still surface a deploy-critical
     issue when the exception line carries the actual error word. We
     use an `Exception ignored in:` line (which CRITICAL_MATCH_RE
     matches on the literal `Exception` token, distinct from the
@@ -1339,7 +1339,7 @@ def test_extract_relevant_log_line_ignores_dialogue_tool_retry_reminder() -> Non
 
 def test_extract_relevant_log_line_still_catches_dialogue_value_error_after_babble() -> None:
     """Negative test for the babble/tool-retry exclusion. If a real
-    dialogue_node Python exception fires in the same turn as a babble
+    dialog_node Python exception fires in the same turn as a babble
     recovery, the exception line must still surface — only the
     babble notification itself is silenced. Without this guard the
     exclusion would swallow real crashes that happen to follow a
@@ -1640,8 +1640,8 @@ def test_extract_relevant_log_line_ignores_dialogue_node_dj_retry_reminder_with_
 
 
 def test_dialogue_node_dj_retry_critical_reminder_still_reports_real_traceback() -> None:
-    """Negative test for the dialogue_node DJ retry reminder
-    exclusion. A real dialogue_node Python crash on the same
+    """Negative test for the dialog_node DJ retry reminder
+    exclusion. A real dialog_node Python crash on the same
     container prints a `Traceback (most recent call last):` header
     followed by an exception line. The exclusion is anchored on
     the literal
@@ -1834,3 +1834,22 @@ def test_rtabmap_other_compute_warning_still_reports() -> None:
 
     assert line is not None
     assert "Out of memory" in line
+
+
+def test_illegal_instruction_is_critical_in_main_scope() -> None:
+    """Issue #5114 (deploy run 45019034598): controller_server умер SIGILL.
+
+    glibc на aarch64 печатает «Illegal instruction», а python-ros2run
+    переписывает это как `[ros2run]: Illegal instruction`. До #5114
+    CRITICAL_MATCH_RE знал только «segmentation fault» / «core dumped»,
+    и строка не поднимала critical_count. Обе формы — critical в scope
+    main, где живёт nav2.
+    """
+    for log_text in (
+        "[ros2run]: Illegal instruction",
+        "controller_server[42]: Illegal instruction (core dumped)",
+        "process 1234 received SIGILL",
+    ):
+        line = MODULE.extract_relevant_log_line(log_text, scope="main", severity="critical")
+        assert line is not None, log_text
+        assert line == log_text

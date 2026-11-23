@@ -76,7 +76,7 @@ _log = logging.getLogger(__name__)
 class _CompatLogger:
     """Adapter: std-logging ``%``-style calls → any 1-message logger.
 
-    ``dialogue_node`` passes its rclpy ``RcutilsLogger`` into
+    ``dialog_node`` passes its rclpy ``RcutilsLogger`` into
     :class:`HealthAwareFallbackLLM` (``logger=self.get_logger()``).
     rclpy loggers accept exactly one message positional arg, so the
     std-logging pattern ``log.info("... %s ...", arg1, arg2)`` raised

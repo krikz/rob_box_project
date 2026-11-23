@@ -46,11 +46,17 @@ RUN if [ -n "$APT_PROXY" ]; then \
 # содержит; ffmpeg стоит только в voice_base, от которого этот
 # контейнер НЕ наследуется. Без этой строки _find_ffmpeg() бросает
 # VoiceTranscodeError на первом же голосовом с робота.
+# python3-msgpack — exec_depend rob_box_supervisor (package.xml). Кодек
+# /avatar/state (rob_box_supervisor.core.state, AV-14) импортирует msgpack
+# на каждом сообщении топика. База ros2-zenoh и pip-ядро rob-box-dialog-core
+# его не ставят (ядро: PyYAML, openai, httpx). Это apt, не новая pip-зависимость
+# и не сеть сверх apt-get, который здесь уже был (#5053).
 # wget/unzip отсюда убраны вместе со ступенью скачивания Vosk (см. ниже):
 # больше их в этом образе не использовал никто — ни start_telegram_bot.sh,
 # ни healthcheck, ни код ноды.
 RUN apt-get update && apt-get install -y \
     python3-pip \
+    python3-msgpack \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 RUN rm -f /etc/apt/apt.conf.d/02proxy
@@ -106,22 +112,52 @@ RUN pip3 install --no-cache-dir \
 WORKDIR /ws
 COPY --from=msgs /ws/install /ws/install
 
+# Ядро диалога из публичного пакета (ADR-0167 Ш3, #4932): rob_box_core и
+# rob_box_dialog ставятся pip'ом по тегу, а не colcon'ом из src/. Модули ложатся
+# в site-packages; telegram_node импортирует их оттуда (avatar_command, phrases).
+# Пин совпадает с voice-assistant: тег v0.7.16. Ставится ДО colcon, чтобы сборка
+# хоста rob_box_telegram не затёрла ядро копией из src/.
+#
+# apt python3-pip на базе ros2-zenoh (Ubuntu 22.04) — это pip 22.0.2. Он не
+# читает имя из PEP 621-метаданных ядра (pyproject [project], setuptools>=77)
+# и пишет PKG-INFO «Name: unknown», после чего сам отбрасывает direct-URL:
+# «filename has 'rob-box-dialog-core', but metadata has 'unknown'»
+# (run 44544845438, job 135636006910, #4940). voice-assistant не падает:
+# voice_base заранее делает `pip3 install --upgrade pip` (Dockerfile:113).
+# Тот же приём здесь, отдельным слоем — до установки ядра.
+RUN pip3 install --no-cache-dir --upgrade pip
+RUN pip3 install --no-cache-dir \
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.28"
+
 WORKDIR /ws/src
-# rob_box_core — AV-13/AV-28 (avatar_command): telegram_node импортирует
-# rob_box_core.avatar_command, без сборки пакета в образе падает
-# ModuleNotFoundError на старте контейнера.
-COPY src/rob_box_core /ws/src/rob_box_core
 # ADR-0150 PR-2 (#3687): telegram_node публикует типизированный Utterance
 # (rob_box_dialog_msgs) — пакет пришёл из общего образа msgs выше.
-# #3727: квитанция /say берёт тексты из phrases/ru.yaml (rob_box_dialog, python3-yaml есть в ros-base).
-COPY src/rob_box_dialog /ws/src/rob_box_dialog
 COPY src/rob_box_telegram /ws/src/rob_box_telegram
 
-# Собираем ROS 2 пакеты
+# rob_box_supervisor (ament_python, #5053). Пакет уже exec_depend у
+# rob_box_telegram (package.xml, AV-14): face_roster_view.py:17 жёстко
+# импортирует rob_box_supervisor.face_roster_tool на старте ноды, а
+# handlers/commands.py лениво берёт оттуда ros_people_list для /faces.
+# База ros2-zenoh этого пакета не содержит (в отличие от voice-assistant,
+# от которого собирается образ supervisor). Паттерн COPY — как в
+# docker/sound/supervisor/Dockerfile (package.xml/setup.py/setup.cfg/resource,
+# затем исходники). Исходников ядра (src/rob_box_core) здесь нет: pip-установка
+# rob-box-dialog-core выше остаётся единственной копией в site-packages,
+# colcon её не затирает. rob_box_supervisor_msgs в этот пакет не копируем:
+# telegram их не импортирует на старте, а ленивый импорт в supervisor_client
+# по-прежнему ловит ImportError (комментарий у SERVICE_EXECUTE).
+COPY src/rob_box_supervisor/package.xml /ws/src/rob_box_supervisor/
+COPY src/rob_box_supervisor/setup.py   /ws/src/rob_box_supervisor/
+COPY src/rob_box_supervisor/setup.cfg  /ws/src/rob_box_supervisor/
+COPY src/rob_box_supervisor/resource   /ws/src/rob_box_supervisor/resource
+COPY src/rob_box_supervisor/rob_box_supervisor /ws/src/rob_box_supervisor/rob_box_supervisor
+
+# Собираем ROS-хост и пакет, без которого нода не импортируется.
+# Ядро уже в site-packages и в --packages-select не входит.
 WORKDIR /ws
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
-    colcon build --packages-select rob_box_core rob_box_dialog rob_box_telegram && \
+    colcon build --packages-select rob_box_supervisor rob_box_telegram && \
     rm -rf /ws/log
 
 WORKDIR /ws

@@ -6,7 +6,7 @@
 ====================
 ``check_acceptance`` и ``check_gate1_aggregate`` в ``e2e_voice_test.sh``
 искали имя тула ПОДСТРОКОЙ по ``docker logs voice-assistant``. Это не
-работает: ``dialogue_node`` на каждом ходе печатает в лог весь запрос к
+работает: ``dialog_node`` на каждом ходе печатает в лог весь запрос к
 LLM, включая строку
 
     tools(56): clear_waypoints, compose_music, ..., stop_music, ...
@@ -41,15 +41,24 @@ LLM, включая строку
 Реальный вызов оставляет в логе имя тула В КАВЫЧКАХ или после явного
 маркера исполнения:
 
-    dialogue_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
-    dialogue_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
-    dialogue_node: 📤 Отправлен запрос b5119339: get_current_time
+    dialog_node: ✅ [turn] process_input returned: ... tools=['get_current_time', 'speak_text']
+    dialog_node:   [3] assistant: '' tool_calls=(ToolCall(id='...', name='get_current_time', ...),)
+    dialog_node: 📤 Отправлен запрос b5119339: get_current_time
     mcp_server:    📥 Запрос выполнения: get_current_time с параметрами {}
     mcp_server:    ✅ Инструмент get_current_time выполнен успешно
 
 Списки доступных тулов и текст промпта имён в кавычках не содержат —
 там они через запятую без кавычек. Поэтому кавычки и маркеры исполнения
 дают чистый ноль на невызванных тулах (колонки quoted/zapros выше).
+
+Голых кавычек с #5008 мало: мост команд печатает диагностику
+``tool_not_available → в запрос добавлены тулы ['get_music_state', ...]``
+(``command_bridge.py``) — это каталог, добавленный в СЛЕДУЮЩИЙ запрос, а
+не вызов. Имя в кавычках считается вызовом только внутри конструкции
+вызова (``tools=[...]``, ``actions=[...]``, ``ToolCall(name=...)``,
+``tool_calls=[...]``, ``tools(<digits>): 'x'``); диагностика в этот
+список не входит. Каталог ``tools(56): stop_music, ...`` без кавычек
+вызовом не является.
 
 Контракт функции
 ================
@@ -76,6 +85,8 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
            "registration_failures", "registration_pending",
            "identify_failures", "robot_speech", "keyword_hit", "REGEX_PREFIX",
            "drop_unspoken_cancels", "repeated_numerals", "count_continuation_failures",
+           "count_reach", "count_end_failures",
+           "filler_speech_ids", "count_plan_started",
            "retry_block_reason", "step_verdict", "patterns_missing"]
 
 # Маркеры голосового ответа (любой из них обозначает «робот начал говорить»).
@@ -83,8 +94,8 @@ __all__ = ["TOOL_NAME_RE", "invocation_markers", "tool_invoked", "strip_llm_requ
 # (issue #2406 — verbal-only LLM answers на discovery/inquiry-шагах).
 # Все маркеры — lower-case: вызывающий сравнивает с логом в lower-case.
 VOICE_CYCLE_MARKERS = (
-    # Финальная строка dialogue_node после LLM/TTS цикла (есть spoken='...').
-    "✅ [turn] process_input returned:",
+    # TTS-запрос v2: финальный текст отправлен владельцу речи.
+    "🔊 tts:",
     # tool_calls перечисление (speak_text = голосовой ответ, не молчание).
     "'speak_text'",
     # mcp_server финальный ack по speak_text.
@@ -96,18 +107,22 @@ VOICE_CYCLE_MARKERS = (
 # Issue #3860: дамп LLM-запроса (``deepseek.py::_dump_llm_request``) печатает промпт, историю и
 # ``recent_actions`` прошлых ходов -- там имена тулов в кавычках, то есть маркеры вызова.
 # В выводе launch у строки дампа есть префикс ``[dialog_node-3]``. Зеркало bash-функции
-# ``strip_llm_request_dump`` из e2e_voice_lib.sh (одна форма строки в обоих местах).
+# ``strip_llm_request_dump`` из e2e_voice_lib.sh, НО с дополнительным альтернативой ``LLM RESPONSE``
+# (#4694): дамп ответа отклонённой попытки несёт имена тулов в JSON actions (``"stop_music"``), и
+# must_not считал НЕисполненный вызов исполненным. Bash-зеркало не режет RESPONSE: оно питает
+# только pattern-check шага, а паттерны сценариев не опираются на имена тулов из ответов.
 _DUMP_PREFIX = r"^(?:\[[A-Za-z0-9_]+-[0-9]+\])?\s*"
 _DUMP_LINE_RE = re.compile(
     r"LLM REQUEST (?:START|END)"
+    r"|LLM RESPONSE"
     r"|" + _DUMP_PREFIX + r"\[[0-9]+\] [A-Za-z_]+: "
     r"|" + _DUMP_PREFIX + r"tools\([0-9]+\): "
 )
 
 
 def strip_llm_request_dump(logs: str) -> str:
-    """Лог без строк дампа LLM-запроса. Режем по форме строки, не блоком START..END: при обрезке
-    ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
+    """Лог без строк дампа LLM-запроса и ответа. Режем по форме строки, не блоком START..END:
+    при обрезке ``--since`` END может отсутствовать, и блочный фильтр съел бы остаток лога."""
     return "\n".join(line for line in logs.split("\n") if not _DUMP_LINE_RE.search(line))
 
 
@@ -120,13 +135,32 @@ def invocation_markers(tool: str) -> list:
     """Подстроки, каждая из которых доказывает РЕАЛЬНЫЙ вызов ``tool``.
 
     Все — lower-case: вызывающий сравнивает с логом в lower-case.
+
+    Кавычечные маркеры — только внутри конструкции вызова, не голое имя в
+    кавычках: диагностика моста ``в запрос добавлены тулы ['x', ...]``
+    печатает каталог, а не вызов (#5008). Конструкции:
+
+    * ``tools=['x']`` / ``actions=['x']`` — итог хода и вердикт моста;
+    * ``ToolCall(... name='x' ...)`` — вызов в истории запроса;
+    * ``tool_calls=[('x', ...]`` — дамп ответа модели;
+    * ``"tool": "x"`` — действие в JSON (query_results, recent_actions,
+      отклонённая попытка). Дамп запроса режется
+      :func:`strip_llm_request_dump` ДО вердикта (#3860); голый поиск по
+      окну без чистки обязан видеть ту же форму, иначе #3860 врёт наоборот;
+    * ``tools(<digits>): 'x'`` — turn-tools с именем В КАВЫЧКАХ. Каталог
+      ``tools(56): stop_music, ...`` печатает имена БЕЗ кавычек и вызовом
+      не является (run 34408526453).
     """
     t = tool.lower()
+    quoted = """['\"]%s['\"]""" % re.escape(t)
     return [
-        # tools=['x', 'y'] в итоговой строке хода + ToolCall(name='x')
-        "'%s'" % t,
-        '"%s"' % t,
-        # dialogue_node → mcp_server и обратно
+        re.compile(r"""\btools=\[(?:[^\]\n]*,\s*)?""" + quoted),
+        re.compile(r"""\bactions=\[(?:[^\]\n]*,\s*)?""" + quoted),
+        re.compile(r"""\btoolcall\([^)\n]*\bname=""" + quoted),
+        re.compile(r"""\btool_calls=\[(?:[^\]\n]*,\s*)?\(""" + quoted),
+        re.compile(r"""\btools\([0-9]+\):\s*(?:[^'\n]*,\s*)?""" + quoted),
+        re.compile(r"""['"]tool['"]\s*:\s*""" + quoted),
+        # dialog_node → mcp_server и обратно: имя после маркера, без кавычек
         "запрос выполнения: %s" % t,
         "инструмент %s выполнен" % t,
         "публикую результат для %s" % t,
@@ -145,7 +179,7 @@ def tool_invoked(logs: str, frag: str) -> bool:
     if not TOOL_NAME_RE.match(frag_l):
         # свободный текст (кусок строки лога) — поведение как было
         return frag_l in low
-    return any(m in low for m in invocation_markers(frag_l))
+    return any(_marker_found(low, m) for m in invocation_markers(frag_l))
 
 
 def first_invocation_position(logs: str, tool: str) -> int | None:
@@ -165,16 +199,32 @@ def first_invocation_position(logs: str, tool: str) -> int | None:
     return _first_marker_position(low, invocation_markers(tool.lower()))
 
 
-def _first_marker_position(lowered_logs: str, markers: list[str] | tuple[str]) -> int | None:
-    """Helper: индекс первого вхождения любой из подстрок в lower-case логе.
+def _marker_found(lowered_logs: str, marker: "str | re.Pattern[str]") -> bool:
+    """Маркер есть в lower-case логе: подстрока или регэксп конструкции."""
+    if isinstance(marker, str):
+        return marker in lowered_logs
+    return marker.search(lowered_logs) is not None
+
+
+def _marker_position(lowered_logs: str, marker: "str | re.Pattern[str]") -> int | None:
+    """Индекс первого вхождения маркера в lower-case логе, или ``None``."""
+    if isinstance(marker, str):
+        found = lowered_logs.find(marker)
+        return found if found != -1 else None
+    match = marker.search(lowered_logs)
+    return match.start() if match else None
+
+
+def _first_marker_position(lowered_logs: str, markers: list | tuple) -> int | None:
+    """Индекс первого вхождения любой подстроки или конструкции вызова.
 
     Возвращает ``None`` если ни один маркер не найден. Раньше аналогичный
     код был inline в check_acceptance, теперь — общий хелпер.
     """
     earliest: int | None = None
     for m in markers:
-        idx = lowered_logs.find(m)
-        if idx == -1:
+        idx = _marker_position(lowered_logs, m)
+        if idx is None:
             continue
         if earliest is None or idx < earliest:
             earliest = idx
@@ -188,10 +238,29 @@ def first_voice_cycle_position(logs: str) -> int | None:
     Используется для assertion «discovery tool был вызван ДО первого
     голосового ответа» (issue #2406). Маркеры те же, что в soft-hint
     ``check_gate1_aggregate``: 'tts finished' / 'speak_text' в списке tools=
-    или финальная строка ``✅ [turn] process_input returned:``.
+    или TTS-запрос ``🔊 TTS:``. Промежуточная фраза ``understand.progress``
+    содержательным ответом не считается.
     """
     low = logs.lower()
-    return _first_marker_position(low, list(VOICE_CYCLE_MARKERS))
+    progress_pending = False
+    filler_speech_ids: set[str] = set()
+    offset = 0
+    for line in low.splitlines(keepends=True):
+        if "🧭 [turn-v2] промежуточная фраза:" in line:
+            progress_pending = True
+        if progress_pending and "🔊 tts:" in line:
+            progress_pending = False
+            match = re.search(r"speech_id=([a-z0-9]+)", line)
+            if match:
+                filler_speech_ids.add(match.group(1))
+            offset += len(line)
+            continue
+        if not any(f"speech_id={speech_id}" in line for speech_id in filler_speech_ids):
+            positions = [line.find(marker) for marker in VOICE_CYCLE_MARKERS if line.find(marker) >= 0]
+            if positions:
+                return offset + min(positions)
+        offset += len(line)
+    return None
 
 
 # =============================================================================
@@ -203,8 +272,8 @@ def first_voice_cycle_position(logs: str) -> int | None:
 # реплика САМОГО ГОВОРЯЩЕГО, и подпись диктора, которую ставит
 # speaker_id_node:
 #
-#   dialogue_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
-#   dialogue_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
+#   dialog_node: user_input='[Spkr:Саша] привет, давай знакомиться...'
+#   dialog_node: 👤 [issue 1077] Speaker: 'Саша' conf=0.81
 #
 # Из-за этого три из четырёх keyword-проверок акта 2 были тавтологиями —
 # зелёными независимо от поведения робота (замер 22.09.2026):
@@ -216,35 +285,8 @@ def first_voice_cycle_position(logs: str) -> int | None:
 # А шаг n207 при этом объявлен в сценарии как проверка связки
 # «голос → профиль → факты, а не просто вежливый ответ». Проверки не было.
 #
-# Лечение: ключевые слова ищутся ТОЛЬКО в том, что робот произнёс.
-# Три канала, все три реально встречаются в логе живого робота
-# (замер 22.09.2026, Vision Pi):
-#
-#   tts_node:    🔊 TTS: speech_id=..., voice=default, lang=default, text='Добрый день, Денис!'
-#   mcp_server:  📥 Запрос выполнения: speak_text с параметрами {'text': 'Лицо знакомое...', 'animation': 'happy'}
-#   dialogue_node: ✅ [turn] process_input returned: spoken='Привет! У меня всё отлично...'[:60]
-#
-# Третий канал обрезан до 60 символов — он идёт последним и нужен как
-# подстраховка, когда TTS не доехал (строка TTS ещё не легла в лог).
-#
-# Issue #2902 (E2E акт 2c, run 35912751803): третий канал — это текст LLM
-# ДО решения dialogue_node, а не то, что прозвучало. После #2828/#2888 ответ
-# хода часто ЗАМЕНЯЕТСЯ вопросом о личности:
-#
-#   dialogue_node: ✅ [turn] process_input returned: spoken='Здравствуй, Борис! Очень приятно познакомиться…'[:60]
-#   dialogue_node: 👥 [issue #2828] ответ хода заменён переспросом про личность: 'Здравствуй, Борис! Очень приятно позн…'
-#   tts_node:      🔊 TTS: … text='Твой голос очень похож на голос, который я …'
-#
-# Вслух прозвучал только вопрос, а must_not_say «Приятно познакомиться»
-# сработал по spoken= — ложный FAIL. Поэтому spoken= теперь подстраховка
-# ПО ХОДУ: ход — это отрезок лога от строки «process_input returned» до
-# следующей такой строки (ответ хода озвучивается/глушится ПОСЛЕ неё).
-# spoken= хода считается речью, только если в его отрезке
-#   * нет ни одной строки реального озвучивания (🔊 TTS / speak_text) —
-#     если TTS есть, речь берётся из TTS, это и есть «что прозвучало»;
-#   * нет маркера «этот ответ не озвучен» (_NOT_VOICED_MARKERS ниже).
-# Иначе (TTS в окне ещё не доехал, маркера нет) — spoken= считается речью,
-# как раньше: строже, а не мягче.
+# Ключевые слова ищутся только в TTS-запросах и вызовах speak_text.
+# Исторический spoken= из удалённого движка v1 не доказывает озвучивание (#4354).
 _VOICED_PATTERNS = (
     # 🔊 TTS: ... text='...'  — text идёт последним полем строки. repr()
     # берёт двойные кавычки, если в тексте есть апостроф: без второй ветки
@@ -255,44 +297,6 @@ _VOICED_PATTERNS = (
         r"speak_text с параметрами \{'text':\s*(?:'(.*?)'|\"(.*?)\")\s*[,}]"
     ),
 )
-# process_input returned: spoken='...'[:60]  /  🔍 [handle_result] spoken='...' (len=NN)
-_SPOKEN_FALLBACK_RE = re.compile(
-    r"spoken=(?:'(.*?)'|\"(.*?)\")(?:\[:\d+\]|\s*\(len=\d+\))"
-)
-#: Строка, открывающая отрезок хода (dialogue_node._run_turn).
-_TURN_RESULT_MARK = "process_input returned:"
-#: Подстроки строк лога, признающих «spoken= этого хода вслух НЕ звучал».
-#: Копии f-строк src/rob_box_voice/rob_box_voice/dialogue_node.py; все
-#: печатаются ПОСЛЕ «process_input returned» того же хода.
-_NOT_VOICED_MARKERS = (
-    # _deliver_turn_result (#2828): вместо ответа прозвучал переспрос. Сюда
-    # же сводятся придержанные вопросы #2747 («переспрашиваю про личность …
-    # held_until_turn_end=True») и #2888 («identity question by robot …
-    # held_until_turn_end=True»): они печатаются ДО строки результата
-    # (т.е. в отрезке прошлого хода), а замену фиксирует именно эта строка.
-    "ответ хода заменён переспросом про личность",
-    # _deliver_turn_result (#2908): вместо ответа прозвучала просьба
-    # повторить после отказа регистрации. НЕ маркер вопроса о личности
-    # (_IDENTITY_QUESTION_MARKERS) — ретрай такого шага по-прежнему можно.
-    "ответ хода заменён просьбой повторить",
-    # _handle_result: маркер завершения «done» вместо ответа.
-    "skip auto-TTS",
-    # #988: ответ уже прозвучал через speak_text — финальный текст не звучит.
-    "final text skipped (anti-duplicate)",
-    "skipping auto-TTS of final text",
-    # DJ-переход: свободный текст не озвучивается.
-    "свободный текст НЕ озвучиваю",
-    # #1882: внутренний монолог модели заглушён.
-    "planning-narration hard-mute",
-    # Служебка: [SYSTEM…]/[CRITICAL…] не озвучиваются.
-    "Служебный текст LLM не озвучиваем",
-    # #2760: вызов тула текстом — не озвучен, ушёл ретрай.
-    "вызов тула ТЕКСТОМ вместо tool-call",
-    # #2175: пересказ system-шаблона — не озвучен, ушёл ретрай.
-    "regurgitates system-template в spoken",
-    # #2874: ответ хода отозван гуардом / ход ушёл в синхронный ретрай.
-    "ответ хода не озвучиваю",
-)
 
 
 def _voiced_texts(line: str) -> list:
@@ -301,17 +305,6 @@ def _voiced_texts(line: str) -> list:
         for m in pat.finditer(line):
             out.append(m.group(1) if m.group(1) is not None else m.group(2))
     return out
-
-
-def _turn_segments(logs: str) -> list:
-    """Строки лога, нарезанные на отрезки ходов. Отрезок 0 — всё до первой
-    строки «process_input returned» (окно шага может начаться посреди хода)."""
-    segments: list = [[]]
-    for line in logs.splitlines():
-        if _TURN_RESULT_MARK in line:
-            segments.append([])
-        segments[-1].append(line)
-    return segments
 
 
 def robot_speech(logs: str) -> str:
@@ -326,21 +319,7 @@ def robot_speech(logs: str) -> str:
     """
     if not logs:
         return ""
-    voiced: list = []
-    fallback: list = []
-    for seg in _turn_segments(logs):
-        seg_voiced: list = []
-        for line in seg:
-            seg_voiced.extend(_voiced_texts(line))
-        voiced.extend(seg_voiced)
-        if seg_voiced or any(
-            mk in line for line in seg for mk in _NOT_VOICED_MARKERS
-        ):
-            continue
-        for line in seg:
-            for m in _SPOKEN_FALLBACK_RE.finditer(line):
-                fallback.append(m.group(1) if m.group(1) is not None else m.group(2))
-    return "\n".join(voiced + fallback)
+    return "\n".join(text for line in logs.splitlines() for text in _voiced_texts(line))
 
 
 #: Строка ``expected_keywords`` / ``must_not_say`` с этим префиксом -- регэксп по речи робота, а не подстроки.
@@ -376,13 +355,13 @@ def keyword_hit(logs: str, kw: str) -> bool:
 #
 #   [speaker_id_node] ⚠️ [issue #2829] register_request for 'Саша' has no
 #       utterance_id -- honest refusal instead of registering whoever speaks next
-#   [dialogue_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
+#   [dialog_node]   ⚠️ [issue #2829] Регистрация 'Саша' отклонена:
 #       no_utterance_context (utterance_id=None)
 #
 # ``expected_tool_calls``/``discovery_tools`` доказывают только, что LLM
 # ДЁРНУЛА тул. register_speaker — fire-and-forget публикация в топик: тул
 # «выполнен успешно» и тогда, когда нода биометрии профиль не завела.
-# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialogue_node.
+# Исход регистрации виден ТОЛЬКО по логу speaker_id_node / dialog_node.
 #
 # Регэкспы ниже — копии f-строк из кода робота, а не «похожий вид»
 # (src/rob_box_voice/rob_box_voice/speaker_id_node.py):
@@ -396,7 +375,7 @@ def keyword_hit(logs: str, kw: str) -> bool:
 # и dialogue_node.py (_on_speaker_result):
 #   Регистрация '{name}' отклонена: {error} (utterance_id=…)
 #   Регистрация '{name}' отклонена — реплика …с короче …   (too_short)
-# Отказ ищется по ОБЕИМ нодам: dialogue_node параллельно правят (#2842), и
+# Отказ ищется по ОБЕИМ нодам: dialog_node параллельно правят (#2842), и
 # если его строка поменяется, строка speaker_id_node всё равно поймает отказ.
 
 REGISTER_TOOL = "register_speaker"
@@ -422,7 +401,7 @@ _REG_REJECTED_RES = (
      "utterance_not_found"),
     (re.compile(r"Registration of '([^']*)' rejected"), "too_short"),
 )
-# Причину dialogue_node печатает явно после двоеточия; у too_short вместо
+# Причину dialog_node печатает явно после двоеточия; у too_short вместо
 # двоеточия тире — тогда причины в строке нет, и это too_short.
 _REG_REJECTED_DIALOGUE_RE = re.compile(
     r"Регистрация '([^']*)' отклонена(?::\s*([A-Za-z_]+))?"
@@ -636,35 +615,9 @@ def identify_failures(acc: dict, logs: str) -> list:
     return failures
 
 
-# ── Issue #2902: ретрай шага, который изменил состояние робота ───────────────
-#
-# E2E акт 2c, run 35912751803, шаг n722_boris_intro_conflict
-# (retry_acceptance: 1). Попытка 1: Борис зарегистрирован отдельным профилем
-# (ADR-0127), робот задал переспрос «Твой голос очень похож…». Попытка 2
-# проиграла ту же реплику «Меня зовут Борис…» поверх ЭТОГО состояния —
-# dialogue_node честно прочитал её как ответ на переспрос
-# («👥 [issue #2828] ответ на переспрос: …»), register_speaker не вызывался,
-# и шаг упал уже по другой причине. Ретрай проверял не то, что написано в
-# шаге.
-#
-# Почему запрет, а не сброс состояния перед повтором: откатить то, что
-# сделала попытка 1, харнессу нечем. Профиль лежит в speakers.db, а боевая
-# /data общая с живыми людьми — стирать её перед повтором нельзя; ожидание
-# ответа на переспрос живёт в памяти dialogue_node, ручки «забудь вопрос» у
-# ноды нет (а код нод этот фикс не трогает). Сброс «почти всего» дал бы
-# повтор поверх частично грязного состояния — то же враньё, только тише.
-#
-# Почему по уликам, а не по виду шага: ретрай регистрационного шага,
-# который ничего не изменил (регистрацию отклонили — no_utterance_context,
-# #2846), безопасен и полезен: LLM недетерминирована (04d4ba2f6). Запрещаем
-# ровно тогда, когда в логе попытки есть доказательство смены состояния.
-
-#: Робот задал вопрос о личности и ждёт ответа (dialogue_node.py).
-_IDENTITY_QUESTION_MARKERS = (
-    "[issue #2747] переспрашиваю про личность",
-    "[issue #2828] ответ хода заменён переспросом про личность",
-    "[issue #2888] identity question by robot",
-)
+# ── Issue #2902: не повторять шаг поверх изменённого состояния ──────────────
+# Принятая регистрация уже записана в БД. Озвученный вопрос следующего
+# шага меняет смысл повторной реплики. Харнесс не откатывает это состояние.
 
 
 def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
@@ -678,7 +631,6 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
 
     * регистрация голоса принята или склеена (профиль уже в базе — повтор
       проверял бы повторную регистрацию, а не первую);
-    * робот задал вопрос о личности (следующая реплика читается как ответ);
     * речь попытки совпала с ``when_robot_asked`` следующего шага — сценарий
       сам объявил этот вопрос сменой хода: следующий шаг на него отвечает.
     """
@@ -693,8 +645,6 @@ def retry_block_reason(logs: str, next_when_robot_asked: str = "") -> str:
         )
     if reg["merged"]:
         reasons.append("speaker registration merged into an existing profile")
-    if any(mk in logs for mk in _IDENTITY_QUESTION_MARKERS):
-        reasons.append("robot asked an identity question and awaits the answer")
     pattern = (next_when_robot_asked or "").strip()
     if pattern:
         try:
@@ -760,25 +710,127 @@ def drop_unspoken_cancels(logs: str) -> str:
 
 
 _TTS_LINE_RE = re.compile(r"🔊 TTS: speech_id=(\w+),.*?\btext=(?:'(.*?)'|\"(.*?)\")\s*$")
-_NUMERALS = (
-    "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять", "десять", "одиннадцать",
-    "двенадцать", "тринадцать", "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать",
-    "девятнадцать", "двадцать",
+_SPEECH_ID_RE = re.compile(r"speech_id=([a-z0-9]+)")
+_ACCEPTED_RE = re.compile(r"✅ ПРИНЯТО")
+# Промежуточная фраза хода (``understand.progress``) -- не ответ. Тот же маркер, что в
+# :func:`first_voice_cycle_position`: строка помечает speech_id ближайшего ``🔊 TTS``.
+_PROGRESS_MARKER = "🧭 [turn-v2] промежуточная фраза:"
+
+# Числительные счёта. Составное («двадцать один») -- одно число, а не два слова: регэксп 1..20 резал его на
+# «двадцать» и «один», и правка поверх идущего счёта краснела ложным повтором (#4986, акт 8, run 44808584641).
+_ONES = (
+    "один",
+    "два",
+    "три",
+    "четыре",
+    "пять",
+    "шесть",
+    "семь",
+    "восемь",
+    "девять",
+    "десять",
+    "одиннадцать",
+    "двенадцать",
+    "тринадцать",
+    "четырнадцать",
+    "пятнадцать",
+    "шестнадцать",
+    "семнадцать",
+    "восемнадцать",
+    "девятнадцать",
 )
-_NUMERAL_RE = re.compile(r"(?<![а-яё])(%s)(?![а-яё])" % "|".join(sorted(_NUMERALS, key=len, reverse=True)))
+_TENS = (
+    ("девяносто", 90),
+    ("восемьдесят", 80),
+    ("семьдесят", 70),
+    ("шестьдесят", 60),
+    ("пятьдесят", 50),
+    ("сорок", 40),
+    ("тридцать", 30),
+    ("двадцать", 20),
+)
+_NUMERALS = _ONES + tuple(word for word, _value in _TENS)
+# Составное -- только десятки 20..90 + единицы 1..19. Любое первое слово здесь съедало бы следующее:
+# «девять, десять» читалось бы как одно число, и повтор девятки проверка бы не поймала.
+_TENS_WORD_RE = "|".join(word for word, _value in _TENS)
+_ONES_WORD_RE = "|".join(sorted(_ONES, key=len, reverse=True))
+_COMPOUND_RE = re.compile(
+    r"(?<![а-яё])(?:(%s)(?:\s+(%s))?|(%s))(?![а-яё])" % (_TENS_WORD_RE, _ONES_WORD_RE, _ONES_WORD_RE)
+)
+_TENS_VALUE = {word: value for word, value in _TENS}
+_ONES_VALUE = {word: index + 1 for index, word in enumerate(_ONES)}
+
+
+def _numeral_value(tens: str, ones: "str | None") -> int:
+    """«двадцать один» -> 21, «двадцать» -> 20, «один» -> 1. Составное только из десятков 20..90 и единиц 1..19."""
+    base = _TENS_VALUE.get(tens)
+    if base is None:
+        return _ONES_VALUE[tens]
+    if ones is None:
+        return base
+    return base + _ONES_VALUE[ones]
+
+
+def _spoken_numbers(speech: str) -> list:
+    """Числа звучавшей речи по порядку, составные целиком. «двадцать один» -- 21, не 20 и 1.
+
+    Десятки и единицы -- разные группы регэкспа: составное строится только из десятков 20..90, поэтому «девять,
+    десять» остаётся двумя числами, а не одним.
+    """
+    out = []
+    for match in _COMPOUND_RE.finditer(speech.lower().replace("ё", "е")):
+        head = match.group(1) or match.group(3)
+        out.append(_numeral_value(head, match.group(2)))
+    return out
+
+
+def filler_speech_ids(logs: str) -> "set[str]":
+    """speech_id промежуточных фраз хода: реплика, помеченная ``промежуточная фраза`` перед своим ``🔊 TTS``.
+
+    Тот же принцип, что в :func:`first_voice_cycle_position` (#2406): филлер -- не содержательный ответ и не счёт.
+    """
+    pending = False
+    found: set = set()
+    for line in logs.lower().split("\n"):
+        if _PROGRESS_MARKER in line:
+            pending = True
+        if pending and "🔊 tts:" in line:
+            pending = False
+            match = _SPEECH_ID_RE.search(line)
+            if match:
+                found.add(match.group(1))
+    return found
+
+
+def _own_step_logs(logs: str) -> str:
+    """Окно от собственного ``✅ ПРИНЯТО`` шага: речь до него принадлежит предыдущему шагу.
+
+    PLAY шага с barge-in ставится на 3 с раньше, чем кончится речь предыдущего, и ``docker logs --since`` захватывает
+    её целиком (#4986: окно n807 началось за 3 с до счёта n806 и забрало числа 1..30). Первое ``✅ ПРИНЯТО`` окна --
+    команда того, предыдущего шага (её речь ещё звучала); второе -- фраза самого шага. Окно с одним ``✅ ПРИНЯТО``
+    не режется: barge-in чужой речи в него не занёс.
+    """
+    lines = logs.split("\n")
+    hits = [i for i, line in enumerate(lines) if _ACCEPTED_RE.search(line)]
+    if len(hits) < 2:
+        return logs
+    return "\n".join(lines[hits[1] :])
 
 
 def _sounded_speech(logs: str) -> str:
     """Речь, которая ЗВУЧАЛА: тексты ``🔊 TTS`` реплик со ``SpeechEvent started`` (строка TTS ложится при приёме
     реплики, и отменённый до старта пред-синтез попал бы в неё). Нет ни одного ``started`` (v1, сухой лог) --
-    :func:`robot_speech`."""
-    started = set(_STARTED_RE.findall(logs))
+    :func:`robot_speech`. Речь филлера (:func:`filler_speech_ids`) и речь до собственного ``✅ ПРИНЯТО`` шага
+    (:func:`_own_step_logs`) не входят: первая -- не ответ, вторая -- предыдущий шаг."""
+    own = _own_step_logs(logs)
+    started = set(_STARTED_RE.findall(own))
+    fillers = filler_speech_ids(own)
     if not started:
-        return robot_speech(logs)
+        return robot_speech(own)
     out: list = []
-    for line in logs.split("\n"):
+    for line in own.split("\n"):
         found = _TTS_LINE_RE.search(line)
-        if found and found.group(1) in started:
+        if found and found.group(1) in started and found.group(1) not in fillers:
             out.append(found.group(2) if found.group(2) is not None else found.group(3))
     return "\n".join(out)
 
@@ -786,11 +838,14 @@ def _sounded_speech(logs: str) -> str:
 def repeated_numerals(logs: str) -> list:
     """Числительные 1..20, прозвучавшие в окне больше одного раза (счёт не должен идти по кругу после правки).
 
-    Считается звучавшая речь (:func:`_sounded_speech`), регистр не важен. Возвращает ``["девять x2", ...]``."""
+    Считается звучавшая речь (:func:`_sounded_speech`), регистр не важен, составные -- целиком (:func:`_spoken_numbers`):
+    «двадцать один» -- это 21, и слово «один» внутри него повтором единицы не является. Возвращает ``["9 x2", ...]``
+    по значениям чисел: слово «двадцать» из «двадцать один» и из «двадцать два» -- разные числа, не повтор.
+    """
     counts: dict = {}
-    for word in _NUMERAL_RE.findall(_sounded_speech(logs).lower()):
-        counts[word] = counts.get(word, 0) + 1
-    return ["%s x%d" % (w, n) for w, n in counts.items() if n > 1]
+    for number in _spoken_numbers(_sounded_speech(logs)):
+        counts[number] = counts.get(number, 0) + 1
+    return ["%d x%d" % (number, n) for number, n in sorted(counts.items()) if n > 1]
 
 
 _STEP_RE = re.compile(r"(?<![а-яё])шаг")
@@ -799,29 +854,96 @@ _STEP_RE = re.compile(r"(?<![а-яё])шаг")
 def count_continuation_failures(logs: str) -> list:
     """Правка звучащего счёта («добавляй слово шаг», #4207) продолжила его, а не начала заново: механизм речи.
 
-    Смотрит звучавшую речь окна (:func:`_sounded_speech`), числа 1..20: счёт был слышен; идёт не с единицы; числа
-    следуют подряд (+1, без возврата и пропусков); после первого числа окна прозвучало слово «шаг». Возвращает список
-    причин (пусто -- продолжение верное)."""
+    Смотрит звучавшую речь окна (:func:`_sounded_speech`), числа целиком, включая составные выше 20 (:func:`_spoken_numbers`):
+    счёт был слышен; идёт не с единицы; числа следуют подряд (+1, без возврата и пропусков); после первого числа окна
+    прозвучало слово «шаг». Возвращает список причин (пусто -- продолжение верное)."""
     speech = _sounded_speech(logs).lower()
-    found = list(_NUMERAL_RE.finditer(speech))
-    if not found:
+    numbers = _spoken_numbers(speech)
+    if not numbers:
         return ["no count heard in the window"]
-    numbers = [_NUMERALS.index(m.group(1)) + 1 for m in found]
     failures: list = []
     if 1 in numbers:
         failures.append("count restarted from one after the edit")
     broken = [f"{a}->{b}" for a, b in zip(numbers, numbers[1:]) if b != a + 1]
     if broken:
         failures.append(f"numbers not consecutive: {broken}")
-    if not _STEP_RE.search(speech, found[0].end()):
+    if not _STEP_RE.search(speech):
         failures.append("word 'шаг' not spoken after the edit")
     return failures
+
+
+# ── #4077 / М9: n802 ложный PASS по SpeechEvent started при урезанном счёте ─────────
+#
+# «посчитай до сорока» → модель «Считаю… Один… Десять.» (80 симв.) -- шаг зелёный: ждал только
+# ``SpeechEvent started``. Конец речи окно не видит (n803 barge-in). Длину плана судим по TTS и по
+# старту выступления: ``full_count`` на «до сорока» → poem ``segments=4`` (десяток, COUNT_PER_SEGMENT).
+
+#: Десяток чисел на сегмент выступления-счёта (``knowledge.COUNT_PER_SEGMENT``): ``segments=N`` → до N×10.
+_COUNT_PER_SEGMENT = 10
+_PERFORM_SEGS_RE = re.compile(r"выступление старт kind=\w+\b[^\n]*\bsegments=(\d+)")
+
+
+def count_plan_started(logs: str) -> bool:
+    """В окне есть собственный план счёта шага, а не только филлер.
+
+    План -- ``выступление старт … segments=N`` либо ``🔊 TTS``, не помеченный строкой ``промежуточная фраза``
+    (:func:`filler_speech_ids`). Пока его нет, судить длину счёта нечем: окно пусто, потому что счёт ещё не начался,
+    а не потому что оборвался (#4985, акт 8, run 44808584641: вердикт снят по «Секунду, думаю.» за 2,3 с до плана).
+    """
+    if _PERFORM_SEGS_RE.search(logs):
+        return True
+    fillers = filler_speech_ids(logs)
+    kept = [line for line in logs.split("\n") if not any(f"speech_id={sid}" in line.lower() for sid in fillers)]
+    return bool(robot_speech("\n".join(kept)).strip())
+
+
+def count_reach(logs: str) -> int:
+    """До какого числа доходит план счёта в окне шага.
+
+    Берёт максимум из числительных в ``🔊 TTS`` (:func:`robot_speech` -- весь план, не только звучавшее; составные
+    целиком, :func:`_spoken_numbers`) и из ``выступление старт … segments=N`` × :data:`_COUNT_PER_SEGMENT` (счёт кодом на
+    «до сорока» -- poem из 4 сегментов, а barge-in режет окно на первом; без segments урезание до десяти и полный poem
+    неразличимы). Речь промежуточной фразы хода (:func:`filler_speech_ids`) в план не входит.
+    """
+    fillers = filler_speech_ids(logs)
+    speech = (
+        robot_speech(
+            "\n".join(
+                line
+                for line in logs.split("\n")
+                if not any(f"speech_id={speech_id}" in line.lower() for speech_id in fillers)
+            )
+        )
+        .lower()
+        .replace("ё", "е")
+    )
+    reach = max(_spoken_numbers(speech), default=0)
+    for found in _PERFORM_SEGS_RE.findall(logs):
+        reach = max(reach, int(found) * _COUNT_PER_SEGMENT)
+    return reach
+
+
+def count_end_failures(logs: str, min_end: int) -> list:
+    """Счёт короче ``min_end`` (М9 n802: урезание до десяти при ``SpeechEvent started``). Пусто -- длина достаточна.
+
+    Окно без собственного плана счёта (только филлер «Секунду, думаю.», #4985) не судится: счёт ещё не начался, и
+    «reaches 0» описывал бы пустое окно, а не обрыв. Настоящий обрыв -- план есть, а до ``min_end`` он не доходит.
+    """
+    if not min_end:
+        return []
+    if not count_plan_started(logs):
+        return []
+    reach = count_reach(logs)
+    if reach >= int(min_end):
+        return []
+    return ["count reaches %d, need at least %d (#4077 n802: silent cut)" % (reach, int(min_end))]
 
 
 def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = "") -> dict:
     """Вердикт ``acceptance`` шага по логу шага: те же правила, что исполняет ``check_acceptance`` на роботе.
 
-    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дамп LLM-запроса режется здесь, #3860),
+    ``acc`` — блок ``acceptance`` шага сценария, ``logs`` — лог шага (дампы LLM-запроса и ответа режутся
+    здесь, #3860, #4694),
     ``timing_path`` — ``timing.json`` харнесса для ``response_max_ms`` (пусто — не проверяется). Результат — словарь
     ``acceptance.json`` (``pass``, ``reason``, поля диагностики).
     """
@@ -863,6 +985,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
     forbidden_called = [c for c in must_not if tool_invoked(kept_logs, c)]
     repeated_numbers = repeated_numerals(logs) if acc.get("no_repeat_numbers") else []
     count_failures = count_continuation_failures(logs) if acc.get("count_continues") else []
+    min_count_end = int(acc.get("min_count_end") or 0)
+    count_end_fail = count_end_failures(logs, min_count_end) if min_count_end else []
     found_keywords = [k for k in expected_kw if keyword_hit(logs, k)]
     missing_keywords = [k for k in expected_kw if not keyword_hit(logs, k)]
     forbidden_said = [k for k in must_not_say if keyword_hit(logs, k)]
@@ -924,6 +1048,8 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         failures.append(f"numbers spoken more than once (#4207: count restarted after edit): {repeated_numbers}")
     if count_failures:
         failures.append(f"count not continued after the edit (#4207): {count_failures}")
+    if count_end_fail:
+        failures.append(f"count too short (#4077): {count_end_fail}")
     if identification_failures:
         failures.extend(identification_failures)
     if discovery_tool_errors:
@@ -954,6 +1080,9 @@ def step_verdict(acc: dict, logs: str, *, label: str = "", timing_path: str = ""
         "repeated_numbers": repeated_numbers,
         "count_continues": bool(acc.get("count_continues")),
         "count_failures": count_failures,
+        "min_count_end": min_count_end,
+        "count_reach": count_reach(logs) if min_count_end else 0,
+        "count_end_failures": count_end_fail,
         "must_not_identify_as": acc.get("must_not_identify_as", []) or [],
         "identify_failures": identification_failures,
         "discovery_tools": discovery_tools,

@@ -92,6 +92,7 @@ TURN_VERBAL_ONLY = TOOLS_CATALOG + (
     "[dialogue_node-4] ✅ [turn] process_input returned: "
     "spoken='Приятно познакомиться, Саша!'[:60] "
     "tools=[] finish_reason='stop'\n"
+    "[tts_node-5] 🔊 TTS: text='Приятно познакомиться, Саша!'\n"
 )
 
 #: «Регресс #2406 наоборот»: tool вызван, НО ПОСЛЕ голосового ответа
@@ -101,6 +102,7 @@ TURN_VOICE_BEFORE_TOOL = TOOLS_CATALOG + (
     "[dialogue_node-4] ✅ [turn] process_input returned: "
     "spoken='Приятно познакомиться, Саша!'[:60] "
     "tools=[] finish_reason='stop'\n"
+    "[tts_node-5] 🔊 TTS: text='Приятно познакомиться, Саша!'\n"
     "[dialogue_node-4] 📤 Отправлен запрос b5119339: register_speaker\n"
     "[mcp_server-10] 📥 Запрос выполнения: register_speaker с параметрами "
     "{'name': 'Саша'}\n"
@@ -159,14 +161,17 @@ class TestFirstInvocationPosition:
 class TestFirstVoiceCyclePosition:
     """``first_voice_cycle_position(logs) → int | None``."""
 
-    def test_returns_position_on_spoken_marker(self) -> None:
+    def test_returns_position_on_speak_text_marker(self) -> None:
         pos = first_voice_cycle_position(TURN_TOOL_BEFORE_VOICE)
         assert pos is not None
         low = TURN_TOOL_BEFORE_VOICE.lower()
         # Маркер должен совпадать с префиксом low[pos:].
         assert low[pos:].startswith(
-            ("✅ [turn] process_input returned:", "'speak_text'", "инструмент speak_text выполнен", "tts finished")
+            ("🔊 tts:", "'speak_text'", "инструмент speak_text выполнен", "tts finished")
         )
+
+    def test_legacy_turn_result_is_not_a_voice_cycle(self) -> None:
+        assert first_voice_cycle_position("✅ [turn] process_input returned: spoken='x'[:60]") is None
 
     def test_returns_none_when_no_voice_cycle(self) -> None:
         assert first_voice_cycle_position(TOOLS_CATALOG) is None
@@ -335,6 +340,24 @@ class TestDiscoveryStepAcceptance:
         failures_str = " ".join(result["failures"])
         assert "#2406" in failures_str
         assert "AFTER verbal answer" in failures_str
+
+    def test_waiting_filler_before_tool_is_not_verbal_answer(self) -> None:
+        """Промежуточная фраза кода не сдвигает discovery-order (Act4 n401, run 43201271798)."""
+        log = (
+            TOOLS_CATALOG
+            + "[dialog_node-3] 🧭 [turn-v2] промежуточная фраза: ждём llm 6.0 с turn=3190900b0900\n"
+            + "[tts_node-4] 🔊 TTS: speech_id=93a62596, dialogue_id=None, text='Сейчас, соображаю.'\n"
+            + "[tts_node-4] 📢 Публикую TTS finished event: speech_id=93a62596..., success=True\n"
+            + "[dialog_node-3] 🔎 LLM RESPONSE: tool_calls=[('list_tts_voices', '{}')]\n"
+            + "[mcp_server-9] ✅ Инструмент list_tts_voices выполнен успешно\n"
+            + "[dialog_node-3] 🔎 LLM RESPONSE: speech='Три набора голосов.'\n"
+            + "[tts_node-4] 🔊 TTS: speech_id=cbb2838e, dialogue_id=None, text='Три набора голосов.'\n"
+        )
+        result = _per_step_validate(acc={"discovery_tools": ["list_tts_voices"]}, logs=log)
+        assert result["pass"] is True, result["failures"]
+        voice_pos = result["discovery_first_voice_pos"]
+        assert voice_pos is not None
+        assert log[voice_pos:].startswith("🔊 TTS: speech_id=cbb2838e")
 
     def test_discovery_field_optional(self) -> None:
         """Без discovery_tools — старый чек (только факт вызова).

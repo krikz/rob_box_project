@@ -3,7 +3,7 @@
 Live DJ-сет (Vision Pi, develop-образ, 2026-09-15 round2) за 30 минут
 генерировал **14 STOP-команд TTS** (tts_node-5 WARN «STOP command received»).
 Юзер слышал обрывки фраз: «Сет запу-» → обрыв → «Новый бит в стиле фанк» →
-обрыв. Каждые ~20 секунд babble-retry (dialogue_node `_check_babble_and_retry`
+обрыв. Каждые ~20 секунд babble-retry (dialog_node `_check_babble_and_retry`
 → `_dispatch_turn` → новый `_publish_response`) синхронно диспатчит НОВЫЙ
 speak во время активного TTS-воспроизведения.
 
@@ -166,7 +166,7 @@ def test_new_chunk_from_different_batch_is_queued():
     assert queued["text"] == "Новый бит в стиле фанк"
     assert queued["priority"] == "normal"
 
-    # Upstream (mcp_server / dialogue_node) получил finished,
+    # Upstream (mcp_server / dialog_node) получил finished,
     # чтобы ``speak_text`` не висел в ожидании.
     # ``queued=True`` гарантирует, что ``batch_complete`` side-channel
     # НЕ сработал (см. описание ``_publish_tts_finished(queued=True)``).
@@ -475,7 +475,7 @@ def test_pending_queue_overflow_drops_with_warning():
     """AC #8 — MAX=8 chunk'ов в очереди: 9-й дропается с warning.
 
     Защита от бесконечного роста памяти если upstream спамит
-    (dialogue_node / DJModeController сломался и шлёт без остановки).
+    (dialog_node / DJModeController сломался и шлёт без остановки).
     """
     node = _make_node()
     node._play_active_seq = 1

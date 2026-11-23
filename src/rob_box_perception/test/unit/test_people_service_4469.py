@@ -112,7 +112,9 @@ def test_photo_returns_the_snapshot_bytes_not_a_path(tmp_path):
 
     reply = ps.PeopleService(store).handle(ps.OP_PHOTO, person_id=pid[:8])
 
-    assert reply.ok and reply.jpeg == b"jpeg" and reply.data == {"id": pid[:8], "size": 4, "name": None, "epithet": None}
+    assert (
+        reply.ok and reply.jpeg == b"jpeg" and reply.data == {"id": pid[:8], "size": 4, "name": None, "epithet": None}
+    )
     assert "photo_path" not in reply.data
 
 
@@ -159,8 +161,11 @@ def test_serve_puts_the_jpeg_into_the_ros_response(tmp_path):
     response = ps.serve(ps.PeopleService(store), request, SimpleNamespace())
 
     assert response.ok is True and bytes(response.jpeg) == b"jpeg"
-    refused = ps.serve(ps.PeopleService(store), SimpleNamespace(op=ps.OP_PHOTO, filter="", person_id="deadbeef", name=""),
-                       SimpleNamespace())
+    refused = ps.serve(
+        ps.PeopleService(store),
+        SimpleNamespace(op=ps.OP_PHOTO, filter="", person_id="deadbeef", name=""),
+        SimpleNamespace(),
+    )
     assert refused.ok is False and list(refused.jpeg) == []
 
 
@@ -276,3 +281,95 @@ def test_serve_fills_the_ros_response_and_survives_a_store_crash(tmp_path):
 
     failed = ps.serve(Broken(), request, SimpleNamespace())
     assert failed.ok is False and failed.reason == "store_error"
+
+
+def _tiny_jpeg() -> bytes:
+    """Настоящий JPEG: ``build_collage`` декодирует плитку, байты ``b"jpeg"`` сетку не соберут."""
+    import cv2
+
+    img = np.zeros((24, 24, 3), dtype=np.uint8)
+    img[:, :, 1] = 180
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    return bytes(buf)
+
+
+def test_card_returns_a_collage_of_this_persons_snapshots_not_a_path(tmp_path):
+    store = _store(tmp_path)
+    jpeg = _tiny_jpeg()
+    pid = _met(store, 0, snapshot=jpeg, times=2)
+    store.attach_name(pid, "Дэнчик")
+
+    reply = ps.PeopleService(store).handle(ps.OP_CARD, person_id=pid[:8])
+
+    assert reply.ok and reply.reason == "" and reply.jpeg.startswith(b"\xff\xd8")
+    assert reply.data["id"] == pid[:8] and reply.data["name"] == "Дэнчик"
+    assert reply.data["encounters"] == 2 and reply.data["size"] == len(reply.jpeg)
+    assert "photo_path" not in reply.data and "/data/faces" not in json.dumps(reply.data)
+
+
+def test_card_accepts_the_exact_name(tmp_path):
+    store = _store(tmp_path)
+    pid = _met(store, 0, snapshot=_tiny_jpeg())
+    store.attach_name(pid, "Дэнчик")
+
+    reply = ps.PeopleService(store).handle(ps.OP_CARD, person_id="дэнчик")
+
+    assert reply.ok and reply.data["id"] == pid[:8]
+
+
+def test_card_without_a_snapshot_refuses_and_sends_no_picture(tmp_path):
+    store = _store(tmp_path)
+    pid = _met(store, 0, snapshot=None)
+    store.attach_name(pid, "Дэнчик")
+
+    reply = ps.PeopleService(store).handle(ps.OP_CARD, person_id=pid[:8])
+
+    assert (reply.ok, reply.reason, reply.jpeg) == (False, "no_snapshot", b"")
+    assert reply.data["name"] == "Дэнчик" and reply.data["id"] == pid[:8]
+
+
+def test_exhibition_mode_gives_no_card(tmp_path):
+    store = _store(tmp_path, mode=MODE_EXHIBITION)
+    pid = _met(store, 0, snapshot=_tiny_jpeg())
+    store.attach_name(pid, "Кирилл")
+
+    reply = ps.PeopleService(store).handle(ps.OP_CARD, person_id=pid[:8])
+
+    assert (reply.ok, reply.reason, reply.jpeg) == (False, "exhibition_mode", b"")
+
+
+def test_card_of_an_unknown_name_is_an_honest_refusal(tmp_path):
+    store = _store(tmp_path)
+    _met(store, 0, snapshot=_tiny_jpeg())
+
+    reply = ps.PeopleService(store).handle(ps.OP_CARD, person_id="Никого")
+
+    assert (reply.ok, reply.reason, reply.jpeg) == (False, "person_not_found", b"")
+
+
+def test_card_refuses_an_ambiguous_name(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(
+        store,
+        "people",
+        lambda: [
+            {"person_id": "aaaa1111-0001", "name": "Дэнчик"},
+            {"person_id": "bbbb2222-0002", "name": "дэнчик"},
+        ],
+    )
+
+    reply = ps.card_reply(store, "Дэнчик")
+
+    assert (reply.ok, reply.reason) == (False, "ambiguous_name")
+
+
+def test_card_build_failure_is_no_card_not_an_invented_picture(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    pid = _met(store, 0, snapshot=_tiny_jpeg())
+    monkeypatch.setattr(ps, "build_collage", lambda tiles: None)
+
+    reply = ps.PeopleService(store).handle(ps.OP_CARD, person_id=pid[:8])
+
+    assert (reply.ok, reply.reason, reply.jpeg) == (False, "no_card", b"")
+    assert reply.data["id"] == pid[:8]

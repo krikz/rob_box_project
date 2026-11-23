@@ -401,6 +401,104 @@ def test_script_is_executable_and_targets_bash() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def test_same_file_tag_race_keeps_both_sides(
+    dual_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Гонка run 44404978409: main и sound правят один файл, разделитель двигается.
+
+    Rebase без помощи конфликтует. Скрипт берёт свежую ветку и переписывает
+    только свои *_TAG; чужой тег и строка-разделитель остаются.
+    """
+    work, origin = dual_clone
+    versions = work / "docker" / "sound" / ".image-versions.dev"
+    versions.parent.mkdir(parents=True, exist_ok=True)
+    versions.write_text(
+        "VOICE_ASSISTANT_TAG=dev-old\n"
+        "QUEST_TAG=dev-old\n"
+        "# separator: main below, sound above\n"
+        "PERCEPTION_TAG=dev-old\n"
+    )
+    _git(work, "add", "docker/sound/.image-versions.dev")
+    _git(work, "commit", "--message=ci(seed): baseline sound pins")
+    _git(work, "push", "origin", "develop")
+
+    versions.write_text(
+        "VOICE_ASSISTANT_TAG=dev-sound\n"
+        "QUEST_TAG=dev-sound\n"
+        "# separator: main below, sound above\n"
+        "PERCEPTION_TAG=dev-old\n"
+    )
+    _git(work, "add", "docker/sound/.image-versions.dev")
+    _git(work, "commit", "--message=ci: sound SHA tags → dev-sound [skip ci]")
+
+    other = _spawn_rival(tmp_path, origin)
+    (other / "docker" / "sound" / ".image-versions.dev").write_text(
+        "VOICE_ASSISTANT_TAG=dev-old\n"
+        "QUEST_TAG=dev-old\n"
+        "# separator moved by the main build\n"
+        "PERCEPTION_TAG=dev-main\n"
+    )
+    _git(other, "add", "docker/sound/.image-versions.dev")
+    _git(other, "commit", "--message=ci: main SHA tags → dev-main [skip ci]")
+    _git(other, "push", "origin", "HEAD:develop")
+
+    result = _run(
+        work,
+        "bash",
+        str(SCRIPT),
+        "develop",
+        "sound",
+        "VOICE_ASSISTANT_TAG",
+        "QUEST_TAG",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    final = _git(origin, "show", "develop:docker/sound/.image-versions.dev")
+    assert "VOICE_ASSISTANT_TAG=dev-sound" in final
+    assert "QUEST_TAG=dev-sound" in final
+    assert "PERCEPTION_TAG=dev-main" in final
+    assert "# separator moved by the main build" in final
+    assert "<<<<<<<" not in final
+    status = _run(work, "git", "status")
+    assert "rebase" not in status.stdout.lower()
+
+
+def test_conflict_outside_versions_file_fails_closed(
+    dual_clone: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Конфликт не в .image-versions.* не затираем: abort и ненулевой код."""
+    work, origin = dual_clone
+    versions = work / "docker" / "sound" / ".image-versions.dev"
+    versions.parent.mkdir(parents=True, exist_ok=True)
+    versions.write_text("VOICE_ASSISTANT_TAG=dev-old\n")
+    (work / "README.md").write_text("# seed\nshared line\n")
+    _git(work, "add", "docker/sound/.image-versions.dev", "README.md")
+    _git(work, "commit", "--message=ci(seed): baseline")
+    _git(work, "push", "origin", "develop")
+
+    (work / "README.md").write_text("# seed\nsound line\n")
+    _git(work, "add", "README.md")
+    _git(work, "commit", "--message=ci: sound touches readme [skip ci]")
+
+    other = _spawn_rival(tmp_path, origin)
+    (other / "README.md").write_text("# seed\nmain line\n")
+    _git(other, "add", "README.md")
+    _git(other, "commit", "--message=ci: main touches readme [skip ci]")
+    _git(other, "push", "origin", "HEAD:develop")
+
+    result = _run(
+        work, "bash", str(SCRIPT), "develop", "sound", "VOICE_ASSISTANT_TAG"
+    )
+
+    assert result.returncode != 0
+    assert "rebase" in (result.stdout + result.stderr).lower()
+    status = _run(work, "git", "status")
+    assert "rebase" not in status.stdout.lower()
+    remote = _git(origin, "show", "develop:README.md")
+    assert "main line" in remote
+    assert "sound line" not in remote
+
+
 def test_supports_per_service_branch_names(dual_clone: tuple[Path, Path]) -> None:
     work, _origin = dual_clone
     _git(work, "checkout", "-b", "ci/image-versions-vision")

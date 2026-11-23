@@ -16,6 +16,8 @@ PEOPLE_SERVICE = "/perception/people"
 OP_PHOTO = 1
 #: Коллаж «найди похожих» (#4469): последний, который собрал владелец для этого лица.
 OP_COLLAGE = 5
+#: Карточка одного лица (#3655): коллаж его снимков, не «похожие». Зеркало ``People.srv`` ``OP_CARD``.
+OP_CARD = 6
 COLLAGE_KIND = "collage"
 #: Сколько бот ждёт снимок от владельца: JPEG до 200 КБ через сеть между Pi.
 CALL_TIMEOUT_S = 8.0
@@ -61,6 +63,26 @@ def payload_op(text: str) -> int:
     return OP_COLLAGE if isinstance(data, dict) and data.get("kind") == COLLAGE_KIND else OP_PHOTO
 
 
+def _photo_text(key: str, **slots: object) -> str:
+    from rob_box_dialog import phrases  # noqa: PLC0415 - диалог нужен только строке после send_photo
+
+    return phrases.text(key, **slots)
+
+
+def sent_phrase(caption: str) -> str:
+    """Фраза успеха после того, как ``send_photo`` вернул сообщение. До вызова её нет (ADR-0148)."""
+    from rob_box_dialog import knowledge as kn  # noqa: PLC0415
+
+    return _photo_text(kn.PHOTO_SEND_PHRASE, caption=caption or "без подписи")
+
+
+def failed_phrase() -> str:
+    """Файл в Telegram не ушёл: честный отказ, не обещание."""
+    from rob_box_dialog import knowledge as kn  # noqa: PLC0415
+
+    return _photo_text(kn.PHOTO_SEND_FAIL_PHRASE)
+
+
 def ros_fetch(node: Any) -> Fetch:
     """Запрос снимка у владельца по ROS: клиент один на ноду; нет сервиса или ответа - ``owner_unavailable``."""
 
@@ -84,5 +106,41 @@ def ros_fetch(node: Any) -> Fetch:
             return bool(response.ok), str(response.reason), bytes(response.jpeg)
         except Exception:  # noqa: BLE001 - битый ответ = нет ответа, а не снимок
             return False, "owner_unavailable", b""
+
+    return fetch
+
+
+def ros_card_fetch(node: Any):
+    """Карточка лица (``OP_CARD``) у того же сервиса: ``(ok, reason, data, jpeg)``.
+
+    Снимок (``ros_fetch``) по-прежнему тройка. Здесь четвёртым идёт словарь владельца: подпись бот строит из него.
+    Нет сервиса, таймаут, битый ответ — ``owner_unavailable`` и пустые байты, не выдуманный коллаж.
+    """
+
+    def fetch(query: str, op: int = OP_CARD):
+        import json
+
+        from rob_box_perception_msgs.srv import People  # noqa: PLC0415 - ROS-типы только в рантайме ноды
+
+        clients = node.__dict__.setdefault("_people_photo_clients", {})
+        if "client" not in clients:
+            clients["client"] = node.create_client(People, PEOPLE_SERVICE)
+        client = clients["client"]
+        if not client.service_is_ready():
+            return False, "owner_unavailable", {}, b""
+        request = People.Request()
+        request.op, request.person_id = op, query
+        future, done = client.call_async(request), threading.Event()
+        future.add_done_callback(lambda _f: done.set())
+        if not done.wait(CALL_TIMEOUT_S):
+            return False, "owner_unavailable", {}, b""
+        try:
+            response = future.result()
+            data = json.loads(response.data_json or "{}")
+            if not isinstance(data, dict):
+                data = {}
+            return bool(response.ok), str(response.reason), data, bytes(response.jpeg)
+        except Exception:  # noqa: BLE001 - битый ответ = нет ответа, а не карточка
+            return False, "owner_unavailable", {}, b""
 
     return fetch

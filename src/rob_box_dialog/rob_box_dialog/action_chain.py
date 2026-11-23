@@ -123,14 +123,44 @@ def chain_of(actions: Sequence["ToolCall"]) -> Chain:
     return Chain(tuple(steps), task_of(_trips(steps)))
 
 
+def task_limits(task: str) -> "kn.ChainTask":
+    """Лимиты типа задачи (:data:`knowledge.CHAIN_TASKS`): шаги, поездки, срок. Одно место для валидатора и раннера."""
+    return kn.CHAIN_TASKS[task]
+
+
+def term_s(chain: Chain) -> Optional[float]:
+    """Срок вереницы, с: число типа задачи, иначе сумма сроков классов шагов (ADR-0165 §5). ``None`` - срока нет
+    (пустая вереница: оценивать нечего)."""
+    named = task_limits(chain.task).term_s
+    if named is not None:
+        return float(named)
+    if not chain.steps:
+        return None
+    return chain.estimate_s
+
+
 def over_limit(chain: Chain) -> bool:
     """Вереница за лимитом своего типа - не начинается (код говорит ``CHAIN_TOO_LONG_PHRASE``, ADR-0165 §5)."""
-    task = kn.CHAIN_TASKS[chain.task]
+    task = task_limits(chain.task)
+    named = task.term_s
     return (
         len(chain.steps) > task.steps_max
         or (task.trips_max is not None and chain.trips > task.trips_max)
-        or (task.term_s is not None and chain.estimate_s > task.term_s)
+        or (named is not None and chain.estimate_s > named)
     )
+
+
+def past_term(chain: Chain, elapsed_s: float) -> bool:
+    """Срок вереницы вышел (:func:`term_s`): новый шаг не начинается, идущий доживает (ADR-0165 §5, §7). Часы
+    снаружи - модуль их не читает."""
+    limit = term_s(chain)
+    return limit is not None and float(elapsed_s) > limit
+
+
+def stop_cuts(kind: Optional[str]) -> bool:
+    """Вид Tier-1 гасит вереницу (``CHAIN_STOP_KINDS``: «стой», «хватит»). «Замолчи» и «хватит говорить» - нет
+    (решение Шифу В4). Решение кода, не текста промпта."""
+    return kind in kn.CHAIN_STOP_KINDS
 
 
 def _stays_short(known: Sequence["ToolCall"]) -> bool:
@@ -279,11 +309,15 @@ __all__ = [
     "expected_s",
     "mixed",
     "over_limit",
+    "past_term",
     "plan",
     "plan_claims",
     "runs_as_chain",
     "step_label",
     "step_status",
+    "stop_cuts",
     "summary",
+    "task_limits",
     "task_of",
+    "term_s",
 ]

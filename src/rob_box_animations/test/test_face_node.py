@@ -123,7 +123,7 @@ def test_node_wires_inputs_and_timers():
     topics = {t for t, _ in node.subscriptions}
     assert {'/voice/speech/envelope', '/voice/speech/event', '/audio/direction',
             '/audio/vad', '/voice/music/state', '/voice/expression/request',
-            '~/scene'} <= topics
+            '~/scene', '/voice/stt/utterance', '/vision/hailo/events', '/vision/frame_clear'} <= topics
     assert '/voice/animation/request' not in topics     # ADR-0150 PR-3b: v1-топик снят, лицо слушает ExpressionRequest
     assert '/voice/tts/state' not in topics             # PR-15 15-0b: «говорит» — по SpeechEvent
     assert sorted(p for p, _ in node.timers) == [0.04, 1.0]
@@ -161,6 +161,29 @@ def _face_node():
     return FaceNode()
 
 
+def test_an_utterance_or_a_face_wakes_and_waking_does_not_speak():
+    """#3780 C: реплика микрофона и лицо в кадре будят; чат и выдумка — нет. Проснувшись, молчит."""
+    import time
+
+    from rob_box_dialog.knowledge import SOCIAL_SLEEP_AFTER_S
+
+    node = _face_node()
+    subs = dict(node.subscriptions)
+    now = time.time()
+    node.director.voice_seen(now)
+    node.director._wake_until = now
+    subs['/vision/frame_clear'](types.SimpleNamespace(data='{}'))
+    assert node.director.choose(now + SOCIAL_SLEEP_AFTER_S)[0] == 'sleep'
+    subs['/voice/stt/utterance'](types.SimpleNamespace(source='telegram', text='проснись'))
+    assert node.director.choose(time.time() + SOCIAL_SLEEP_AFTER_S)[0] == 'sleep'
+    subs['/vision/hailo/events'](types.SimpleNamespace(event_type='stub', source_camera='stub'))
+    assert node.director._frame_clear is True
+    before = len(node._event_pub.sent)
+    subs['/voice/stt/utterance'](types.SimpleNamespace(source='respeaker', text='робот'))
+    assert node.director.choose(time.time())[0] == 'wakeup'
+    assert node._event_pub.sent[before:] == []
+
+
 def test_expression_request_is_answered_with_started_for_a_known_scene():
     node = _face_node()
     node._on_expression(_expression(emotion='listening', ttl_ms=8000))
@@ -196,6 +219,43 @@ def test_session_speaker_azimuth_holds_the_gaze_over_raw_doa():
     assert node.director.gaze._speaker == looked
     node._on_session(types.SimpleNamespace(speaker_azimuth_deg=math.nan))  # собеседник без азимута — взгляд не трогаем
     assert node.director.gaze._speaker == looked
+
+
+def test_tint_is_logged_on_a_key_change_and_not_repeated_while_it_holds():
+    """#5143: оттенок вайба — в строке смены ключа, и только когда слот сам изменился.
+
+    Источник — ``FaceContext.tint_slot`` из ``choose()`` (директор уже посчитал).
+    Повтор того же слота на следующей смене ключа строку с оттенком не плодит.
+    """
+    import time
+
+    node = _face_node()
+    logged = []
+    node.get_logger = lambda: types.SimpleNamespace(info=logged.append, warn=lambda *a, **k: None)
+    now = time.time()
+    node.director.voice_seen(now)
+    node.director._wake_until = now
+    node.director._asleep = False
+    node._on_frame()                                   # первый ключ: старт, оттенка ещё нет
+    assert logged == ['лицо: — -> idle_stare']
+    logged.clear()
+
+    def paint(key, slot):
+        node.director.choose = lambda now, key=key, slot=slot: (
+            key, FaceContext(tint_slot=slot, tint=(1.0, 0.8, 0.5) if slot else None))
+
+    paint('music_shades', 'warm')
+    node._on_frame()
+    assert logged == ['лицо: idle_stare -> music_shades, оттенок: warm']
+    logged.clear()
+    node._on_frame()                                   # ключ тот же — строки нет вообще
+    assert logged == []
+    paint('music_vibe', 'warm')                               # сцена сменилась, оттенок нет
+    node._on_frame()
+    assert logged == ['лицо: music_shades -> music_vibe']
+    paint('music_groove', None)                               # оттенок ушёл
+    node._on_frame()
+    assert logged == ['лицо: music_shades -> music_vibe', 'лицо: music_vibe -> music_groove']
 
 
 def test_silence_scene_of_the_session_holds_the_taped_mouth_and_reflexes_are_answered_skipped():

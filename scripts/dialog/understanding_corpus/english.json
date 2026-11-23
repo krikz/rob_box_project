@@ -4,7 +4,7 @@
  "part": 4,
  "base": {
   "name": "understanding_marathon_part1",
-  "corpus_sha256": "f71596f88c68588d577d26878fc0bed3f6bbbb5a677d12dce5c0280894b3c1bb"
+  "corpus_sha256": "08f4320ac21c43bbd9fdec3c0dbcddc769a600cb8e678e511ec8da7c18fd69de"
  },
  "generator": "scripts/dialog/understanding_corpus/build_english.py",
  "method": {
@@ -80,7 +80,7 @@
   "repointed": {
    "measured_sha256": "118d1b348ed3a71086ef43224252aaa5eac420d21d90b7d42b03719153e5008e",
    "from_base": "cf0a67043a479dbe8911875404707257b81edbdf7261293c3b4a9ba0cf5456da",
-   "to_base": "f71596f88c68588d577d26878fc0bed3f6bbbb5a677d12dce5c0280894b3c1bb",
+   "to_base": "08f4320ac21c43bbd9fdec3c0dbcddc769a600cb8e678e511ec8da7c18fd69de",
    "dropped_steps": [
     "3/n309_bg_command_valera",
     "7/n707_gen_track_info"
@@ -88,9 +88,9 @@
   }
  },
  "counts": {
-  "steps": 46,
-  "alternatives": 46,
-  "excluded": 44
+  "steps": 44,
+  "alternatives": 44,
+  "excluded": 46
  },
  "excluded": [
   {
@@ -270,9 +270,19 @@
    "id": "7/n707_gen_track_info",
    "alternatives_dropped": 1,
    "reason": "часть 1 пересобрана (cf0a67043a47 → a8c4cd58e3e1): текст шага сменился «Робот, расскажи, что это за трек: кто, про что и сколько длится.» → «Робот, расскажи про песню про енота: кто, про что, сколько длится.», альтернативы старого текста к новому шагу не относятся"
+  },
+  {
+   "id": "5/n511_stop_music",
+   "alternatives_dropped": 1,
+   "reason": "часть 1 пересобрана честно со сценариями: ожидание держится на русских словах ответа (expected_keywords)"
+  },
+  {
+   "id": "7/n712_stop_all",
+   "alternatives_dropped": 1,
+   "reason": "часть 1 пересобрана честно со сценариями: ожидание держится на русских словах ответа (expected_keywords)"
   }
  ],
- "corpus_sha256": "7017ed85802d25e769ab202f2a3520ae62033caf9157478a4f51ff5d05180d59",
+ "corpus_sha256": "6a42162807ea21f7f0e93446f7e2e545c11097b68daeaee00a679e3729598d78",
  "alternatives": {
   "1/n102_session_reset": [
    {
@@ -487,15 +497,6 @@
     "code_phrases_forbidden": []
    }
   ],
-  "5/n511_stop_music": [
-   {
-    "text": "Robbox, that's it, kill the music, my ears are ringing.",
-    "why": "тулы ['stop_music'], паттерны лога (2)",
-    "code_phrases_forbidden": [
-     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
-    ]
-   }
-  ],
   "6/n602_dj_on": [
    {
     "text": "Robbox, turn on DJ mode, we're having a night disco.",
@@ -572,15 +573,6 @@
   "7/n709_stop_generated": [
    {
     "text": "Robbox, stop it, Boris already fell asleep to it.",
-    "why": "тулы ['stop_music'], паттерны лога (2)",
-    "code_phrases_forbidden": [
-     "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."
-    ]
-   }
-  ],
-  "7/n712_stop_all": [
-   {
-    "text": "Robbox, that's it, kill it.",
     "why": "тулы ['stop_music'], паттерны лога (2)",
     "code_phrases_forbidden": [
      "Включаю музыку.|Секунду, музыка запускается.|Музыка пока не заиграла.|Не получилось включить музыку.|Сейчас ничего не играет — на всякий случай всё остановил.|Не получилось выключить музыку."

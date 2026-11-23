@@ -10,6 +10,8 @@
 #                                            сервисов compose-проекта этого каталога
 #   remote_pi.sh stop <контейнер>...         docker stop; проверка, что не работает
 #   remote_pi.sh state <контейнер>...        «имя running|exited|absent USE_SIM_TIME=…»
+#   remote_pi.sh health <контейнер>          docker inspect JSON (State) на stdout;
+#                                            нет контейнера — объект Status=absent, код 0
 #   remote_pi.sh compose <каталог> <args>... docker compose в каталоге
 #   remote_pi.sh env <контейнер> <ПЕРЕМЕННАЯ> значение env контейнера или «unset»
 #   remote_pi.sh maps-dump <контейнер> <БД>  SELECT * FROM maps ORDER BY id (строки a|b|c)
@@ -34,6 +36,18 @@ state_of() {
     echo "$name $st USE_SIM_TIME=${simt:-unset}"
 }
 
+# Health контейнера целиком: hil.sh off судит готовность по свежему Health.Log
+# этого запуска, не по одному слову Status (#5170). Контейнера нет — absent.
+health_of() {
+    local name="$1" raw
+    raw=$(docker inspect "$name" 2>/dev/null) || raw=""
+    if [ -z "$raw" ] || [ "$raw" = "[]" ]; then
+        printf '%s\n' '{"Name":"'"$name"'","State":{"Status":"absent"}}'
+        return 0
+    fi
+    printf '%s\n' "$raw"
+}
+
 case "$cmd" in
     lock-take)
         lock="$1"; text="$2"
@@ -51,11 +65,16 @@ case "$cmd" in
         echo "замок $1 снят"
         ;;
     pin)
+        # Один ключ на сервис: docker ps -a может отдать несколько контейнеров
+        # с одним com.docker.compose.service (осиротевший recreate, hash-префикс
+        # в имени) — повтор ключа ломает compose («mapping key already defined»)
+        # и оставляет замок HIL (#4371). Первый выигрывает (ps: newest first).
         dir="$1"; out="$2"
         mkdir -p "$(dirname "$out")"
         docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir" \
             --format '{{.Label "com.docker.compose.service"}} {{.Image}}' \
-            | awk 'BEGIN { print "services:" } NF == 2 { printf "  %s:\n    image: \"%s\"\n", $1, $2 }' \
+            | awk 'BEGIN { print "services:" }
+                   NF == 2 && !seen[$1]++ { printf "  %s:\n    image: \"%s\"\n", $1, $2 }' \
             > "$out"
         n=$(grep -c 'image:' "$out" || true)
         if [ "$n" -eq 0 ]; then
@@ -77,6 +96,10 @@ case "$cmd" in
         ;;
     state)
         for name in "$@"; do state_of "$name"; done
+        ;;
+    health)
+        [ "$#" -eq 1 ] || { echo "health: нужно ровно одно имя контейнера" >&2; exit 2; }
+        health_of "$1"
         ;;
     compose)
         dir="$1"; shift

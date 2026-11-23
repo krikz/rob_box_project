@@ -23,7 +23,8 @@ from typing import Any, List, Mapping, Optional, Sequence, Tuple
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.session import SessionSnapshot
 from rob_box_dialog.words import (STOP_CLEAR, STOP_DISPUTED, clauses, has_form, has_word, music_off_rest,
-                                  name_tokens, speech_manner, stop_command, strip_wake_word, without_forms)
+                                  name_tokens, silence_noun_asked, speech_manner, stop_command, strip_wake_word,
+                                  without_forms)
 
 _TOKEN = re.compile(r"\w+")
 #: ``(voice_id, display_name, *алиасы)`` голосов активного провайдера (реестр ``tts_voice_registry.named_voices_for`` -
@@ -35,6 +36,10 @@ Step = Tuple[str, str]
 _STEP_FILLER = frozenset(w.replace("ё", "е") for w in (*kn.GRAMMAR_FILLER, *kn.STOP_LEAD_WORDS, *kn.VOICE_STEP.filler))
 #: Основы громкости Tier-1 (все намерения): такое слово после «наоборот» или «как» — не пересказ шага голоса.
 _VOLUME_WORDS: Tuple[str, ...] = tuple(stem for stems in kn.VOLUME_STEMS.values() for stem in stems)
+#: Основы образов шага («диктор»): до «как» они не слово таблицы. Голое «диктор» просьбой не бывает.
+_LIKENESS_STEMS = frozenset(stem for stems in kn.VOICE_STEP.likeness.values() for stem in stems)
+#: Метка рестарта: образ после чужого слова сам просьба о речи. ``manner`` несёт её до слова образа и гаснет.
+_RESTARTED = ("", "")
 
 
 @dataclass(frozen=True)
@@ -104,14 +109,55 @@ def _voice_step(text: str, _snapshot: SessionSnapshot, _voices: Voices) -> Optio
     знаки (:func:`~rob_box_dialog.words.clauses`); первая часть покрыта таблицей ЦЕЛИКОМ, непокрытая часть после
     границы — новая просьба (``rest``: «говори басом и расскажи сказку»). Без речевого глагола или манеры («быстрее»
     под музыку — темп трека), с отрицанием («не говори быстрее»), без шага («говори как пират») и при двух действиях
-    одного тула («быстрее и медленнее») — не Tier-1."""
+    одного тула («быстрее и медленнее») — не Tier-1. Чужое слово до «как» с образом из ``VOICE_STEP.likeness``
+    («галибаса как диктор», #4984) шаг не отменяет: :func:`_likeness_restart`."""
     parse, parts = _StepParse(), clauses(text, kn.VOICE_STEP.joins)
     for n, part in enumerate(parts):
         parsed = _step_part(tuple(word for word, _, _ in part), replace(parse, simile=False))
         if parsed is None:
-            return _step_command(parse, text[part[0][1]:]) if n else None
+            restarted = _likeness_restart(part, parse) if not n else None
+            if restarted is None:
+                return _step_command(parse, text[part[0][1]:]) if n else None
+            parse = restarted
+            continue
         parse = parsed
     return _step_command(parse, "")
+
+
+def _likeness_restart(part: Sequence[Tuple[str, int, int]], parse: _StepParse) -> Optional[_StepParse]:
+    """Чужое слово до «как» с образом ``VOICE_STEP.likeness`` шаг не отменяет.
+
+    «галибаса как диктор в старом кино» (#4984: канал склеил «говори басом») разбирается с образа, и образ сам
+    становится просьбой о речи. Слово таблицы («скажи как диктор», «не как диктор») образ не перебивает: голый
+    «как диктор» шагом не становится. Часть после союза остаётся новой просьбой.
+    """
+    words = tuple(word for word, _, _ in part)
+    at = _likeness_at(words)
+    if at is None or _known_before(words, at):
+        return None
+    owned = replace(parse, simile=False, owned=True, manner=_RESTARTED)
+    return _step_part(words[at:], owned)
+
+
+def _likeness_at(words: Sequence[str]) -> Optional[int]:
+    """Индекс «как», за которым сразу образ ``VOICE_STEP.likeness``; нет такого — ``None``."""
+    return next((i for i, word in enumerate(words)
+                 if word in kn.VOICE_STEP.simile and _request(_after(words, i), kn.VOICE_STEP.likeness)), None)
+
+
+def _after(words: Sequence[str], at: int) -> str:
+    """Слово сразу за индексом; за концом части — пусто."""
+    return words[at + 1] if at + 1 < len(words) else ""
+
+
+def _known_before(words: Sequence[str], at: int) -> bool:
+    """До «как» стоит слово таблиц диалога или просьба шага — тогда образ чужое слово не перебивает.
+
+    Сам «как» и основа образа не в счёт: «диктор» до «как» просьбой не бывает. «скажи» — слово таблицы,
+    «галибаса» — нет.
+    """
+    known = kn.dialog_words() - _LIKENESS_STEMS
+    return any(word in known or _request(word) for word in words[:at] if word not in kn.VOICE_STEP.simile)
 
 
 def _step_command(parse: _StepParse, rest: str) -> Optional[Tier1Command]:
@@ -148,7 +194,9 @@ def _retold(word: str, parse: _StepParse) -> Optional[_StepParse]:
     if _claimed_elsewhere(word):
         return None
     if parse.simile:
-        return _with(replace(parse, inverse=False), _request(word) or _request(word, kn.VOICE_STEP.likeness))
+        step = _request(word) or _request(word, kn.VOICE_STEP.likeness)
+        owned = parse.owned or (step is not None and parse.manner == _RESTARTED)
+        return _with(replace(parse, inverse=False, owned=owned, manner=None), step)
     if word in _STEP_FILLER:
         return parse
     return _with(replace(parse, inverse=False), _request(word))
@@ -182,23 +230,43 @@ def _with(parse: _StepParse, step: Optional[Step]) -> _StepParse:
     return parse if step is None or step in parse.steps else replace(parse, steps=parse.steps + (step,))
 
 
+def _silence_noun(text: str, snapshot: SessionSnapshot) -> Optional[Tier1Command]:
+    """«Робот, тишина» (#5115): существительное из ``SILENCE_NOUN_FORMS`` — та же дверь, что «молчи».
+
+    Предикат один (``words.silence_noun_asked``): вейк и пунктуация сняты, упоминание («расскажи стих про тишину»,
+    «что такое тишина») — не тишина. При играющей музыке — ``stop_all``, не сцена Silence: сцена тишины плеер не
+    гасит (``interrupt.stops_music`` для ``silence`` ложен), а «тишина» при музыке должна её остановить. Сцена
+    Silence уже стоит — повтор «тишина» её не трогает (искажённый вейк «работа тишина» тишину не снимает, #3974).
+    """
+    if snapshot.top("Silence") is not None or not silence_noun_asked(text, snapshot.wake_words):
+        return None
+    if snapshot.music_playing:
+        return Tier1Command("stop_all")
+    return Tier1Command("silence")
+
+
 def _stop(text: str, snapshot: SessionSnapshot, _voices: Voices) -> Optional[Tier1Command]:
-    """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи») или ``stop_all``
-    (остановить текущие звуки, режим тишины НЕ включается: «хватит», «стоп»; решение Шифу 22.10); после
-    стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду бы заглушила). Спорный — тот же вид с
-    ``disputed``.
+    """Ясный стоп: тишина (в серии стоп-слов есть основа ``SILENCE_WORDS`` — «замолчи», «помолчи» —
+    или точная форма ``SILENCE_EXACT_FORMS`` — «молчи», «молчите», #5108; существительное «тишина»/«тишину» —
+    ``words.silence_noun_asked``, #5115) или ``stop_all`` (остановить текущие звуки, режим тишины НЕ включается:
+    «хватит», «стоп»; решение Шифу 22.10); после стопа ещё команда — ``stop_all`` + ``rest`` (тишина такую команду
+    бы заглушила). Спорный — тот же вид с ``disputed``.
 
     Охват (``words.stop_scope``): названа речь («хватит читать/говорить/петь», «…а музыку оставь») —
     ``stop_speech`` (``args.keep_music``): речь и выступление гаснут, плеер музыки и движение — нет. Названа музыка
     («хватит музыки») или ничего («хватит», «стоп») — ``stop_all``, как было (В20). Во фразе есть «стой» (политика
     ``halt`` — стоп и движения) — тоже ``stop_all``, даже при названной речи. Оговорка «музыку оставь» без названной
-    речи («стой, а музыку оставь», «хватит, бит не трогай») — ``stop_all``/``silence`` с ``args.keep_music``: гаснет всё,
-    кроме музыки (движение — тоже). Покрытая охватом часть в ``rest`` не попадает."""
+    речи («стой, а музыку оставь», «хватит, бит не трогай») — ``stop_all``/``silence`` с ``keep_music``: гаснет всё,
+    кроме музыки (движение — тоже). Покрытая охватом часть в ``rest`` не попадает. Существительного «тишина» в
+    ``STOP_WORDS`` нет: ``stop_command`` даёт ``STOP_NONE``, и без отдельной ветки ``_stop`` возвращал ``None`` до
+    проверки тишины (#5115). Ветку глаголов («молчи», «замолчи», «хватит») эта проверка не трогает.
+    """
     call = stop_command(text, snapshot.wake_words)
     if call.verdict not in (STOP_CLEAR, STOP_DISPUTED):
-        return None
+        return _silence_noun(text, snapshot)
     scope = call.scope
-    silence = not call.rest and not scope.music and any(_starts(word, kn.SILENCE_WORDS) for word in call.words)
+    silence = not call.rest and not scope.music and any(
+        _starts(word, kn.SILENCE_WORDS) or word in kn.SILENCE_EXACT_FORMS for word in call.words)
     disputed = call.verdict == STOP_DISPUTED
     halt = has_form(text, kn.TIER1_POLICY["halt"].words)
     if not silence and scope.speech and not scope.music and not halt:

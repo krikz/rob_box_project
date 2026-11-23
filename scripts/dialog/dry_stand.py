@@ -83,6 +83,7 @@ from rob_box_dialog.session import MusicStateRef, Session  # noqa: E402
 from rob_box_dialog.speaker_adapter import speaker_ref, voice_tag  # noqa: E402
 from rob_box_dialog.turn import ASK_MARK, LOG_MARK, TurnEngine, host_sections, settle  # noqa: E402
 from rob_box_llm.provider import ToolResult  # noqa: E402
+from rob_box_mcp_tools.tool_outcome import tool_outcome_line  # noqa: E402
 from rob_box_mcp_tools.voice_request import VoiceOutcome, outcome_data  # noqa: E402
 from rob_box_dialog_host.dialog_v2_ports import CallCounter, V2Ports  # noqa: E402
 from rob_box_dialog_host.music_player_state import build_music_state_payload, parse_music_state  # noqa: E402
@@ -331,10 +332,9 @@ class FakeTools:
         # mcp_server.py: f"📥 Запрос выполнения: {tool_name} с параметрами {parameters}"
         self._stand.emit(f"📥 Запрос выполнения: {call.name} с параметрами {args}")
         ok, data = self._dispatch(call.name, args)
-        # mcp_server.py: «Публикую результат» - и при отказе тула; затем «выполнен успешно» либо «завершился с ошибкой»
+        # mcp_server.py печатает song_order.tool_outcome_line (#5092): успех, ошибка или «принят, готовится».
         self._stand.emit(f"📤 Публикую результат для {call.name} (request_id: {request_id})")
-        self._stand.emit(f"✅ Инструмент {call.name} выполнен успешно" if ok else
-                         f"❌ Инструмент {call.name} завершился с ошибкой: {data.get('reason')}")
+        self._stand.emit(tool_outcome_line(call.name, ok, data, None if ok else data.get("reason")))
         return ToolResult(tool_call_id=call.id, content=json.dumps(data, ensure_ascii=False, default=str),
                           is_error=not ok, data=data)
 
@@ -479,13 +479,17 @@ class FakeTools:
                       "title": title}
 
     def _t_generate_music(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        """Генерация: трек ложится в библиотеку и играет (мост ожидания на роботе играет сразу, песня - следом)."""
+        """Генерация: заказ принят, трек ещё пишется (``pending`` как у SongOrder/InstrumentalOrder, #5092).
+
+        Мост ожидания стенд кладёт в библиотеку и играет сразу — как живой мост, пока студия не закончила.
+        «выполнен успешно» про такой заказ врал бы: исход скажет поток, когда закончит."""
         title = self._music_title(args)
-        track = self._stand.library.add(title, kind=str(args.get("kind") or "instrumental"),
-                                        genre=str(args.get("style") or ""))
+        kind = str(args.get("kind") or "instrumental")
+        track = self._stand.library.add(title, kind=kind, genre=str(args.get("style") or ""))
         deck = self._stand.player.library(track["id"], title)
-        return True, {"status": "done", "event": "started", "track_id": deck, "library_id": track["id"],
-                      "title": title}
+        pending = "song" if kind in ("song", "robot_song") else "instrumental"
+        return True, {"status": "done", "ok": True, "pending": pending, "event": "started", "track_id": deck,
+                      "library_id": track["id"], "title": title}
 
     def _t_dj_set(self, args: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         """``DjSetTool``: ``stop`` - сет, а без сета - дека (``was_playing`` - была ли музыка, по нему фраза
@@ -931,8 +935,10 @@ class DryStand:
         return "stopped"
 
     def reset_session(self) -> None:
-        """``/dialog/control reset`` перед актом (``reset_dialog_v2_session_for_act``): эпоха + 1, окно ходов пусто."""
-        self.session.reset()
+        """``/dialog/control reset`` перед актом (``reset_dialog_v2_session_for_act``): эпоха + 1, окно ходов пусто,
+        автоматическая память собеседника снова видна — как ``apply_control`` ядра: прошлую эпоху её могла скрыть
+        Tier-1 «новая сессия» (#4694 n1009), служебный сброс перед актом режим не наследует."""
+        self.session.reset(speaker_memory_visible=True)
         self.engine.log.reset()
 
     def close(self) -> None:

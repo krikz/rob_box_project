@@ -205,9 +205,17 @@ def test_face_name_told_about_in_third_person_stays():
     assert ports.said == ["В кадре лицо Литвина, примерно в метре."]
 
 
-def test_confirmed_speaker_may_be_called_by_the_face_name():
+def test_confirmed_speaker_may_be_called_by_profile_name():
     ports = _look([Answer(Command(speech="Вижу тебя, Саша."), "deepseek")], SASHA)
     assert ports.said == ["Вижу тебя, Саша."]
+
+
+def test_confirmed_speaker_is_not_called_by_another_face_name():
+    """Профиль подтвердил Сашу, но камера увидела «Литвин»: чужое имя лица не становится именем говорящего."""
+    wrong = Answer(Command(speech="Вижу тебя, Литвин."), "deepseek")
+    ports = _look([wrong, wrong], SASHA)
+    assert any(kn.VIOLATION_FOREIGN_NAME in m["content"] for m in ports.asked[-1] if isinstance(m.get("content"), str))
+    assert ports.said == ["Вижу тебя."]
 
 
 def test_face_names_reads_tool_data_only():

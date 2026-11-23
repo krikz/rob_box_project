@@ -108,17 +108,40 @@ export function parseSupervisorState(map: unknown): SupervisorState | null {
   };
 }
 
+/**
+ * Серверный client_id нашей WS-сессии.
+ *
+ * WELCOME.session_id — голый uuid. Держатель teleop_floor и
+ * WELCOME.teleop_floor_held_by — ``quest:<uuid>``
+ * (``make_server_client_id``, issue #2190). Сравнение «как есть»
+ * всегда промахивается: свой руль выглядит чужим.
+ */
+export function questServerClientId(sessionId: string | null): string | null {
+  if (!sessionId) return null;
+  return sessionId.startsWith("quest:") ? sessionId : `quest:${sessionId}`;
+}
+
+/** Один и тот же клиент, если id совпали в любом из двух форматов. */
+export function sameFloorClient(
+  heldBy: string | null,
+  sessionId: string | null
+): boolean {
+  if (!heldBy || !sessionId) return false;
+  if (heldBy === sessionId) return true;
+  const mine = questServerClientId(sessionId);
+  return mine !== null && heldBy === mine;
+}
+
 /** Floor свободен у всех (наш myClientId тут не важен). */
 export function floorIsFree(state: SupervisorState, floor: FloorName): boolean {
   const holder = floor === "teleop" ? state.teleopFloor : state.voiceFloor;
   return holder.clientId === null;
 }
 
-/** Floor держит наш клиент. */
+/** Floor держит наш клиент (session_id и ``quest:<uuid>`` — одно и то же). */
 export function floorIsMine(state: SupervisorState, floor: FloorName, myClientId: string | null): boolean {
-  if (myClientId === null) return false;
   const holder = floor === "teleop" ? state.teleopFloor : state.voiceFloor;
-  return holder.clientId === myClientId;
+  return sameFloorClient(holder.clientId, myClientId);
 }
 
 /**
@@ -136,7 +159,51 @@ export function floorLabel(
   const holder = floor === "teleop" ? state.teleopFloor : state.voiceFloor;
   if (holder.clientId === null) return "free";
   if (myClientId === null) return "unknown";
-  return holder.clientId === myClientId ? "my" : "other";
+  // session_id и ``quest:<uuid>`` — один клиент (issue #2190).
+  return sameFloorClient(holder.clientId, myClientId) ? "my" : "other";
+}
+
+/**
+ * Кто держит teleop_floor для решения ARM (issue #4694).
+ *
+ * ``heldBy=null`` — руль свободен (WELCOME без держателя или
+ * STATE_UPDATE с client_id=null). ``unknown`` — STATE_UPDATE ещё
+ * не приходил: свободу выдумывать нельзя (ADR-0018).
+ */
+export function teleopFloorClaim(
+  heldBy: string | null,
+  sessionId: string | null,
+  known: boolean
+): FloorLabel {
+  if (!known) return "unknown";
+  if (heldBy === null) return "free";
+  // ``floor_lost`` не называет нового держателя. Это не «свободен»:
+  // следующий клик не должен слать acquire вслепую.
+  if (heldBy === "lost") return "unknown";
+  return sameFloorClient(heldBy, sessionId) ? "my" : "other";
+}
+
+export type ArmStickDecision =
+  | { action: "toggle" }
+  | { action: "acquire_then_arm" }
+  | { action: "block" };
+
+/**
+ * Клик стика (edge). Руль наш — тоггл ARM. Свободен — сначала
+ * ``avatar_acquire_floor kind=teleop``, и только потом ARM.
+ * Чужой или неизвестный — тост, armed не ставить, twist не слать.
+ *
+ * ``hasFloor`` здесь не оптимистичный флаг FSM, а факт: twist уже
+ * можно слать (сервер подтвердил наш teleop_floor). Пока acquire
+ * не подтверждён, ``claim=free`` и ``hasFloor=false`` — решение
+ * снова ``acquire_then_arm``, а не «уже наш». ``require_teleop_floor``
+ * не ослабляется.
+ */
+export function armStickDecision(claim: FloorLabel, hasFloor: boolean): ArmStickDecision {
+  if (claim === "my" || (claim === "unknown" && hasFloor)) return { action: "toggle" };
+  if (claim === "free" && hasFloor) return { action: "toggle" };
+  if (claim === "free") return { action: "acquire_then_arm" };
+  return { action: "block" };
 }
 
 /**

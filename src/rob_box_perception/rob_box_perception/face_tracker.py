@@ -134,6 +134,9 @@ class FaceObservation:
     #: или ``None``. Трекер их не читает; по ним ``face_frontality``
     #: решает, можно ли по Встрече завести новую запись (ADR-0130 §10.4).
     landmarks: Optional[List[float]] = None
+    #: Id трека, в который легло это наблюдение. ``None`` до ``update``;
+    #: ``0`` трекер не выдаёт (issue #4388).
+    track_id: Optional[int] = None
 
 
 @dataclass
@@ -367,6 +370,7 @@ class FaceTracker:
                 track_id = self._start_track(obs, now)
             else:
                 self._tracks[track_id].add_observation(obs, now)
+            obs.track_id = track_id
             matched_track_ids.add(track_id)
             self._trim_best(self._tracks[track_id])
 

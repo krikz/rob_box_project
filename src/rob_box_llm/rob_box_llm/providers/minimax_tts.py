@@ -369,7 +369,7 @@ def _build_payload(
         payload["pronunciation_dict"] = dict(pronunciation_dict)
 
     # Whitelist `extra` to the documented top-level keys so a caller (e.g.
-    # dialogue_node pulling user-supplied JSON) can't silently overwrite the
+    # dialog_node pulling user-supplied JSON) can't silently overwrite the
     # nested ``voice_setting`` / ``audio_setting`` objects above and inject
     # arbitrary fields like ``__proto__``-style payloads.
     #

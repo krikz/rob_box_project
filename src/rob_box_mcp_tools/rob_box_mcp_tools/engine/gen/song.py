@@ -96,6 +96,8 @@ class SongRequest:
     theme: str
     genre: str = ""
     mood: str = ""
+    # слова, которые человек дал сам и просит спеть дословно (#4973); пусто — текст пишет LLM
+    lyrics: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,9 +134,11 @@ def check_song(title: str, lyrics: str, language: str) -> str:
     """Что не так с текстом, или «» (ADR-0158 §3.4). Проверяем то, что код проверить может; «свой, не перевод»
     проверить нечем (§9) — это правило скилла."""
     lines = [ln for ln in lyrics.splitlines() if ln.strip()]
+    # Два отказа — два сообщения (#5092): одно на оба врало диагностике. Строки важнее.
     problems = ((not title.strip() or len(title) > TITLE_MAX, f"название от 1 до {TITLE_MAX} символов"),
                 (len(lyrics) > SONG_MAX_CHARS, f"текст длиннее {SONG_MAX_CHARS} символов"),
-                (len(lyrics) < MIN_CHARS or len(lines) < MIN_LINES, f"текст короче: нужно от {MIN_LINES} строк"),
+                (len(lines) < MIN_LINES, f"строк мало: нужно от {MIN_LINES}, есть {len(lines)}"),
+                (len(lyrics) < MIN_CHARS, f"символов мало: нужно от {MIN_CHARS}, есть {len(lyrics)}"),
                 (_script_share(lyrics, language) < SCRIPT_SHARE, f"текст должен быть на языке «{language}»"))
     return next((why for bad, why in problems if bad), "")
 
@@ -161,6 +165,8 @@ def write_lyrics(ask: LyricsAsk, request: SongRequest, language: str, rules: str
         problem = check_song(title, lyrics, language)
         if not problem:
             return Song(title, lyrics)
+        # Отклонённый текст LLM — в лог (#5092): в следующий раз причина видна, не гадается.
+        _LOG.warning(f"🎤 [song] отклонённый текст: {lyrics!r}")
     raise SongFailed("lyrics", problem)
 
 
@@ -243,6 +249,68 @@ def song_language(provider: str, preset_language: str) -> str:
     return ROBOT_LANGUAGE if provider in UNBOUND_LANGUAGE_PROVIDERS else preset_language
 
 
+def text_language(text: str) -> str:
+    """Язык по письменности текста: ключ ``_SCRIPTS`` с наибольшей долей букв, либо «».
+
+    Русский текст остаётся русским (защита прогона 13.10), китайский — китайским (#4973).
+    Смешанный текст — по доминирующей письменности, и доля ниже ``SCRIPT_SHARE`` языком
+    не считается, как в :func:`check_song`."""
+    shares = {lang: _script_share(text, lang) for lang in _SCRIPTS}
+    best = max(shares, key=lambda lang: shares[lang])
+    return best if shares[best] >= SCRIPT_SHARE else ""
+
+
+def order_language(provider: str, preset_language: str, lyrics: str) -> str:
+    """Язык заказа: из поданных слов, если их письменность однозначна, иначе — :func:`song_language`.
+
+    Пустые слова или смесь письменностей язык не задают, и действует прежняя защита
+    языка робота."""
+    return text_language(lyrics) or song_language(provider, preset_language)
+
+
+def voice_sings(provider: str, voice_language: str, language: str) -> bool:
+    """Сможет ли голос спеть текст этого языка. MiniMax язык задаёт ``language_boost`` при любом
+    голосе (``UNBOUND_LANGUAGE_PROVIDERS``); голос, привязанный к языку, поёт только свой.
+    Голос не подменяется."""
+    if provider in UNBOUND_LANGUAGE_PROVIDERS:
+        return True
+    return voice_language.lower().startswith(language.lower())
+
+
+def is_given_lyrics(text: str) -> bool:
+    """Текст сам дотягивает до песни: от ``MIN_LINES`` строк и от ``MIN_CHARS`` символов.
+
+    Короче — тема, не слова (#5092). Пороги те же, что у :func:`check_song`, не ниже."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return len(lines) >= MIN_LINES and len(text) >= MIN_CHARS
+
+
+def given_song(request: SongRequest) -> Song:
+    """Песня из дословных слов человека: LLM её не пишет, :func:`check_song` не обходится (#4973).
+
+    Название — тема, обрезанная до ``TITLE_MAX``; пустая тема — «Песня». Не проходит
+    проверку — ``SongFailed("lyrics")`` с названной причиной, как и текст от LLM."""
+    title = request.theme.strip()[:TITLE_MAX] or "Песня"
+    language = text_language(request.lyrics) or ROBOT_LANGUAGE
+    problem = check_song(title, request.lyrics, language)
+    if problem:
+        raise SongFailed("lyrics", problem)
+    return Song(title, request.lyrics.strip())
+
+
+def verbatim_refusal(provider: str, voice: str, voice_language: str, lyrics: str) -> str:
+    """Почему дословные слова петь нельзя, или «»: язык текста и голос не сходятся.
+
+    Решение до заказа (ADR-0148): отказ здесь не тратит кредитов и не подменяет голос.
+    Пустая строка — петь можно. Смесь письменностей языком не считается, и действует
+    :func:`song_language`."""
+    language = text_language(lyrics)
+    if not language or voice_sings(provider, voice_language, language):
+        return ""
+    name = LANGUAGE_NAMES.get(language, language)
+    return f"Эти слова — {name}, а {sung_by(provider, voice)} их не поёт."
+
+
 class _Language:
     """Прокси бэкенда пения: подаёт TTS язык песни вместо языка из каталога голоса (``song_language``)."""
 
@@ -254,11 +322,15 @@ class _Language:
         return self._inner.synth(text, replace(preset, language=self._language))
 
 
-def _sing(provider: str, voice: str, lyrics: str, path: str) -> Any:
-    """Вокал текущим голосом в файл; бэкенды пения создаются на заказ (Silero не остаётся в памяти)."""
+def _sing(provider: str, voice: str, lyrics: str, path: str, language: str = "") -> Any:
+    """Вокал текущим голосом в файл; бэкенды пения создаются на заказ (Silero не остаётся в памяти).
+
+    ``language`` — язык заказа (:func:`order_language`): у MiniMax он уходит в ``language_boost``.
+    Пусто — язык робота (защита прогона 13.10)."""
     from rob_box_voice.sing_synth import SingSynthError, default_backends, synth_vocal_to_file
 
-    backends = {name: _Language(b, song_language(name, "")) if name in UNBOUND_LANGUAGE_PROVIDERS else b
+    sung = language or song_language(provider, "")
+    backends = {name: _Language(b, sung) if name in UNBOUND_LANGUAGE_PROVIDERS else b
                 for name, b in default_backends().items()}
     try:
         return synth_vocal_to_file(provider, voice, lyrics, path, backends=backends)
@@ -284,7 +356,7 @@ class SongStudio:
     def __init__(self, provider: Any, library: Callable[[], Any], lyrics: LyricsAsk, voice: Callable[[], Tuple[str, str]],
                  play: Callable[[str], Any], speak: Callable[[str], None], *,
                  started: Callable[[str], Any] = lambda track_id: None,
-                 sing: Callable[[str, str, str, str], Any] = _sing, rules: Callable[[], str] = rules_text,
+                 sing: Callable[..., Any] = _sing, rules: Callable[[], str] = rules_text,
                  clock: Callable[[], float] = time.monotonic, log: Callable[[], Any] = lambda: _LOG) -> None:
         self._provider, self._library, self._lyrics, self._voice = provider, library, lyrics, voice
         self._play, self._speak, self._sing, self._rules = play, speak, sing, rules
@@ -343,10 +415,15 @@ class SongStudio:
         except SingPresetUnknown as exc:
             raise SongFailed("no_preset", str(exc)) from exc
         started = self._clock()
-        song = write_lyrics(self._lyrics, request, song_language(provider, preset.language), self._rules())
+        # дословные слова поёт как есть; отказ «голос не поёт» — до заказа,
+        # в ``song_order.voice_refusal``
+        song = given_song(request) if request.lyrics.strip() else None
+        language = order_language(provider, preset.language, song.lyrics if song else "")
+        if song is None:
+            song = write_lyrics(self._lyrics, request, language, self._rules())
         workdir = tempfile.mkdtemp(prefix="rbx-song-")
         try:
-            vocal = self._sing(provider, voice, song.lyrics, f"{workdir}/vocal")
+            vocal = self._sing(provider, voice, song.lyrics, f"{workdir}/vocal", language=language)
             genre, tags = song_tags(request, preset.tags_hint)
             job = GenJob(kind="robot_song", style_key=genre, title=song.title, style_tags=tags,
                          negative_tags=NEGATIVE_TAGS, lyrics=song.lyrics, audio_path=vocal.path,
@@ -395,6 +472,9 @@ class SongStudio:
             if reason == "provider_down":
                 self._dead_until = self._clock() + DEAD_FOR_S
             self._log().warning(f"🎤 [song] не вышло: {exc}")
+            if reason == "lyrics" and request.lyrics.strip():
+                # Отклонённый текст песни — в лог (#5092): в следующий раз причина видна, не гадается.
+                self._log().warning(f"🎤 [song] отклонённый текст: {request.lyrics!r}")
             self._say(on_failed(reason))
         except Exception as exc:  # noqa: BLE001 — поток не должен молчать
             self._log().error(f"🎤 [song] сбой: {type(exc).__name__}: {exc}")
@@ -419,5 +499,7 @@ class SongStudio:
 
 
 __all__ = ["BUSY_TEXT", "DEFAULT_GENRE", "STARTED_WAIT_S", "LYRICS_SCHEMA", "LyricsAsk", "Song", "SongFailed", "SongRequest",
-           "SongResult", "SongStudio", "check_song", "song_language", "current_voice", "done_text", "failed_words",
-           "harness_lyrics_ask", "lyrics_prompt", "rules_text", "song_tags", "sung_by", "wait_text", "write_lyrics"]
+           "SongResult", "SongStudio", "check_song", "is_given_lyrics", "order_language", "song_language",
+           "text_language",
+           "current_voice", "done_text", "failed_words", "given_song", "harness_lyrics_ask", "lyrics_prompt",
+           "rules_text", "song_tags", "sung_by", "verbatim_refusal", "voice_sings", "wait_text", "write_lyrics"]

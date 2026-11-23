@@ -67,6 +67,77 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'destructive': True,
         'idempotent': False,
         'starts_music': False,
+        'execution_type': 'long',
+        'event_source': 'inproc:chimera-host',
+        'name': 'chimera_perform',
+        'description': 'Разовое выступление Химерой. action берётся из поставки: '
+                       'сейчас это call — короткий вызов существа, creature и call из '
+                       'того же списка. Речь, пение, игра по названию эта поставка не '
+                       'обещает и в список действий не входит. «Сказал» — только после '
+                       'конца проигрывания, не после старта. Произвольный русский '
+                       'текст не поддержан.',
+        'parameters': {   'type': 'object',
+                          'properties': {   'action': {   'type': 'string',
+                                                          'description': 'Что сделать '
+                                                                         'Химерой',
+                                                          'enum': ['call']},
+                                            'creature': {   'type': 'string',
+                                                            'description': 'Существо '
+                                                                           'для '
+                                                                           'action=call',
+                                                            'enum': [   'птица',
+                                                                        'тюлень',
+                                                                        'слон',
+                                                                        'аллигатор']},
+                                            'call': {   'type': 'string',
+                                                        'description': 'Вызов существа '
+                                                                       'для '
+                                                                       'action=call',
+                                                        'enum': [   'щебет',
+                                                                    'писк',
+                                                                    'рык',
+                                                                    'жужжание']},
+                                            'phrase_id': {   'type': 'string',
+                                                             'description': 'Id '
+                                                                            'подготовленной '
+                                                                            'фразы для '
+                                                                            'action=speak'},
+                                            'timbre': {   'type': 'string',
+                                                          'description': 'Человеческий '
+                                                                         'тембр речи '
+                                                                         'или пения',
+                                                          'enum': [   'male',
+                                                                      'female',
+                                                                      'child']},
+                                            'title': {   'type': 'string',
+                                                         'description': 'Название '
+                                                                        'пьесы для '
+                                                                        'sing или '
+                                                                        'play'},
+                                            'syllables': {   'type': 'string',
+                                                             'description': 'Слоги '
+                                                                            'пения; '
+                                                                            'без них '
+                                                                            'sing поёт '
+                                                                            'вокализ'}},
+                          'required': ['action'],
+                          'additionalProperties': False},
+        'signature': {   'params': [   'action',
+                                       'creature',
+                                       'call',
+                                       'phrase_id',
+                                       'timbre',
+                                       'title',
+                                       'syllables'],
+                         'required': ['action'],
+                         'accepts_kwargs': False},
+        'skill': ('expression',)},
+    {   'llm_visible': True,
+        'operator_visible': False,
+        'read_only': False,
+        'destructive': True,
+        'idempotent': False,
+        'starts_music': False,
         'execution_type': 'instant',
         'event_source': 'inproc:waypoint_store',
         'name': 'clear_waypoints',
@@ -597,7 +668,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
         'event_source': '',
         'name': 'get_robot_status',
         'description': 'Получить текущий статус робота (позиция, батарея, состояние '
-                       'систем).',
+                       'систем). Отвечай фразой из message: если там сказано, что это '
+                       'поза симулятора, не называй её полом.',
         'parameters': {   'type': 'object',
                           'properties': {},
                           'required': [],
@@ -981,7 +1053,8 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                        'только что сохранил через memory_save — включая в этом же '
                        'разговоре, сразу после сохранения. Возвращает и факты, и '
                        'фрагменты прошлых разговоров, помечая каждый результат полем '
-                       "kind: 'fact' | 'turn'.",
+                       "kind: 'fact' | 'turn'. Если ни факт, ни реплика не совпали, в "
+                       'результатах каталог фактов говорящего с source="fact_browse".',
         'parameters': {   'type': 'object',
                           'properties': {   'query': {   'type': 'string',
                                                          'description': 'Поисковый '
@@ -1566,7 +1639,14 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                        'шутку; matrix '
                                                                        '- думаю, ищу, '
                                                                        'считаю, '
-                                                                       '«взламываю». '
+                                                                       '«взламываю»; '
+                                                                       'plasma - '
+                                                                       'спокойный '
+                                                                       'перелив, '
+                                                                       'эмбиент, без '
+                                                                       'повода; rain - '
+                                                                       'грусть, дождь, '
+                                                                       'тихая погода. '
                                                                        'fx (разовый '
                                                                        'импульс в '
                                                                        'начале сцены): '
@@ -1668,7 +1748,9 @@ TOOL_CATALOG_DATA: tuple[dict[str, Any], ...] = (   {   'llm_visible': True,
                                                                                     'enum': [   'none',
                                                                                                 'rainbow',
                                                                                                 'fire',
-                                                                                                'matrix']},
+                                                                                                'matrix',
+                                                                                                'plasma',
+                                                                                                'rain']},
                                                                           'fx': {   'type': 'string',
                                                                                     'description': 'Слот '
                                                                                                    'лица '

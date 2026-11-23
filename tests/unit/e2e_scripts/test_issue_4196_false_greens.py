@@ -56,6 +56,7 @@ def _tts(text: str) -> str:
 
 
 def _steps() -> Dict[str, Dict[str, Any]]:
+    gen._apply_requires()
     return {s["label"]: s for act in gen.ACTS for s in act["steps"]}
 
 
@@ -314,6 +315,38 @@ def test_stt_verdict_n506_lost_tempo():
     assert eev.stt_verdict(step, "робот и ускорь темп а то мы тут засыпаем оба")["stt_ok"] == 1
 
 
+@pytest.mark.parametrize(
+    "label,heard,missing",
+    [
+        # run 43473608179 (Act4): «говори погромче, тётя Гриша глуховата» -> «сговоры покруче тети крыши глуховатые».
+        (
+            "n407_volume_up",
+            "робот сговоры покруче тети крыши глуховатые стоят в коридоре",
+            "погромче|громче",
+        ),
+        (
+            "n407_volume_up",
+            "робот говори погромче тетя гриша глуховата и стоит в коридоре",
+            "-",
+        ),
+        (
+            "n408_volume_down",
+            "робот нет все таки погромче а то разбудишь весь этаж",
+            "потише|тише",
+        ),
+        (
+            "n408_volume_down",
+            "робот нет все таки потише а то разбудишь весь этаж",
+            "-",
+        ),
+    ],
+)
+def test_stt_verdict_volume_steps_loudness_word_is_the_key(label, heard, missing):
+    """#4694 (run 43473608179, n407): потеряно слово громкости -- шаг просит повтор; на месте -- судится."""
+    step = _steps()[label]
+    assert eev.stt_verdict(step, heard)["missing"] == missing
+
+
 def test_stt_verdict_executed_command_is_not_replayed_n506_29_10():
     """n506 марафона-6: «темп» -> «там», но «ускорь» уже исполнено (134 -> 145 BPM): второй раз команда упирается в потолок."""
     step = _steps()["n506_faster"]
@@ -322,6 +355,40 @@ def test_stt_verdict_executed_command_is_not_replayed_n506_29_10():
     assert eev.stt_verdict(step, heard_text, executed=True) == {"keys": 2, "stt_ok": 1, "missing": "темп", "kept": "executed"}
     # слова на месте -- «исполнено» ничего не меняет: kept только там, где повтор был бы нужен
     assert eev.stt_verdict(step, "робот и ускорь темп", executed=True) == {"keys": 2, "stt_ok": 1, "missing": "-"}
+
+
+@pytest.mark.parametrize(
+    "label,heard,missing",
+    [
+        # run 43634710979 (Act6): «уводи в сторону рока, тётя Гриша под рок добреет» ->
+        # «уводи в сторону ока тетя гриша подруг добрее».
+        (
+            "n604_dj_rock",
+            "уводи в сторону ока тетя гриша подруг добрее",
+            "рок",
+        ),
+        (
+            "n604_dj_rock",
+            "робот уводи в сторону рока тётя гриша под рок добреет",
+            "-",
+        ),
+        # run 43636148539 (Act8): «Робот, говори.» -> «робот колории».
+        (
+            "n805b_unsilence",
+            "робот колории",
+            "говори",
+        ),
+        (
+            "n805b_unsilence",
+            "робот говори",
+            "-",
+        ),
+    ],
+)
+def test_stt_verdict_n604_n805b_lost_key_triggers_replay(label, heard, missing):
+    """#4694: потерянное ключевое слово («рок» / «говори») -- шаг просит повтор; на месте -- судится."""
+    step = _steps()[label]
+    assert eev.stt_verdict(step, heard)["missing"] == missing
 
 
 def test_stt_verdict_judges_nothing_without_keys_or_without_a_heard_phrase():
@@ -347,13 +414,18 @@ def test_replay_without_keys_is_a_schema_error_before_the_first_step():
         eev.recover_policy(scenario)
 
 
-def test_the_generator_gives_exactly_n411_and_n506_the_replay_with_all_standard_kinds():
+def test_the_generator_gives_replay_to_the_distortion_prone_steps_with_all_standard_kinds():
     steps = _steps()
     asking = {label for label, s in steps.items() if "stt_replay" in (s.get("recover") or [])}
-    assert asking == {"n411_pitch_bass", "n506_faster"}
+    assert asking == {"n407_volume_up", "n408_volume_down", "n411_pitch_bass", "n506_faster", "n604_dj_rock",
+                      "n805b_unsilence"}
     for label in asking:
         assert eev.stt_keys(steps[label]), label
+    # Обычные шаги сохраняют штатные виды восстановления.
+    for label in ("n407_volume_up", "n408_volume_down", "n411_pitch_bass", "n506_faster", "n604_dj_rock"):
         assert eev.recover_kinds({}, steps[label]) == ("no_wake", "silenced", "stt_replay"), "штатные виды не отняты"
+    # n805b сам является фразой снятия тишины -- `silenced` исключён кодом (`recover_kinds`), `stt_replay` остаётся.
+    assert eev.recover_kinds({}, steps["n805b_unsilence"]) == ("no_wake", "stt_replay")
     assert {label for label, s in steps.items() if eev.STT_KEYS_FIELD in s} == asking
 
 
@@ -403,9 +475,12 @@ def test_json_on_disk_carries_the_fields():
                 disk[s["label"]] = s
     steps = _steps()
     for label in ("n307_count_voices", "n311_who_asked", "n312_stop_music", "n411_pitch_bass", "n506_faster",
-                  "n507_wake_under_music", "n511_stop_music", "n605_dj_set_plan", "n709_stop_generated"):
+                  "n507_wake_under_music", "n511_stop_music", "n604_dj_rock", "n605_dj_set_plan", "n709_stop_generated",
+                  "n805b_unsilence"):
         assert disk[label] == steps[label], label
     assert disk["n411_pitch_bass"]["stt_keys"] == ["говори", "бас"]
+    assert disk["n604_dj_rock"]["stt_keys"] == ["рок"]
+    assert disk["n805b_unsilence"]["stt_keys"] == ["говори"]
 
 
 # ── n709: ложь о состоянии музыки без тула ──────────────────────────────────────────────────────────────────
@@ -533,10 +608,14 @@ class TestRunStepSttReplay:
         assert _names(played) == ["cmd_a_eq.wav"]
 
     def test_replay_that_is_distorted_again_is_not_repeated_a_third_time(self, tmp_path):
+        # Второго звука нет. step_stt_inject здесь не вынут: инъекция не легла, честный FAIL.
+        # Было: PLAY_COUNT=2 и один E2E_RECOVER stt_replay; RC не проверялся (run_step возвращал 0).
         bad = heard("робот гарри басом", "{NOW-30}") + REPLY
         out, err, _, _ = _run_step(tmp_path, bad, [bad], STEP, _scenario(tmp_path) + KINDS, replace=True)
         assert "PLAY_COUNT=2" in out, (out, err)
         assert out.count("E2E_RECOVER stt_replay a ") == 1
+        assert "RC=1" in out and "inject_failed" in out
+        assert "E2E_RECOVER stt_inject" not in out
 
     def test_command_already_executed_is_not_replayed_n506_29_10(self, tmp_path):
         """Марафон-6: «темп» -> «там», но `edit_music` уже исполнен (134 -> 145 BPM): повтор упёрся бы в потолок. Повтора

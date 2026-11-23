@@ -121,7 +121,7 @@ class LLMToolCallAdapter:
                 по умолчанию — это имя попадает в HMAC-подпись и
                 сверяется с ``DEFAULT_ALLOWED_SENDERS`` на стороне
                 ``mcp_server``. До #2132 здесь был жёсткий литерал
-                ``sender="dialogue_node"``, что ломалось для
+                ``sender="dialog_node"``, что ломалось для
                 ``avatar_supervisor`` (ТАРС): все его tool-call-ы шли
                 под чужим identity и резались срез-гардом по правам
                 личности.
@@ -156,8 +156,8 @@ class LLMToolCallAdapter:
 
         # Подпись запросов общим секретом — mcp_server отклоняет
         # неподписанные tool-call-ы (см. mcp_auth.py). ``sender`` берём
-        # из имени ROS-ноды, чтобы ``dialogue_node`` подписывался как
-        # ``dialogue_node``, а ``avatar_supervisor`` — как
+        # из имени ROS-ноды, чтобы ``dialog_node`` подписывался как
+        # ``dialog_node``, а ``avatar_supervisor`` — как
         # ``avatar_supervisor`` (это требование slice-гарда: у каждого
         # свой набор срезов, см. ``slice_policy.yaml``). Тесты и
         # редкие форы могут передать явный ``sender`` через kwarg.

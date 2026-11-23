@@ -35,6 +35,10 @@ NAV_SERVER_UNAVAILABLE = "server_unavailable"
 NAV_UNKNOWN_STATUS = "unknown_status"
 #: Nav2 ответил успехом, но поза на карте за поездку потеряла опору (#4495, ``core.localization_check``).
 NAV_LOCALIZATION_LOST = "localization_lost"
+#: twist_mux глушит cmd_vel (priority 10): /joystick_lock или /teleop_lock = True (залипший замок, timeout 0.0).
+NAV_LOCK_HELD = "lock_held"
+#: Замка ещё не видели: «свободно» и «занято» одинаково не доказаны (#4694, #3789).
+NAV_LOCK_UNKNOWN = "lock_unknown"
 
 # Виды исхода вызова сервиса.
 SVC_OK = "ok"
@@ -76,6 +80,14 @@ _NAV_FAILURES = {
     NAV_LOCALIZATION_LOST: (
         "Nav2 ответил SUCCEEDED, но локализация за поездку потеряна (#4495)",
         "Не уверен, что доехал: потерял, где нахожусь на карте",
+    ),
+    NAV_LOCK_HELD: (
+        "Руль занят: twist_mux глушит cmd_vel (/joystick_lock или /teleop_lock)",
+        "Руль занят, не поеду",
+    ),
+    NAV_LOCK_UNKNOWN: (
+        "Не вижу замок twist_mux: нет сообщения /joystick_lock или /teleop_lock",
+        "Не вижу замок, не поеду",
     ),
 }
 

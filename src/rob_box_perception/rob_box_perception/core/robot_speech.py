@@ -1,7 +1,7 @@
 """Реплика робота из сообщений диалога для памяти контекста восприятия (issue #3911).
 
 У v2 нет топика «ответ», есть запрос речи - ``SpeechRequest`` агента ``personality`` в ``/voice/speech/request``.
-Разбор JSON ``/voice/dialogue/response`` (dialogue_node v1) удалён вместе с подпиской (#4354 A2).
+Разбор JSON ``/voice/dialogue/response`` (dialog_node v1) удалён вместе с подпиской (#4354 A2).
 
 Образ perception (Main Pi) не содержит ``rob_box_core``, поэтому тема и агент - литералы; дрейф держит
 ``rob_box_core/test/test_voice_state.py``.

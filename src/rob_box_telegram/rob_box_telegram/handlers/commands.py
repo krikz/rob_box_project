@@ -9,13 +9,14 @@ After Phase 6 v2 / W7 this module is a *thin transport*:
 * Status / navigation / volume / music / mapping handlers used to call the
   ToolProvider through ``_invoke_tool``. They now forward the command
   intent to ``/voice/stt/utterance`` so the unified AgentCore/harness
-  pipeline (``dialogue_node``) can decide what to do with it.
+  pipeline (``dialog_node``) can decide what to do with it.
 
 All handlers receive ``context.bot_data["node"]`` — our TelegramNode
 instance which exposes ROS 2 publishers and on-demand camera frames
 (``fetch_camera_frame``).
 """
 
+import asyncio
 import io
 import logging
 
@@ -26,26 +27,11 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from ..auth import authorized
-from ..face_card import (
-    build_face_collage,
-    find_summary,
-    format_face_summary,
-    format_faces_table,
-    load_detail,
-    list_people,
-)
+from ..face_roster_view import format_owner_listing, listing_from_owner, unavailable_listing
 from ..keyboard_layouts import MAIN_MENU_KEYBOARD, MOVEMENT_KEYBOARD
 from ..radio import get_radio_mode, set_radio_mode
 
 logger = logging.getLogger(__name__)
-
-
-#: Filesystem location of the live face store inside the telegram-bot
-#: container. ``vision-face`` (Vision Pi, writer) and ``telegram-bot``
-#: (reader, :ro, Sound Pi since ADR-0159 PR-7 — a copy of the store, not
-#: the live one until #3655) mount ``./data/faces`` under their own
-#: ``docker/<pi>/``. Issue #3025 + ADR-0123 §4: the bot must never write here.
-FACE_STORE_MOUNT = "/data/faces"
 
 
 def _node(context: ContextTypes.DEFAULT_TYPE):
@@ -58,7 +44,7 @@ def _forward(node, text: str, chat_id=None) -> None:
 
     ``chat_id`` is passed through to ``forward_to_stt`` which puts it into the
     ``Utterance.chat_id`` source field (issue #1195) — commands are explicit
-    intents, so the dialogue_node wake-word gate must not drop them.
+    intents, so the dialog_node wake-word gate must not drop them.
     """
     node.forward_to_stt(text, chat_id=chat_id)
 
@@ -146,7 +132,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/clear — очистить историю чата\n"
         "/myid — показать chat ID\n\n"
         "*Лица (issue #3025):*\n"
-        "/faces — список всех лиц в лицевой базе\n"
+        "/faces — список лиц у владельца галереи (Vision Pi)\n"
         "/face <id|имя> — карточка лица (сводка + коллаж)\n",
         parse_mode="Markdown",
     )
@@ -854,29 +840,33 @@ async def operator_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 @authorized
 async def faces_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/faces`` — таблица всех записей в ``/data/faces``.
+    """Handle ``/faces`` — список лиц у владельца галереи (issue #3655).
 
-    Issue #3025 + ADR-0123 §4: бот читает диск напрямую через
-    :mod:`rob_box_telegram.face_card` (read-only volume). Никакой
-    FaceStore / ROS API не задействован — бот и vision-face живут в
-    разных контейнерах и не разделяют состояние.
+    Тот же путь, что у тула ТАРС ``list_faces``: сервис ``/perception/people``
+    ``OP_LIST`` на Vision Pi (:func:`ros_people_list`). Диск ``/data/faces``
+    на Sound Pi не читается — это копия-снимок, не источник (ADR-0159 В8).
+    Владелец не ответил — честный отказ, не «лиц нет» (ADR-0148).
     """
-    summaries = list_people(FACE_STORE_MOUNT)
-    text = format_faces_table(summaries)
-    await update.message.reply_text(text, parse_mode="Markdown")
+    node = _node(context)
+    people_call = getattr(node, "people_list", None)
+    if people_call is None:
+        from rob_box_supervisor.face_roster_tool import ros_people_list
+
+        people_call = ros_people_list(node)
+        node.people_list = people_call
+    ok, reason, data = people_call()
+    listing = listing_from_owner(data) if ok else unavailable_listing(reason)
+    await update.message.reply_text(format_owner_listing(listing), parse_mode="Markdown")
 
 
 @authorized
 async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle ``/face <id|имя>`` — карточка лица: сводка + коллаж снимков.
+    """Handle ``/face <id|имя>`` — карточка лица у владельца галереи (issue #3655).
 
-    Принимает либо короткий ``person_id`` (8 символов, как оператор
-    копирует из ``/faces``), либо полный id, либо точное имя (без
-    учёта регистра). Если ничего не передано — показывает справку.
-
-    Коллаж строится локально через PIL (4×3 сетка, эталон Шифу).
-    Если ни reference, ни encounters не нашлись — отправляем только
-    сводку, без ``reply_photo``, и не падаем с исключением.
+    Сервис ``/perception/people`` ``OP_CARD`` на Vision Pi. Диск ``/data/faces``
+    на Sound Pi не читается. Коллаж собирает владелец; бот кладёт его байты
+    в чат. Молчит Vision или снимка нет — отказ из его причины, без выдуманной
+    картинки (ADR-0148).
     """
     raw = " ".join(context.args).strip() if context.args else ""
     if not raw:
@@ -889,33 +879,27 @@ async def face_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    summary = find_summary(FACE_STORE_MOUNT, raw)
-    if summary is None:
-        await update.message.reply_text(
-            f"⚠️ Не нашёл запись «{raw}». Список — `/faces`.",
-            parse_mode="Markdown",
-        )
-        return
+    node = _node(context)
+    fetch = getattr(node, "people_card", None)
+    if fetch is None:
+        from ..person_photo import ros_card_fetch
 
-    detail = load_detail(FACE_STORE_MOUNT, summary.person_id)
-    if detail is None:
-        await update.message.reply_text(
-            f"⚠️ Запись `{summary.person_id_short}` повреждена "
-            "(нет meta.json). Проверьте диск.",
-            parse_mode="Markdown",
-        )
-        return
+        fetch = ros_card_fetch(node)
+        node.people_card = fetch
+    from .. import face_card_view
+    from ..person_photo import OP_CARD
 
-    text = format_face_summary(detail)
-    collage = build_face_collage(detail)
-    if collage is None:
-        # Нет ни reference, ни encounters — это легальный кейс
-        # (лицо только что создано без эмбеддингов). Шлём только сводку.
-        await update.message.reply_text(text, parse_mode="Markdown")
+    ok, reason, data, jpeg = await _await_card(fetch, raw, OP_CARD)
+    if not ok:
+        await update.message.reply_text(face_card_view.refusal_text(reason, data))
         return
+    caption = face_card_view.caption_from_owner(data)
+    await update.message.reply_photo(photo=io.BytesIO(jpeg), caption=caption, parse_mode="Markdown")
 
-    await update.message.reply_photo(
-        photo=io.BytesIO(collage),
-        caption=text,
-        parse_mode="Markdown",
-    )
+
+async def _await_card(fetch, query: str, op: int):
+    """``fetch`` блокирует (ROS). Из корутины — в потоке; подставной fetch теста зовётся как есть."""
+    result = fetch(query, op)
+    if asyncio.isfuture(result) or asyncio.iscoroutine(result):
+        result = await result
+    return result

@@ -16,6 +16,7 @@ navigation.py - Инструменты навигации и движения р
 
 from typing import Any, Callable, List, Optional, TYPE_CHECKING
 import math
+import threading
 import time
 from rclpy.action import ActionClient
 from geometry_msgs.msg import PoseStamped, Twist
@@ -32,6 +33,8 @@ from ..core.action_outcome import (
     CANCEL_CONFIRMED,
     CANCEL_NO_ACTIVE_GOAL,
     NAV_LOCALIZATION_LOST,
+    NAV_LOCK_HELD,
+    NAV_LOCK_UNKNOWN,
     NAV_NO_RESPONSE,
     NAV_REJECTED,
     NAV_SERVER_UNAVAILABLE,
@@ -47,7 +50,7 @@ from ..core.action_outcome import (
 from rob_box_core.follow_path_halt import FOLLOW_PATH_CANCEL_SRV, NAV_CMD_VEL_TOPIC, ZERO_TWIST_REPEATS
 from rob_box_dialog import knowledge as kn
 from ..localization_watch import LocalizationWatch
-from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose
+from ..map_pose import LEGACY_WAYPOINT_FRAME, MapPose, MapPoseSource, OnDemandTf
 
 _CANCEL_ALL_LABEL = "Nav2 cancel_goal"
 _CANCEL_ALL_TIMEOUT_SEC = 5.0
@@ -66,6 +69,64 @@ _HALT_CANCEL_TIMEOUT_SEC = 2.0
 _HALT_ROUNDS_ON_FAILURE = 2
 _HALT_ROUND_GAP_SEC = 1.0
 _ZERO_TWIST_REPEATS = ZERO_TWIST_REPEATS
+
+# #4694: twist_mux глушит cmd_vel (priority 10), пока любой из замков True. timeout 0.0 — залипшее
+# значение держится и без новых сообщений, поэтому «не видел» ≠ «свободно».
+JOYSTICK_LOCK_TOPIC = "/joystick_lock"
+TELEOP_LOCK_TOPIC = "/teleop_lock"
+# Тот же потолок ожидания первого сообщения, что у GetRobotStatusTool (system.py), не таймаут Nav2.
+_LOCK_FIRST_MSG_TIMEOUT_SEC = 2.0
+
+
+def lock_block(joystick: Optional[bool], teleop: Optional[bool]) -> Optional[str]:
+    """Что сказать до цели по последним Bool замков.
+
+    ``None`` в аргументе — сообщения не было. Любой True — ``NAV_LOCK_HELD``.
+    Нет хоть одного сообщения — ``NAV_LOCK_UNKNOWN`` (не «свободно»). Оба False — ехать можно.
+    """
+    if joystick is None or teleop is None:
+        return NAV_LOCK_UNKNOWN
+    if joystick or teleop:
+        return NAV_LOCK_HELD
+    return None
+
+
+class TwistMuxLocks:
+    """Последние ``/joystick_lock`` и ``/teleop_lock`` (``std_msgs/Bool``).
+
+    Оба True глушат Nav2 в twist_mux. Сообщения ещё не было — замок неизвестен:
+    ни «свободно», ни «занято» (#4694). ``block`` ждёт первое сообщение не дольше
+    ``_LOCK_FIRST_MSG_TIMEOUT_SEC`` (как холодный старт статуса робота).
+    Нет ``std_msgs`` (CI без ROS) — подписок нет, ``block`` честно ``NAV_LOCK_UNKNOWN``.
+    """
+
+    def __init__(self, node, wait_timeout_sec: float = _LOCK_FIRST_MSG_TIMEOUT_SEC):
+        self._wait_timeout_sec = wait_timeout_sec
+        self._values: dict = {}
+        self._seen = threading.Event()
+        try:
+            from std_msgs.msg import Bool  # noqa: PLC0415 — лениво: модуль импортируется в CI без ROS
+
+            node.create_subscription(Bool, JOYSTICK_LOCK_TOPIC, self._on(JOYSTICK_LOCK_TOPIC), 10)
+            node.create_subscription(Bool, TELEOP_LOCK_TOPIC, self._on(TELEOP_LOCK_TOPIC), 10)
+        except Exception as exc:  # noqa: BLE001 — нет пакета = замка не видно, цель не слать
+            node.get_logger().warning(f"#4694 замки twist_mux без подписок: {exc}")
+
+    def _on(self, topic: str):
+        def callback(msg) -> None:
+            self._values[topic] = bool(msg.data)
+            if JOYSTICK_LOCK_TOPIC in self._values and TELEOP_LOCK_TOPIC in self._values:
+                self._seen.set()
+
+        return callback
+
+    def block(self) -> Optional[str]:
+        """``NAV_LOCK_HELD`` / ``NAV_LOCK_UNKNOWN`` / ``None`` (оба False — цель можно слать)."""
+        if not self._seen.is_set():
+            self._seen.wait(timeout=self._wait_timeout_sec)
+        joy = self._values.get(JOYSTICK_LOCK_TOPIC)
+        teleop = self._values.get(TELEOP_LOCK_TOPIC)
+        return lock_block(joy, teleop)
 
 
 def _nav_failure(kind: str, status: Optional[int] = None) -> MCPToolResult:
@@ -174,6 +235,33 @@ def _confirm_localization(result: MCPToolResult, track) -> MCPToolResult:
     return result
 
 
+def relative_goal_in_map(
+    pose_source: Callable[[], MapPose], x: float, y: float, theta: float
+):
+    """#5160: относительная точка ``base_footprint`` → точка ``map`` ровно один раз.
+
+    Nav2 ищет ``base_footprint``→``map`` на штамп цели при каждом
+    перепланировании. Цель в ``base_footprint`` старше истории TF падает
+    с ``Extrapolation Error`` (живой прогон 23.11: планировщик приступил
+    через 18,4 с). Кэш TF планировщика — дефолт tf2, 10 с: ключ
+    ``tf_buffer_duration`` в yaml узел не читает (#5151). Точка мира от штампа не зависит.
+
+    Возвращает ``(x, y, theta, frame_id)`` в ``map`` или ``MCPToolResult`` отказа.
+    Трансформа нет — отказ; цель в ``base_footprint`` «как раньше» не шлётся
+    (ADR-0148).
+    """
+    pose = pose_source()
+    if not pose.ok:
+        return _pose_failure(pose, "Не поехал: не знаю, где стою на карте")
+    yaw = pose.theta or 0.0
+    return (
+        pose.x + x * math.cos(yaw) - y * math.sin(yaw),
+        pose.y + x * math.sin(yaw) + y * math.cos(yaw),
+        yaw + theta,
+        pose.frame_id,
+    )
+
+
 def _send_nav_goal(
     nav_client,
     node,
@@ -228,6 +316,10 @@ def _drive_to_goal(
     goal = NavigateToPose.Goal()
     goal.pose.header.frame_id = frame_id
     goal.pose.header.stamp = node.get_clock().now().to_msg()
+    # #5160: кадр цели в лог — HIL-вердикт читает эту строку, не угадывает map.
+    node.get_logger().info(
+        f"[navigate_to_pose] цель: frame_id={frame_id} x={x:.3f} y={y:.3f} theta={theta:.3f}"
+    )
     goal.pose.pose.position.x = x
     goal.pose.pose.position.y = y
     goal.pose.pose.position.z = 0.0
@@ -296,12 +388,14 @@ class NavigateToWaypointTool(MCPTool):
     event_source = "action:/navigate_to_pose"
     #: #4495: сторож локализации; ставит ``__init__`` (без него — тул собран в обход конструктора, проверки нет).
     localization_watch: Optional[LocalizationWatch] = None
+    #: #4694: замки twist_mux; ставит ``__init__``. Нет атрибута — тул собран в обход, проверки нет.
 
     def __init__(self, node, waypoint_store: "WaypointAdapter"):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.controller_halt = ControllerHalt(node)
         self.localization_watch = LocalizationWatch(node)
+        self.twist_locks = TwistMuxLocks(node)
         self.waypoint_store = waypoint_store
         self.current_goal_handle = None
 
@@ -361,6 +455,13 @@ class NavigateToWaypointTool(MCPTool):
         self.log_info(
             f"📍 Координаты: x={coords['x']:.2f}, y={coords['y']:.2f}, θ={coords['theta']:.2f} [{frame_id}]"
         )
+
+        # До цели: залипший замок глушит cmd_vel, «еду» было бы ложью (#4694).
+        locks = getattr(self, "twist_locks", None)
+        blocked = locks.block() if locks is not None else None
+        if blocked is not None:
+            self.log_warning(f"Навигация к {waypoint} не начата: {blocked}")
+            return _with_target(_nav_failure(blocked), waypoint, waypoint=waypoint)
 
         result = _send_nav_goal(
             self.nav_client,
@@ -463,6 +564,9 @@ class MoveDirectionTool(MCPTool):
     """Инструмент для движения в направлении."""
 
     event_source = "action:/navigate_to_pose"
+    #: #5160: источник позы на карте; ставит ``__init__``.
+    #: Нет атрибута — тул собран в обход, цели нет.
+    _pose_source: Optional[Callable[[], MapPose]] = None
 
     DIRECTIONS = {
         "вперёд": {"x": 1.0, "y": 0.0, "theta": 0.0},
@@ -471,10 +575,16 @@ class MoveDirectionTool(MCPTool):
         "направо": {"x": 0.0, "y": 0.0, "theta": -math.pi / 2},
     }
 
-    def __init__(self, node):
+    def __init__(self, node, pose_source: Optional[Callable[[], MapPose]] = None):
         super().__init__(node)
         self.nav_client = ActionClient(node, NavigateToPose, "navigate_to_pose")
         self.controller_halt = ControllerHalt(node)
+        # #5160: тот же сеанс TF, что у «где ты» (mcp_server.map_pose_source).
+        # Без него — свой на один запрос: постоянный слушатель /tf в этой ноде
+        # жёг ~45 % CPU (map_pose.py).
+        self._pose_source = (
+            pose_source if pose_source is not None else MapPoseSource(lambda: OnDemandTf(node))
+        )
 
     @property
     def name(self) -> str:
@@ -523,19 +633,40 @@ class MoveDirectionTool(MCPTool):
         if direction in ["вперёд", "назад"]:
             coords["x"] *= distance
 
+        # #5160: один раз base_footprint → map в момент отправки. Дальше цель не
+        # пересчитывается ни при одном перепланировании: штамп цели Nav2
+        # больше не нужен.
+        pose_source = self._pose_source
+        if pose_source is None:
+            return MCPToolResult(
+                success=False,
+                error="нет источника позы на карте: тул собран в обход конструктора",
+                message="Не поехал: не знаю, где стою на карте",
+            )
+        world = relative_goal_in_map(pose_source, coords["x"], coords["y"], coords["theta"])
+        if isinstance(world, MCPToolResult):
+            return world
+        goal_x, goal_y, goal_theta, frame_id = world
+
         result = _send_nav_goal(
             self.nav_client,
             self.node,
-            coords["x"],
-            coords["y"],
-            coords["theta"],
-            frame_id="base_link",
+            goal_x,
+            goal_y,
+            goal_theta,
+            frame_id=frame_id,
             timeout=60.0,
             halt=self.controller_halt,
         )
         if result.success:
             result.data = {
-                **(result.data or {}), "direction": direction, "distance": distance, "relative_coords": coords
+                **(result.data or {}),
+                "direction": direction,
+                "distance": distance,
+                "relative_coords": coords,
+                "goal_frame_id": frame_id,
+                "goal_x": goal_x,
+                "goal_y": goal_y,
             }
             result.message = f"Приехал: {direction} {distance}м"
             self.log_info(f"✅ Движение {direction} завершено")

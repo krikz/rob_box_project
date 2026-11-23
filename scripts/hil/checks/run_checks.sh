@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
-# HIL-проверки группы А (#3789, #4435/#4458, #4470, #4365): один запуск → raw-файлы и строки вердикта кода.
+# HIL-проверки группы А (#3789, #4435/#4458, #4470, #4365, #4770): один запуск → raw-файлы и строки вердикта кода.
 # Runbook: docs/runbooks/hil-checks.md. HIL включает и выключает не этот скрипт, а scripts/hil/hil.sh.
 #
 #   HIL_CHECKS_OWNER=<первое слово stand.lock> scripts/hil/checks/run_checks.sh [сценарий ...]   (без аргументов — all)
 #
 # Сценарии (all — по порядку):
 #   orphan          #4458  сирота нарочно: своя цель FollowPath после отменённой NavigateToPose — гасит сторож
-#   zone            #4365 + #4470(on)  телеоп в препятствие: стоп, писк, «Осторожно!», маячок; звук уходит на робота
-#   guard_off       #4470(off)  proximity-guard пересоздаётся с HIL_GUARD_SOUND=off, тот же наезд, затем назад on
+#   zone            #4365 + #4470(on)  явно HIL_GUARD_SOUND=on, телеоп в препятствие: стоп, писк, «Осторожно!», маячок
+#   guard_off       #4470(off)  умолчание/явный off: тот же наезд без писка, затем назад off (умолчание HIL)
+#   corner          #4631  угол корпуса на пути: стенка перекрывает только левый угол; стоп до 0.20 м внутри коридора
+#   doorway         #4365  регресс проёма 0.90 м (мир polygon, x=2): подъезд по оси, в проёме нет стопа
 #   nav_aborted     #3789 + #4435  «поезжай на …» в недостижимую точку → фраза по ABORTED; после провала mux = 0
 #   stop_idle       #3789  «отмени навигацию» без цели → «Я и так стою.»
 #   stop_active     #3789 + #4435  то же во время поездки из скрипта → «Останавливаюсь.»; после отмены mux = 0
 #   orphan_natural  #4435  цель NavigateToPose из скрипта (3b из #4365): нужен ORPHAN_GOAL="x,y,yaw°" (карта мира);
 #                   ORPHAN_LOAD_S=120 — нагрузка Main Pi (4 пустых цикла с timeout). Без ORPHAN_GOAL — пропуск
+#   controller_abort #4770  цель в свободную сторону, FollowPath принят, корпус удержан нулём на /cmd_vel_web
+#                   (priority 50 > Nav2). Progress checker абортит за movement_time_allowance (30 с, не крутим).
+#                   Не nav_aborted: без принятого FollowPath вердикт NOT_TRIGGERED.
+#   client_kill     #4435  цель принята, процесс пробы убит (SIGTERM) без cancel_goal. Робот должен встать.
+#   host_cancel     #4435  ros2 action cancel /navigate_to_pose с хоста (нулевой GoalInfo), не наш тул.
+#   move_ahead      #5160  «Робот, вперёд на метр»: цель создаёт move_direction, проба только мерит TRACK.
+#                   До цели — isolation.py: только Gazebo (один /controller_manager),
+#                   боевой ros2-control не running, командных кадров VESC 0. Иначе выход 2.
 #
 # Предусловия проверяет сам и честно отказывает (выход 3): stand.lock начинается с HIL_CHECKS_OWNER (замок берёт тот,
 # кто запускает, скрипт его не трогает), hil.sh status = HIL on и один /controller_manager, нужные контейнеры running,
@@ -47,14 +57,23 @@ fi
 # sim-секунд после провала цели, за которые FollowPath должен погаснуть и mux обнулиться (orphan_timeout_s 1.5 + такт).
 : "${ORPHAN_GRACE_S:=2.0}"
 : "${WALL_SPEED:=0.1}"
+# Регресс проёма 0.90 м: цель за проёмом x=2 мира polygon, участок проёма по x правды Gazebo.
+: "${DOOR_GOAL:=3,0,0}"
+: "${DOOR_OPENING:=1.2,2.8}"
+# #4770: боевой movement_time_allowance (nav2_params.yaml). Сценарий его не укорачивает.
+: "${PROGRESS_ALLOWANCE_S:=30}"
+: "${HOLD_AHEAD_M:=1.5}"
+# #5160: реплика, которая должна вызвать move_direction, не цель пробы.
+: "${MOVE_AHEAD_PHRASE:=Робот, вперёд на метр.}"
+: "${MOVE_AHEAD_WAIT_S:=90}"
 
 OUT="$HIL_CHECKS_OUT"
 GZ="$HIL_SIM_PREFIX-gazebo"
 REMOTE_PROBE=/tmp/hil_checks/hil_probe.py
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
-ALL=(orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural)
+ALL=(orphan zone guard_off corner doorway nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel move_ahead)
 NAV_TOOLS_RX='navigate_to_coordinates|navigate_to_waypoint|move_direction'
-GUARD_OFF_ACTIVE=0
+GUARD_SOUND_CHANGED=0
 
 log() { printf '[checks %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { printf '❌ %s\n' "$*" >&2; exit 3; }
@@ -112,10 +131,11 @@ needs_for() {  # контейнеры, без которых выбранные 
     local sc need=(nav2 twist-mux proximity-guard "$GZ")
     for sc in "$@"; do
         case "$sc" in
-            orphan | orphan_natural | nav_aborted | stop_active) need+=(followpath-watchdog) ;;
+            orphan | orphan_natural | nav_aborted | stop_active | controller_abort | client_kill | host_cancel) \
+                need+=(followpath-watchdog) ;;
         esac
         case "$sc" in
-            zone | guard_off | nav_aborted | stop_idle | stop_active) need+=(voice-assistant) ;;
+            zone | guard_off | nav_aborted | stop_idle | stop_active | move_ahead) need+=(voice-assistant) ;;
         esac
     done
     printf '%s\n' "${need[@]}" | awk '!seen[$0]++' | tr '\n' ' '
@@ -181,35 +201,119 @@ guard_recreate() {  # guard_recreate on|off: proximity-guard в HIL с HIL_GUARD
     wait_log "$HIL_MAIN_HOST" proximity-guard "$since" 'зона под контролем' 90
 }
 restore_guard() {
-    if [ "$GUARD_OFF_ACTIVE" = 1 ]; then
-        log "возвращаю proximity-guard в HIL_GUARD_SOUND=on"
-        guard_recreate on >>"$OUT/guard_off/recreate_on.txt" 2>&1 || log "❌ proximity-guard не вернулся в on — hil.sh status"
-        GUARD_OFF_ACTIVE=0
+    # Умолчание HIL — off (#4470). После явного on (сценарий zone) возвращаем off.
+    if [ "${GUARD_SOUND_CHANGED:-0}" = 1 ]; then
+        log "возвращаю proximity-guard в HIL_GUARD_SOUND=off (умолчание HIL)"
+        mkdir -p "$OUT/zone"
+        guard_recreate off >>"$OUT/zone/recreate_off.txt" 2>&1 || log "❌ proximity-guard не вернулся в off — hil.sh status"
+        GUARD_SOUND_CHANGED=0
     fi
 }
 
 sc_zone() {
-    zone_run "$OUT/zone"
-    verdict zone "$OUT/zone"
-    verdict guard_sound "$OUT/zone" --mode on
+    # #4365 и #4470(on) требуют писк — явно on, умолчание HIL теперь off.
+    local d="$OUT/zone"
+    mkdir -p "$d"
+    GUARD_SOUND_CHANGED=1
+    if ! guard_recreate on >"$d/recreate_on.txt" 2>&1; then
+        skip "#4470" guard_sound_on "proximity-guard с HIL_GUARD_SOUND=on не поднялся (recreate_on.txt)"
+        restore_guard
+        return 0
+    fi
+    zone_run "$d"
+    verdict zone "$d"
+    verdict guard_sound "$d" --mode on
+    restore_guard
 }
 sc_guard_off() {
     local d="$OUT/guard_off"
     mkdir -p "$d"
     probe "$d/backoff_before.log" backoff --secs 5
-    GUARD_OFF_ACTIVE=1
+    # Умолчание уже off; recreate фиксирует off на случай, если до этого zone оставил on.
     if ! guard_recreate off >"$d/recreate_off.txt" 2>&1; then
         skip "#4470" guard_sound_off "proximity-guard с HIL_GUARD_SOUND=off не поднялся (recreate_off.txt)"
-        restore_guard
         return 0
     fi
     zone_run "$d"
     verdict guard_sound "$d" --mode off
     probe "$d/backoff_after.log" backoff --secs 5
-    restore_guard
+}
+sc_corner() {
+    # #4631: стенка в 1.5 м от носа, сдвинутая влево на 0.25 м — перекрывает только левый угол.
+    # Вердикт читает зазор и точку из строки стопа: внутри коридора не меньше 0.19, вне коридора стопа быть не должно.
+    local d="$OUT/corner" t0
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" corner --speed "$WALL_SPEED" --shift 0.25 --ahead 1.5
+    sleep 5
+    dlogs "$HIL_MAIN_HOST" proximity-guard "$t0" "$d/guard.log"
+    verdict corner "$d"
 }
 
 # ── фразы тулов движения ────────────────────────────────────────────────────────────────
+
+sc_doorway() {
+    # #4365: проём 0.90 м мира polygon (x=2, коробки pose 2.000 ±1.725, размер 0.100×2.550).
+    # Подъезд по оси к цели за проёмом. PASS — доехала и в проёме нет входа в stop.
+    local d="$OUT/doorway" t0 lo hi
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" nav --goal "$DOOR_GOAL" --timeout 180
+    sleep 2
+    dlogs "$HIL_MAIN_HOST" proximity-guard "$t0" "$d/guard.log"
+    lo=${DOOR_OPENING%,*}
+    hi=${DOOR_OPENING#*,}
+    verdict doorway "$d" --opening-lo "$lo" --opening-hi "$hi"
+}
+cm_count() {  # число /controller_manager глазами сторожа в gazebo; нет числа — «-», не ноль.
+    local out rc=0
+    out=$(rsh "$HIL_SANDBOX_HOST" "timeout ${HIL_PROBE_TIMEOUT_S:-30} docker exec $GZ /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null") || rc=$?
+    if [ "$rc" -eq 124 ]; then echo timeout; return 0; fi
+    printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -
+}
+isolation_ok() {  # isolation_ok <каталог>: код решает до цели. Отказ — exit 2, цель не шлётся.
+    local d="$1" line
+    {
+        rsh "$HIL_MAIN_HOST" "docker inspect -f '{{.Name}} {{.State.Status}}' ros2-control 2>&1 || true"
+        rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.Name}} {{.State.Status}}' $GZ 2>&1 || true"
+    } >"$d/inspect.txt"
+    {
+        echo "── Main Pi"
+        rsh "$HIL_MAIN_HOST" "docker inspect -f '{{.Name}} {{.State.Status}}' ros2-control 2>&1 || true"
+        echo "── /controller_manager в графе (сторож в gazebo): $(cm_count) (норма HIL — 1)"
+    } >"$d/hil_status.txt"
+    rsh "$HIL_MAIN_HOST" "cat /tmp/hil/can_speed.json 2>/dev/null || true" >"$d/can_watch.json"
+    line=$("$PY" -X utf8 "$(pypath "$HERE/isolation.py")" "$(pypath "$d")" --gazebo-prefix "$HIL_SIM_PREFIX")
+    printf '%s\n' "$line" | tee -a "$OUT/verdicts.txt"
+    case "$line" in
+        "ISOLATION PASS:"*) return 0 ;;
+    esac
+    printf '❌ предохранитель #5160 отказал — цель не отправлена (%s)\n' "$d" >&2
+    exit 2
+}
+sc_move_ahead() {
+    # #5160: реплика в диалог, цель создаёт move_direction. Проба только слушает TRACK
+    # (watch не шлёт NavigateToPose). Вердикт читает лог тула и сдвиг правды Gazebo.
+    # До реплики — предохранитель: только Gazebo, боевой ros2-control стоит,
+    # командных кадров VESC нет. Иначе exit 2, inject не вызывается.
+    local d="$OUT/move_ahead" t0 ppid
+    mkdir -p "$d"
+    isolation_ok "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" watch --secs $((MOVE_AHEAD_WAIT_S + 30)) &
+    ppid=$!
+    sleep 5
+    inject "$MOVE_AHEAD_PHRASE" "$d/inject.txt"
+    wait_log "$HIL_SOUND_HOST" voice-assistant "$t0" \
+        "Инструмент move_direction (завершился|выполнен успешно)|✅ Движение " \
+        "$MOVE_AHEAD_WAIT_S" || log "⚠️  move_direction не завершился за $MOVE_AHEAD_WAIT_S с"
+    sleep 5
+    probe_stop
+    wait "$ppid" || true
+    dlogs "$HIL_SOUND_HOST" voice-assistant "$t0" "$d/voice.log"
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    verdict move_ahead "$d"
+}
 
 sc_nav_aborted() {
     local d="$OUT/nav_aborted" t0 ppid
@@ -281,6 +385,70 @@ sc_orphan() {
     dlogs "$HIL_MAIN_HOST" followpath-watchdog "$t0" "$d/watchdog.log"
     dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
     verdict orphan "$d" --grace "$ORPHAN_GRACE_S"
+}
+sc_controller_abort() {
+    # #4770: FollowPath уже принят, корпус удержан — abort progress checker, не «план не построен».
+    local d="$OUT/controller_abort" t0
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/probe.log" hold --ahead "$HOLD_AHEAD_M" --allowance "$PROGRESS_ALLOWANCE_S" --grace "$ORPHAN_GRACE_S"
+    sleep 2
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    dlogs "$HIL_MAIN_HOST" followpath-watchdog "$t0" "$d/watchdog.log"
+    verdict controller_abort "$d" --grace "$ORPHAN_GRACE_S" --allowance "$PROGRESS_ALLOWANCE_S"
+}
+sc_client_kill() {
+    # #4435: клиент цели убит без cancel_goal. Слушатель — отдельная проба watch.
+    local d="$OUT/client_kill" t0 ppid pid
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/watch.log" watch --secs 90 &
+    ppid=$!
+    sleep 3
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ rm -f /tmp/hil_probe.killed /tmp/hil_probe.host_cancel" || true
+    rsh "$HIL_SANDBOX_HOST" "docker exec -d $GZ /entrypoint.sh python3 -u /hil_probe.py leave --ahead $HOLD_AHEAD_M --after 30" \
+        >"$d/leave_start.txt" 2>&1 || true
+    if ! wait_file "$d/watch.log" "CLIENT_PID" 40; then
+        skip "#4435" client_kill "CLIENT_PID нет за 40 с (FollowPath не принят или проба не стартовала)"
+        probe_stop
+        wait "$ppid" || true
+        return 0
+    fi
+    pid=$(grep -o -E "pid=[0-9]+" "$d/watch.log" | head -1 | cut -d= -f2)
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ sh -c \"printf %s $pid > /tmp/hil_probe.killed; kill -TERM $pid\"" \
+        >"$d/kill.txt" 2>&1 || true
+    sleep $((ORPHAN_GRACE_S + 8))
+    probe_stop
+    wait "$ppid" || true
+    cat "$d/watch.log" >"$d/probe.log"
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    verdict client_kill "$d" --grace "$ORPHAN_GRACE_S"
+}
+sc_host_cancel() {
+    # #4435: ros2 action cancel с хоста (все цели, нулевой GoalInfo). Не наш тул.
+    local d="$OUT/host_cancel" t0 ppid
+    mkdir -p "$d"
+    t0=$(iso_now)
+    probe "$d/watch.log" watch --secs 90 &
+    ppid=$!
+    sleep 3
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ rm -f /tmp/hil_probe.killed /tmp/hil_probe.host_cancel" || true
+    rsh "$HIL_SANDBOX_HOST" "docker exec -d $GZ /entrypoint.sh python3 -u /hil_probe.py leave --ahead $HOLD_AHEAD_M --after 30" \
+        >"$d/leave_start.txt" 2>&1 || true
+    if ! wait_file "$d/watch.log" "FP_STATUS .*status=EXECUTING" 40; then
+        skip "#4435" host_cancel "FollowPath не принят за 40 с — отмена с хоста не проверена"
+        probe_stop
+        wait "$ppid" || true
+        return 0
+    fi
+    rsh "$HIL_SANDBOX_HOST" "docker exec $GZ /entrypoint.sh bash -lc \"source /opt/ros/humble/setup.bash; ros2 action cancel /navigate_to_pose; touch /tmp/hil_probe.host_cancel\"" \
+        >"$d/cancel.txt" 2>&1 || true
+    sleep $((ORPHAN_GRACE_S + 8))
+    probe_stop
+    wait "$ppid" || true
+    cat "$d/watch.log" >"$d/probe.log"
+    dlogs "$HIL_MAIN_HOST" nav2 "$t0" "$d/nav2.log"
+    verdict host_cancel "$d" --grace "$ORPHAN_GRACE_S"
 }
 sc_orphan_natural() {
     local d="$OUT/orphan_natural" t0

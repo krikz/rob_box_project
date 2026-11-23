@@ -275,3 +275,107 @@ def test_3973_node_without_engine_ignores_block_end():
     from rob_box_dialog.plan.plan_events import PlanEvent  # noqa: PLC0415
 
     plan_host.note_perform_end(types.SimpleNamespace(), PlanEvent("block_end", "b1", reason="done"))  # v1: не падает
+
+
+def _speech(kind: int, speech_id: str, spoken_chars: int = 0) -> Any:
+    event = M.SpeechEvent()
+    event.kind, event.speech_id, event.agent = kind, speech_id, "personality"
+    event.spoken_chars = spoken_chars
+    return event
+
+
+def _verse(node: "_Node") -> Any:
+    """Первый куплет, отданный владельцу речи (не «Поехали!»)."""
+    host = plan_host.performer(node)
+    return next(r for r in node.pubs[SPEECH].sent if host.owns(r.speech_id) and r.text in SEGMENTS)
+
+
+def test_n808_repeat_says_the_heard_verse_not_the_promise_or_nothing(loop):
+    """n808: куплет выступления прозвучал, «повтори последнее» говорит его дословно.
+
+    До правки сегмент шёл мимо журнала хода: повтор брал обещание хода или «Я пока ничего не говорил».
+    Пред-синтез в журнал не пишется. Обрыв — только услышанная часть. LLM на повтор не зовётся.
+    """
+    node, music = _Node(), _Music()
+    node._tool_executor = _Tools()
+    node._tool_executor.performer = PerformHost(node, music.run, lambda: loop, lambda event: None,
+                                                kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s)
+    provider = _CountingDeepseek(_rap_reply())
+    ports = V2Ports(node, CommandModeLLM(provider, log=[].append), CallCounter(), node._tool_executor,
+                    performer=lambda: plan_host.performer(node))
+    engine = node._engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    asyncio.run(engine.run(Addressed("зачитай рэп про енота под бит", VOICE)))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    verse = _verse(node)
+    assert engine.log.last_spoken() == "", "пред-синтез ещё не звучал — повторять нечего"
+    plan_host.on_speech(node, _speech(M.SpeechEvent.KIND_SYNTHESIZED, verse.speech_id))
+    assert engine.log.last_spoken() == ""
+    plan_host.on_speech(node, _speech(M.SpeechEvent.KIND_FINISHED, verse.speech_id, len(verse.text)))
+    assert engine.log.last_spoken() == verse.text
+    plan_host.on_speech(node, _speech(M.SpeechEvent.KIND_FINISHED, verse.speech_id, len(verse.text)))
+    assert engine.log.last_spoken() == verse.text, "повтор события не пишет куплет второй раз"
+    before = len(node.pubs[SPEECH].sent)
+    agg = asyncio.run(engine.run(Addressed("Робот, повтори последнее ещё раз, я не расслышал.", VOICE)))
+    assert provider.asked == 1 and agg.llm_calls == 0
+    repeated = [r.text for r in node.pubs[SPEECH].sent[before:]]
+    assert repeated == [verse.text]
+
+
+def test_n808_repeat_of_a_cut_verse_is_only_the_heard_part(loop):
+    """Куплета дослушали до середины: повтор — эта часть, не обещание и не весь куплет."""
+    node, music = _Node(), _Music()
+    node._tool_executor = _Tools()
+    node._tool_executor.performer = PerformHost(node, music.run, lambda: loop, lambda event: None,
+                                                kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: node.now_s)
+    ports = V2Ports(node, CommandModeLLM(_Deepseek(_rap_reply()), log=[].append), CallCounter(),
+                    node._tool_executor, performer=lambda: plan_host.performer(node))
+    engine = node._engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    asyncio.run(engine.run(Addressed("зачитай рэп про енота под бит", VOICE)))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    verse = _verse(node)
+    heard = verse.text[:12]
+    plan_host.on_speech(node, _speech(M.SpeechEvent.KIND_CANCELLED, verse.speech_id, len(heard)))
+    assert engine.log.last_spoken() == heard
+    before = len(node.pubs[SPEECH].sent)
+    asyncio.run(engine.run(Addressed("повтори", VOICE)))
+    assert [r.text for r in node.pubs[SPEECH].sent[before:]] == [heard]
+
+
+def test_3849_wakeless_yes_in_mic_grace_confirms_performance_not_backlog(loop):
+    """#3849 на v2: «да» за 25 мс до конца грейса адресовано выступлению и меняет музыку на бит без LLM."""
+    from rob_box_dialog.address import decide_in_session
+    from rob_box_dialog.backlog import Backlog, Heard
+    from rob_box_dialog.command import Performance
+    from rob_box_voice.core import perform_ask
+
+    node, music = _Node(), _Music()
+    node._tool_executor = _Tools()
+    node._session = Session("personality", clock=lambda: node.now_s)
+    node._tool_executor.performer = PerformHost(
+        node, music.run, lambda: loop, lambda event: None, kn.SPEECH_OUTPUT_LATENCY_MS,
+        clock=lambda: node.now_s, playing=lambda: "RoBBox club",
+        on_ask=lambda title: perform_ask.open_window(node, title))
+    provider = _CountingDeepseek(_rap_reply())
+    ports = V2Ports(node, CommandModeLLM(provider, log=[].append), CallCounter(), node._tool_executor,
+                    performer=lambda: plan_host.performer(node))
+    engine = TurnEngine(node._session, ports, system_prompt="Ты робот.")
+    host = plan_host.performer(node)
+    host.start(Performance(kind="song", segments=tuple(SEGMENTS), backing="beat"), "t1")
+    question = next(r for r in node.pubs[SPEECH].sent if r.commit)
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+    host.on_speech("started", question.speech_id, duration_ms=2500)
+    host.on_speech("finished", question.speech_id)
+
+    node.now_s += kn.IDENTITY_MIC_GRACE_S - 0.025
+    heard = Heard("да", node.now_s)
+    backlog = Backlog()
+    decision = decide_in_session(heard, backlog, ("робот",), node._session.snapshot)
+    assert isinstance(decision, Addressed) and decision.source == "perform_answer"
+    agg = asyncio.run(engine.run(decision))
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2)
+
+    assert [c.name for c in music.calls] == ["stop_music", "request_music"]
+    assert agg.llm_calls == 0 and provider.asked == 0
+    assert backlog.background_phrases(node.now_s) == 0
+    assert node._session.snapshot.top("PerformAsk") is None
+    assert node._session.snapshot.pending_ask is None

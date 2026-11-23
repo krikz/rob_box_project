@@ -23,7 +23,8 @@ from rob_box_dialog.plan.runner import PlanRunner
 from rob_box_dialog_msgs.msg import PlanEvent as PlanEventMsg
 from rob_box_dialog_msgs.msg import SoundEvent, SpeechEvent
 
-from rob_box_dialog_host.tts_voice_registry import gender_of, known_provider, role_voices_for, tts_context_fields
+from rob_box_dialog_host.tts_voice_registry import (gender_of, known_provider, role_voices_for, tts_context_fields,
+                                                    voices_for)
 
 from . import perform_ask
 from rob_box_dialog_host.music_player_state import parse_music_event
@@ -63,6 +64,7 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
         note_perform_end(node, event)
         planner.emit(event)
 
+    _arm_chimera_abort(node)
     executor.performer = PerformHost(node, executor.execute_owned, lambda: getattr(node, "_loop", None),
                                      perform_event, kn.SPEECH_OUTPUT_LATENCY_MS, clock=lambda: _now(node),
                                      playing=lambda: _foreign_music(node),
@@ -70,6 +72,48 @@ def make_tool_executor(node: Any, provider_adapter: Any, on_tool: Any) -> PlanTo
                                      speaking=lambda: "speech" in planner.state.busy())
     node.create_timer(TICK_S, executor.performer.tick)
     return executor
+
+
+def _arm_chimera_abort(node: Any) -> None:
+    """Стоп диалога обрывает клип Химеры: она играет в процессе тулов, сюда доходит только топик.
+
+    Сообщение — JSON ``{"abort": "chimera"}``, не голый ``STOP``: тот закрывает голосовой стрим рации.
+    """
+    from std_msgs.msg import String
+
+    pub = node.create_publisher(String, "/voice/sound/stop", 10)
+
+    def publish() -> bool:
+        msg = String()
+        msg.data = json.dumps({"abort": "chimera"})
+        pub.publish(msg)
+        return True
+
+    node.publish_chimera_abort = publish
+
+
+def note_perform_speech(node: Any, host: Any, kind: str, speech_id: str, spoken_chars: int) -> str:
+    """Конец реплики выступления — в журнал хода (n808): «повтори» берёт то, что человек слышал.
+
+    ``SpeechEvent`` текста не несёт, его знает хост (:func:`perform_host.heard`). Пред-синтез и старт не пишутся:
+    звука ещё не было. Реплики чата и ноды без движка — ``""``.
+    """
+    if kind not in ("finished", "cancelled"):
+        return ""
+    from .perform_host import heard as heard_line  # noqa: PLC0415
+
+    line = heard_line(host, speech_id, spoken_chars)
+    if line is None:
+        return ""
+    turn_id, text, chars = line
+    from rob_box_dialog.turn_log import note_heard  # noqa: PLC0415 — журнал хода, не планировщик
+
+    engine = getattr(node, "_engine", None)
+    said = note_heard(engine.log, turn_id, speech_id, text, chars) if engine is not None else ""
+    chats = getattr(node, "_chats", None)
+    if chats is not None:
+        chats.note_heard(turn_id, speech_id, text, chars)
+    return said
 
 
 def note_perform_end(node: Any, event: PlanEvent) -> None:
@@ -137,6 +181,7 @@ def on_speech(node: Any, msg: SpeechEvent) -> None:
     host = performer(node)
     if host is not None and host.owns(msg.speech_id):
         host.on_speech(kind, msg.speech_id, int(msg.duration_ms), int(msg.spoken_chars))
+        note_perform_speech(node, host, kind, msg.speech_id, int(msg.spoken_chars))
         return
     planner = _planner(node)
     if planner is None:
@@ -203,16 +248,18 @@ def perform_busy(node: Any) -> Busy:
     """Что занято для валидатора команды: идущее выступление, его ACTIVE-сегмент (``edit_pending``) и роли с голосами
     (``Busy.cast``: правка их не перекрашивает), и каталог голосов РОЛЕЙ с полом — русские голоса звучащего провайдера
     без рассказчика (голос робота, :func:`robot_voice`; голоса каста марафона нерусские и в каталог ролей не входят,
-    :func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления (``rob_box_dialog.cast``), им же
-    сверяется голос реплики ``voice``."""
+    :func:`role_voices_for`, #3998, #4084): из него код даёт голос роли выступления (``rob_box_dialog.cast``).
+    Голос реплики ``voice`` сверяется не с ролями, а с каталогом провайдера (``Busy.voice_catalogue``,
+    :func:`voices_for`, #5103): явно названный голос из каталога принимается, роли от этого не растут."""
     host = performer(node)
     provider, fallback = tts_state(node)
     voices = tuple(role_voices_for(provider, robot_voice(node, provider, fallback)))
     return Busy(active_segment=None if host is None else host.active_segment, voices=voices,
+                voice_catalogue=tuple(voices_for(provider)),
                 voice_genders=tuple((voice, gender_of(provider, voice)) for voice in voices),
                 cast=tuple((getattr(host, "cast", None) or {}).items()))
 
 
-__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor", "note_perform_end",
-           "on_music", "on_music_event", "on_sound", "on_speech", "on_tts_provider_state", "perform_busy", "performer",
-           "robot_voice", "tts_context"]
+__all__ = ["PLAN_EVENT_TOPIC", "TTS_PROVIDER_STATE_TOPIC", "begin_turn", "make_tool_executor",
+           "note_perform_end", "note_perform_speech", "on_music", "on_music_event", "on_sound", "on_speech",
+           "on_tts_provider_state", "perform_busy", "performer", "robot_voice", "tts_context"]

@@ -65,4 +65,5 @@ def test_detector_finds_syllable_like_bursts():
 def test_markup_pause_fills_bar():
     words = [{"word": ch, "t0": 0.1 * i, "t1": 0.1 * i + 0.1} for i, ch in enumerate("абвгд" + "еёжзи")]
     text, speed, n = ap.markup_text("абвгд,\nеёжзи.", words, 120.0)
-    assert speed == 1.0 and n == (1, 1) and text == "абвгд <#1.50#> еёжзи."  # такт 2.0 с − строка 0.5 с; после последней паузы нет
+    # такт 2.0 − строка 0.5; тихие доли конца строки тоже остаются (#4508)
+    assert speed == 1.0 and n == (1, 1) and text == "абвгд <#1.50#>, еёжзи <#1.50#>."

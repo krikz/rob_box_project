@@ -160,6 +160,68 @@ def test_4480_exhausted_retry_does_not_voice_the_volume_lie():
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# #5007: «говорю медленнее» без set_speed (акт 4 n409, run 44890078495)
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Речь модели из n409 дословно (command, actions=[], строки ``[set_speed]`` нет).
+SPEED_LIE = "Хорошо, говорю медленнее. Тётя Крыша в коридоре меня и так услышит."
+SPEED_TOOLS = (*TOOLS, "set_speed", "set_pitch", "set_volume")
+
+
+@pytest.mark.parametrize("text", [
+    SPEED_LIE,
+    "Говорю быстрее.",
+    "Теперь я тараторю быстрее.",
+    "Я замедлился.",
+    "Стал говорить помедленнее.",
+])
+def test_5007_speed_claim_words(text):
+    assert done_claims(text) == ("speed",)
+
+
+@pytest.mark.parametrize("text", [
+    "Заговорю помедленнее.",          # будущее - обещание voice_promise, не утверждение о сделанном
+    "Не говорю медленнее: не просили.",
+    "Уже говорю медленнее.",          # было раньше, не этот ход
+    "Тараторю.",                      # сравнительной в окне нет - не утверждение о смене
+    "Говорю о погоде.",
+])
+def test_5007_not_a_speed_claim(text):
+    assert "speed" not in done_claims(text)
+
+
+def test_5007_speed_claim_without_a_tool_is_a_violation_with_set_speed_allowed():
+    result = validate(parse({"speech": SPEED_LIE, "actions": []}), SPEED_TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert "set_speed" in result.all[0].allowed
+    assert "set_speed" in explain(result)
+
+
+def test_5007_speed_claim_with_its_tool_is_not_a_violation():
+    cmd = Command(speech=SPEED_LIE, actions=(ToolCall("set_speed", {"action": "slower"}),))
+    assert unkept_done_claims(cmd) == ()
+
+
+def test_5007_other_tools_do_not_back_the_speed_claim():
+    cmd = Command(speech=SPEED_LIE, actions=(ToolCall("set_volume", {}), ToolCall("set_pitch", {})))
+    assert unkept_done_claims(cmd) == ("speed",)
+
+
+def test_5007_exhausted_retry_does_not_voice_the_speed_lie():
+    ports = Ports([Answer(Invalid(kn.VIOLATION_DONE_CLAIM, "speech утверждает speed без тула"), "deepseek")])
+    # «говори помедленнее» закрывает Tier-1 voice_step до модели: вход без просьбы о темпе
+    _run(ports, "Робот, что там с речью")
+    assert ports.executed == []
+    assert ports.said == [phrases.text(kn.DONE_CLAIM_PHRASE)] and SPEED_LIE not in ports.said
+
+
+def test_5007_code_speed_phrase_is_the_same_words_and_is_said_by_code_after_the_tool():
+    """``speed.slower`` / ``speed.faster`` - те же слова, что ложь n409: таблица их ловит, говорит их код после тула."""
+    for key in ("speed.slower", "speed.faster"):
+        assert done_claims(phrases.text(key)) == ("speed",)
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # #4541: «так и буду тебя узнавать» без записи человека
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -206,3 +268,126 @@ def test_4541_waypoint_save_is_unchanged():
 ])
 def test_4541_not_a_claim(text):
     assert done_claims(text) == ()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# n211 21.11 (run 44875774940): «запомнил двоих» - отчёт о памяти, не заявление о новой записи
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Речь модели дословно, второй вызов хода n211_who_do_you_know (voice_e2e_44875774940.log, turn 2f3b3370c63d):
+#: «speech утверждает remember_person без тула», код заменил её фразой command.done_claim. В БД акта было ровно
+#: Саша и Борис - отчёт правдив, записывать было некого.
+N211_REPORT = ("Сегодня по голосу я запомнил двоих: тебя, Саша, и Бориса, твоего друга с пиццей по пятницам. "
+               "Дама, что шла мимо, имя называть отказалась, так что её я не запомнил.")
+N211_REPORT_FIRST = ("Сегодня по голосу я запомнил двоих. Саша, это ты, и Борис, твой друг с пиццей по пятницам. "
+                     "Дама, что шла мимо, имя называть отказалась, так что её я не запомнил.")
+
+
+@pytest.mark.parametrize("text", [N211_REPORT, N211_REPORT_FIRST])
+def test_n211_honest_count_is_not_a_remember_person_claim(text):
+    """Речь n211 - честный отчёт, не ложь о записи: ``validate`` принимает её как команду, ``remember_person`` молчит.
+
+    speech рядом с memory_search на голосе по-прежнему ``speech_with_actions`` (query - loud, вне этого фикса), поэтому
+    команда со speech и memory_search тут не собирается: ``_check_done_claim`` на такой речи молчит сам, потому что речь
+    не звучит. Валидная команда - речь без тула записи."""
+    assert done_claims(text) == ()
+    cmd = Command(speech=text, actions=(ToolCall("memory_search", {"query": "Борис"}),))
+    assert unkept_done_claims(cmd) == ()
+    result = validate(parse({"speech": text}), PERSON_TOOLS)
+    assert isinstance(result, Command) and result.speech == text
+
+
+@pytest.mark.parametrize("text", [
+    "Запомнил двоих.",
+    "Запомнил троих.",
+    "Запомнил двух.",
+    "Запомнил нескольких.",
+    "Запомнил двоих по голосу.",
+    "Запомнил по голосу двоих: тебя и Бориса.",
+    "По голосу запомнил троих.",
+    "Запомнил всех по голосу.",
+    "Запомнил никого по голосу.",
+    "Запомнил пару голосов.",
+])
+def test_n211_count_after_verb_is_a_report_not_a_claim(text):
+    """Объект «запомнил» - счёт уже записанного (в окне после глагола): remember_person не срабатывает."""
+    assert done_claims(text) == ()
+
+
+@pytest.mark.parametrize("text", [
+    "Запомнил твой голос.",
+    "Я запомнил твой голос.",
+    # голое «запомнил тебя/его/её/вас» правило #4541 не ловит и до фикса: в окне нет основы «голос»/«лиц», а ловить его
+    # префиксом нельзя («вас» - начало «василий»). Слова о голосе рядом - ловят, это и закреплено ниже.
+    "Я запомнил этот голос.",
+    "Запомнил голос Бориса.",
+    "Запомнил тебя по голосу.",
+    "Запомнил по голосу тебя.",
+    "Запомнил по голосу Бориса.",
+    "Запомнил Бориса по голосу.",
+    "По голосу я запомнил Сашу.",
+    "Запомнил человека по голосу.",
+    "Запомнил новое лицо.",
+    "Лицо твоё запомнила.",
+])
+def test_n211_person_or_voice_object_stays_a_claim(text):
+    """#4541 держится: объект - человек или его голос/лицо, а не счёт. «запомнил тебя по голосу» - тоже запись."""
+    assert done_claims(text) == ("remember_person",)
+
+
+def test_n211_remembered_a_person_is_not_a_claim():
+    """«запомнил человека» без слова о голосе или лице записи не утверждает: объекта-записи в окне нет."""
+    assert done_claims("Запомнил человека.") == ()
+    assert done_claims("Запомнил нового человека.") == ()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# #5128: «Запомнил, Борис: …» без memory_save — утверждение о записи факта
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Речь модели из n206 марафона №3 (22.11): actions=[], voice_facts пусто, год дописан моделью.
+N206_LIE = "Запомнил, Борис: ты болеешь за Спартак с девяносто восьмого года и по пятницам приносишь пиццу."
+
+
+@pytest.mark.parametrize("text", [
+    N206_LIE,
+    "Запомнил!",
+    "Запомнил про тебя: любишь чай.",
+    "Записала: Борис болеет за Спартак.",
+    "Сохранил, что ты приносишь пиццу.",
+    "Я запомнил это.",
+])
+def test_5128_a_fact_save_without_its_object_is_a_remember_fact_claim(text):
+    """Глагол записи факта без объекта «точка»/«голос»/«лицо» — вид ``remember_fact``, не чужой."""
+    assert done_claims(text) == ("remember_fact",)
+
+
+def test_5128_the_lie_without_a_tool_is_a_violation_and_memory_save_would_make_it_true():
+    result = validate(parse({"speech": N206_LIE, "actions": []}), TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert result.all[0].allowed == ("memory_save",)
+    assert "запомнил" in explain(result)
+
+
+def test_5128_memory_save_in_the_command_backs_the_claim():
+    cmd = Command(speech=N206_LIE, actions=(ToolCall("memory_save", {"fact": "болеет за Спартак"}),))
+    assert unkept_done_claims(cmd) == ()
+    assert isinstance(validate(cmd, TOOLS), Command)
+
+
+@pytest.mark.parametrize("text", [
+    "Запомнил, тебя зовут Саша.",
+    "Помню: ты болеешь за Спартак.",
+    "Ты болеешь за Спартак.",
+    "Запомнил?",
+    "Не запомнил: ты не сказал.",
+    "Я уже запомнил.",
+    "Запомнил человека.",
+    "Записала",
+    "Запомнил двоих.",
+    "Запомнил по голосу двоих.",
+    "Хорошо, Тамара, запомнил.",
+])
+def test_5128_these_are_not_a_fact_save_claim(text):
+    """Знакомство, вопрос, отказ, счёт, обращение по имени до глагола — не запись факта."""
+    assert "remember_fact" not in done_claims(text)

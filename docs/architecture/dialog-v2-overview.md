@@ -81,7 +81,7 @@ flowchart TD
 - Речь людей у робота берёт из `/audio/speech_audio` (`src/rob_box_voice/rob_box_voice/stt_node.py:500-502`); поток шлема
   оператора — из `/audio/quest_in` и `/audio/quest_wake` (`:507-515`).
 - Цепочка STT задана в `docker/sound/config/voice_assistant/stt_node.yaml` (`stt_provider_chain: [yandex, minimax,
-  vosk]`); Vosk — всегда последний, офлайн (`stt_node.py:1111-1119`, `_normalize_provider_chain` `:1182`).
+  vosk]`); Vosk — всегда последний, офлайн (`stt_node.py:1159`, `_normalize_provider_chain` — функция модуля `:243`).
 - Вейки берёт из профиля продукта: `wake_personality` и `wake_operator` (`stt_node.py:423-425`).
 - Единственный выход реплики Личности — типизированный `Utterance` в `/voice/stt/utterance` (`stt_node.py:542`).
   Фраза с вейком оператора («ТАРС») с шлема уходит в `/avatar/stt/result` (`stt_node.py:1017-1050`).
@@ -226,6 +226,8 @@ flowchart TD
   `src/rob_box_voice/rob_box_voice/led_node.py:169`).
 - Сессия латчем в `/dialog/session` (`dialog_node.py:383`, `src/rob_box_voice/rob_box_voice/core/identity_question.py:51`):
   тишину и сцены читают `led_node`, `face_node`, `sound_node` (`face_node.py:146`, `sound_node.py:73`).
+- Вайб (#3780 B) — состояние шара в `rob_box_dialog.vibe`, не рендер. Событие толкает, без событий шар за
+  `knowledge.VIBE_DECAY_S` (10 мин, середина окна Шифу 5–15) сам у нейтрали. К полотну этот модуль не подключён.
 
 ## 2. Бэклог, тишина, перебивание
 
@@ -317,6 +319,7 @@ flowchart TD
 | `[backlog] accumulated …` | фраза ушла в бэклог (`dialog_node.py:479-480`) |
 | `🛑 [interrupt] …` | ясный стоп (`dialog_node.py:583-585`) |
 | `🎭 [turn-v2] лицо …` | лицо команды и очередь сцен (`dialog_v2_ports.py:271-273`) |
+| чойсер вайба | эксперимент, не ход: `vibe_chooser.vibe_context` собирает плеер, окно реплик, снимок сессии, текущий и предыдущий вайб и момент включения из события смены; `choose` судит по критериям Шифу 21.10 и списку слотов `bg`/`fx`. В бою не вызывается (Шифу 17.11, #3780). Боевой вайб — код, шар (#4799) |
 | Prometheus | порты нод на Sound Pi: `dialog_node` 9100, `tts_node` 9110, `stt_node` 9111, `speaker_id_node` 9112, `audio_node` 9113 (`dialog_node.py:114`, `tts_node.py:898`, `stt_node.py:399`, `speaker_id_node.py:750`, `audio_node.py:282`; сбор — `docker/monitoring/config/prometheus.yml:33-43`) |
 | метрики хода | `voice_llm_request_total`, `voice_llm_request_duration_seconds`, `voice_llm_fallback_total`, `voice_barge_in_total` (`src/rob_box_voice/rob_box_voice/core/dialog_metrics.py:1-7`) |
 | e2e-БД | текст ходов на диск — только в e2e-БД вне `/data`, если задан `e2e_db_path` (`dialog_node.py:31`, `:620-642`); разбор — `scripts/dialog/turn_metrics.py --db` |

@@ -323,7 +323,7 @@ class TestEmptyGateAllowsAll:
 
 
 class TestNoPerceptionDependency:
-    """dialogue_node падал на старте voice-образа: ``ModuleNotFoundError:
+    """dialog_node падал на старте voice-образа: ``ModuleNotFoundError:
     No module named 'rob_box_perception'``. rob_box_perception — отдельный
     сервис (Main Pi / vision-hailo), в voice-assistant образе его нет;
     cross-service связь — по топикам, не по Python-импорту (ADR-0103 §3.1 п.6)."""

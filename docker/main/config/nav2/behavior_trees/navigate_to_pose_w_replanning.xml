@@ -6,27 +6,79 @@
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
+        <!-- #4682: не пересчитывать годный путь каждый герц. У стены Depot
+             план раз в секунду менял обход, робот метался и не доезжал.
+             Дерево Humble navigate_w_recovery_and_replanning_only_if_path_becomes_invalid:
+             новый план только если цель обновилась или IsPathValid отказал. -->
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <Fallback>
+              <ReactiveSequence>
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsPathValid path="{path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
+        <!-- #4475: путь есть, нос упёрт в перегородку или торец, сдвига с начала
+             цели нет — FollowPath стоит (path=0). WouldSpinOnStall пишет угол
+             free_spin в {turn_spin_dist}; следом Spin, потом FollowPath.
+             Угла нет — узел FAILURE, доска получает 0: Humble Spin на 0 рад сразу
+             SUCCEEDED (spin.cpp, remaining_yaw < 1e-6) и колёс не трогает.
+             is_recovery=false: Humble Spin по умолчанию is_recovery=true и на
+             каждом старте TurnThenFollow (в т.ч. Spin 0) делает
+             increment_recovery_count. Разворот до курса — не recovery; счётчик
+             и Spin/Wait RoundRobin — только после провала progress (FollowPath)
+             или невалидного пути (ComputePath), как у NavigateRecovery. -->
         <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPath"/>
+          <Sequence name="TurnThenFollow">
+            <Fallback name="PublishTurnAngle">
+              <WouldSpinOnStall path="{path}" turn_spin_dist="{turn_spin_dist}"/>
+              <SetBlackboard output_key="turn_spin_dist" value="0.0"/>
+            </Fallback>
+            <Spin spin_dist="{turn_spin_dist}" is_recovery="false"/>
+            <FollowPath path="{path}" controller_id="FollowPath"/>
+          </Sequence>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
+        <!-- RoundRobin (nav2_behavior_tree, Humble) тикает детей по порядку
+             в одном тике и на первом SUCCESS делает haltChildren и возвращает
+             SUCCESS. RecoveryNode на SUCCESS child1 зовёт haltChild(1):
+             RoundRobin::halt сбрасывает current_child_idx_ в 0. Первый ребёнок
+             всегда успешен — единственный, кто при успехе реально выполняется;
+             дети после него недостижимы. Gate 2 21.11, дерево a898292, раунд 3,
+             стенд Depot, 2×10 целей: «Running backup» = 0, «Running spin 1.57»
+             = 0 в обоих проходах. Единственный global-clear в R1-B
+             04:33:24.811Z = единственный внешний цикл за 200 с.
+             «Running spin … Turning 0.00» — предповорот TurnThenFollow
+             (is_recovery=false), не recovery. Поэтому отъезд стоит в первом
+             ребёнке, вместе с очисткой карт: каждый внешний цикл физически
+             отъезжает. Script и if нет: BT.CPP v3 узел Script не знает
+             (прогон 18:47Z, #4797). Выбор угла по зазорам остаётся в Python
+             (rob_box_sim.corner_backup) и в это дерево не вшит.
+             BackUp — штатный узел v3 (плагин backup уже в behavior_server).
+             Своя проверка столкновения (simulate_ahead_time behavior_server):
+             сзади lethal — отказ за тик, Sequence падает, RoundRobin идёт к
+             Spin. Дистанция 0.15 м — порт по умолчанию, меньше stop_m guard
+             (0.20). Скорость 0.025 м/с не выше moving_v guard (0.03): порог
+             тогда spin_stop_m 0.10, а не stop_m; угроза считается по скорости
+             сближения, а не по расстоянию, а команда «назад» стоп отпускает
+             (proximity.py, решение Шифу 05.11). -->
         <RoundRobin name="RecoveryActions">
-          <Sequence name="ClearingActions">
+          <Sequence name="ClearThenBackUp">
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <BackUp backup_dist="0.15" backup_speed="0.025"/>
           </Sequence>
           <Spin spin_dist="1.57"/>
           <Wait wait_duration="5"/>
-          <BackUp backup_dist="0.30" backup_speed="0.05"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

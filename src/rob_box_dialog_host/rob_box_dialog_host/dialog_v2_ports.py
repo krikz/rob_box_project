@@ -30,6 +30,7 @@ from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Busy, Expression, Result, ToolCall as CommandCall
+from rob_box_dialog.command import current_form
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor, owner_event
@@ -146,9 +147,19 @@ def to_message(message: Any) -> LLMMessage:
 
 
 def tool_schema(entry: Any) -> Mapping[str, Any]:
-    """Запись каталога (``ToolCatalogEntry``) → OpenAI-схема тула для провайдера."""
-    return {"type": "function", "function": {"name": entry.name, "description": entry.description,
-                                             "parameters": dict(entry.parameters)}}
+    """Запись каталога (``ToolCatalogEntry``) → OpenAI-схема тула для провайдера.
+
+    Семья ``chimera`` сужает ``action`` до ``sing`` той же функцией, что валидатор (#5074, #5152).
+    Остальные тулы отдают параметры записи как есть: подмена каталогом ломала бы заглушку теста.
+    """
+    parameters = entry.parameters
+    description = entry.description
+    if entry.name == kn.CHIMERA_TOOL:
+        parameters = kn.chimera_model_schema(entry.parameters, current_form().sing_form)
+        actions = ((parameters.get("properties") or {}).get("action") or {}).get("enum") or ()
+        description = kn.chimera_offer_description(actions)
+    return {"type": "function", "function": {"name": entry.name, "description": description,
+                                             "parameters": dict(parameters)}}
 
 
 def follow_for(result: Result) -> Callable[[str], Sequence[Any]]:
@@ -197,9 +208,14 @@ class V2Ports:
         self.executor = Executor(self._send, on_late=self._late, epoch=epoch)
 
     def provider(self) -> str:
-        """Провайдер, к которому идёт вызов сейчас: цепочка ставит ``answered_by`` ДО вызова (фразы потолка, В31).
-        Без цепочки — «» (имя обёртки ``health-aware-fallback`` человеку ничего не говорит)."""
-        return str(getattr(self._llm, "answered_by", None) or "")
+        """Провайдер, к которому идёт вызов сейчас (фразы потолка и отказа, В31).
+
+        Цепочка с фолбеком ставит ``answered_by`` до вызова. Один провайдер — не цепочка, ``answered_by`` у него нет,
+        и имя берётся так же, как у успешного ответа (:func:`answering_provider`): ``name`` провайдера, которое
+        обёртки моста и счётчика пробрасывают с внутреннего. Имя обёртки ``health-aware-fallback`` человеку ничего не
+        говорит — его нет."""
+        name = answering_provider(self._llm)
+        return "" if name == "health-aware-fallback" else name
 
     async def ask(self, messages: Sequence[Any], tools: Sequence[Any], timeout_s: float) -> Answer:
         """Один ответ LLM (с повтором моста по нарушениям); потолок ставит ход снаружи. Провайдер не жив (цепочка
@@ -327,6 +343,11 @@ class V2Ports:
         speech_client.cancel(self._node, agent=self._agent, speech_id=speech_id or None, epoch=epoch, reason=reason,
                              boundary=boundary)
 
+    def answer_perform(self, yes: bool) -> bool:
+        """Ответ на «выключить и зачитать?» — владельцу выступления."""
+        host = self._performer()
+        return bool(host is not None and host.answer(yes))
+
     def stop_perform(self, how: str, keep_backing: bool = False) -> bool:
         """Перебивание выступления (``PerformHost.halt``/``stop``); ``True`` — играющая музыка — его бит, и его
         снимает само выступление. ``keep_backing`` («а музыку оставь», #3994) — бит доигрывает: выступление его не
@@ -336,6 +357,7 @@ class V2Ports:
             return False
         owns = bool(host.owns_backing) and not keep_backing
         stopped = host.halt(keep_backing=keep_backing) if how == "halt" else host.stop(keep_backing=keep_backing)
+        _stop_chimera(self._node)  # побочный обрыв клипа: ответ про бит не меняет (interrupt.stops_music)
         return bool(stopped) and owns
 
     def perform(self, turn_id: str, epoch: int, perf: Any, edit: bool) -> Optional[Mapping[str, Any]]:
@@ -354,6 +376,18 @@ class V2Ports:
 
         stop = MotionCommand(intent=IntentType.STOP, text="", entities={}, confidence=1.0)
         self._intent_pub.publish(fill_intent(Intent(), stop, epoch=epoch, turn_id=turn_id))
+
+
+def _stop_chimera(node: Any) -> bool:
+    """Оборвать клип Химеры тем же стопом, что гасит выступление.
+
+    Химера играет в процессе тулов, не в этом: нода диалога публикует обрыв, звук его исполняет. Нет издателя —
+    ``False`` (нечего обрывать), не выдуманный успех. Ответ ``stop_perform`` про бит от этого не зависит.
+    """
+    publish = getattr(node, "publish_chimera_abort", None)
+    if publish is None:
+        return False
+    return bool(publish())
 
 
 def assemble_llm(chain: Sequence[str], counter: CallCounter, *, prompt: str,

@@ -1,0 +1,293 @@
+diff -ruN a/nav2_behaviors/include/nav2_behaviors/behavior_server.hpp b/nav2_behaviors/include/nav2_behaviors/behavior_server.hpp
+--- a/nav2_behaviors/include/nav2_behaviors/behavior_server.hpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/include/nav2_behaviors/behavior_server.hpp	2026-11-23 20:03:47.848873076 +0300
+@@ -19,6 +19,7 @@
+ #include <vector>
+ 
+ #include "nav2_util/lifecycle_node.hpp"
++#include "nav2_behaviors/timed_behavior.hpp"
+ #include "tf2_ros/transform_listener.h"
+ #include "tf2_ros/create_timer_ros.h"
+ #include "pluginlib/class_loader.hpp"
+@@ -51,6 +52,33 @@
+    */
+   bool loadBehaviorPlugins();
+ 
++  /**
++   * @brief #5003: whether the costmap_raw copy is fresh enough to decide a
++   * collision on. A copy older than the tolerance still shows the wall a
++   * clear just reset. The decision is this function (ADR-0148); the
++   * tolerance comes from config.
++   */
++  bool costmapCopyFresh() const;
++
++  /**
++   * @brief #5003: what a behavior tick should do with the costmap copy.
++   * SUCCEEDED — the copy is fresh, decide the collision as before.
++   * RUNNING — the copy is stale and the skip limit is not used up: the tick
++   * is not a failure.
++   * FAILED — the copy is stale and the limit is used up: fail closed.
++   * Plugins ask this instead of reading the copy themselves. BackUp compiles
++   * its own copy of the DriveOnHeading header, so a hook only in that header
++   * never reaches the recovery backup.
++   */
++  nav2_behaviors::Status costmapTickStatus() const;
++
++  /**
++   * @brief #5003: the tick status for the node a plugin holds. A plugin that
++   * is not hosted by this server gets SUCCEEDED and decides as before.
++   */
++  static nav2_behaviors::Status costmapTickStatusFor(
++    const rclcpp_lifecycle::LifecycleNode::SharedPtr & node);
++
+ protected:
+   /**
+    * @brief Configure lifecycle server
+@@ -92,8 +120,19 @@
+   std::unique_ptr<nav2_costmap_2d::CostmapSubscriber> costmap_sub_;
+   std::unique_ptr<nav2_costmap_2d::FootprintSubscriber> footprint_sub_;
+   std::shared_ptr<nav2_costmap_2d::CostmapTopicCollisionChecker> collision_checker_;
++
++  // #5003: ticks skipped because the costmap copy was stale. Reset when a
++  // tick is decided on a fresh copy.
++  mutable int stale_costmap_skips_{0};
+ };
+ 
++// #5003: the name the freshness tolerance is declared under. One declaration.
++inline constexpr char kCostmapFreshnessParam[] = "costmap_freshness_tolerance";
++
++// #5003: how many stale ticks a behavior may skip before the check fails
++// closed. At 10 Hz three ticks cover the 0.5 s publish period once.
++inline constexpr int kMaxStaleCostmapSkips = 3;
++
+ }  // namespace behavior_server
+ 
+ #endif  // NAV2_BEHAVIORS__BEHAVIOR_SERVER_HPP_
+diff -ruN a/nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp b/nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp
+--- a/nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp	2026-11-23 20:02:45.503250078 +0300
+@@ -29,6 +29,11 @@
+ {
+ public:
+   Status onRun(const std::shared_ptr<const BackUpAction::Goal> command) override;
++
++  // #5003: this plugin's library compiles the heading header itself, so the
++  // freshness hook has to be this override, not a change of that header.
++  // nav2_behaviors::BackUp
++  Status costmapTickStatus() const override;
+ };
+ }
+ 
+diff -ruN a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp b/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp
+--- a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp	2026-11-23 20:02:45.503250078 +0300
+@@ -92,6 +92,12 @@
+    * @brief Loop function to run behavior
+    * @return Status of behavior
+    */
++  // #5003: defined in this plugin's .cpp so its library asks the behavior
++  // server. The body is not in this header: the recovery plugin compiles the
++  // header into its own library and defines its own override.
++  // nav2_behaviors::DriveOnHeading
++  Status costmapTickStatus() const override;
++
+   Status onCycleUpdate() override
+   {
+     rclcpp::Duration time_remaining = end_time_ - this->clock_->now();
+diff -ruN a/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp b/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp
+--- a/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp	2026-11-23 19:58:09.649233168 +0300
+@@ -83,6 +83,12 @@
+   // It's up to the derived class to define the final commanded velocity.
+   virtual Status onCycleUpdate() = 0;
+ 
++  // #5003: ask the behavior server whether the costmap_raw copy is fresh
++  // enough to decide a collision on. The default says yes, so a behavior
++  // whose server has no copy still runs. BackUp and DriveOnHeading override.
++  virtual Status costmapTickStatus() const
++  {return Status::SUCCEEDED;}
++
+   // an opportunity for derived classes to do something on configuration
+   // if they chose
+   virtual void onConfigure()
+@@ -232,6 +238,25 @@
+         return;
+       }
+ 
++      // #5003: a stale costmap_raw copy still shows the wall a clear just
++      // reset. Skip the tick instead of letting onCycleUpdate abort. Both
++      // plugin libraries inherit this loop, so the recovery BackUp sees it.
++      switch (costmapTickStatus()) {
++        case Status::RUNNING:
++          RCLCPP_INFO(logger_, "Costmap copy stale - skipping collision tick");
++          loop_rate.sleep();
++          continue;
++        case Status::FAILED:
++          stopRobot();
++          RCLCPP_WARN(logger_, "Costmap copy stale - failing %s", behavior_name_.c_str());
++          result->total_elapsed_time = clock_->now() - start_time;
++          action_server_->terminate_current(result);
++          onActionCompletion();
++          return;
++        case Status::SUCCEEDED:
++          break;
++      }
++
+       switch (onCycleUpdate()) {
+         case Status::SUCCEEDED:
+           RCLCPP_INFO(
+diff -ruN a/nav2_behaviors/plugins/back_up.cpp b/nav2_behaviors/plugins/back_up.cpp
+--- a/nav2_behaviors/plugins/back_up.cpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/plugins/back_up.cpp	2026-11-23 20:03:47.848873076 +0300
+@@ -14,9 +14,19 @@
+ 
+ #include "nav2_behaviors/plugins/back_up.hpp"
+ 
++#include "nav2_behaviors/behavior_server.hpp"
++
+ namespace nav2_behaviors
+ {
+ 
++// #5003: recovery BackUp lives in its own library. Ask the server; a hook only
++// in the DriveOnHeading header never reaches this .so.
++Status BackUp::costmapTickStatus() const
++{
++  return behavior_server::BehaviorServer::costmapTickStatusFor(node_.lock());
++}
++
++
+ Status BackUp::onRun(const std::shared_ptr<const BackUpAction::Goal> command)
+ {
+   if (command->target.y != 0.0 || command->target.z != 0.0) {
+diff -ruN a/nav2_behaviors/plugins/drive_on_heading.cpp b/nav2_behaviors/plugins/drive_on_heading.cpp
+--- a/nav2_behaviors/plugins/drive_on_heading.cpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/plugins/drive_on_heading.cpp	2026-11-23 20:03:47.848873076 +0300
+@@ -16,5 +16,20 @@
+ #include <memory>
+ #include "nav2_behaviors/plugins/drive_on_heading.hpp"
+ 
++#include "nav2_behaviors/behavior_server.hpp"
++
++namespace nav2_behaviors
++{
++
++// #5003: the default DriveOnHeading plugin. BackUp does not use this
++// instantiation; it defines its own override in back_up.cpp.
++template<typename ActionT>
++Status DriveOnHeading<ActionT>::costmapTickStatus() const
++{
++  return behavior_server::BehaviorServer::costmapTickStatusFor(this->node_.lock());
++}
++
++}  // namespace nav2_behaviors
++
+ #include "pluginlib/class_list_macros.hpp"
+ PLUGINLIB_EXPORT_CLASS(nav2_behaviors::DriveOnHeading<>, nav2_core::Behavior)
+diff -ruN a/nav2_behaviors/src/behavior_server.cpp b/nav2_behaviors/src/behavior_server.cpp
+--- a/nav2_behaviors/src/behavior_server.cpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_behaviors/src/behavior_server.cpp	2026-11-23 20:03:47.848873076 +0300
+@@ -56,6 +56,9 @@
+   declare_parameter(
+     "transform_tolerance",
+     rclcpp::ParameterValue(0.1));
++  // #5003: how old a costmap_raw copy may be before a collision check skips
++  // the tick. The default covers the Humble publish period (2 Hz).
++  declare_parameter(kCostmapFreshnessParam, rclcpp::ParameterValue(0.6));
+ }
+ 
+ 
+@@ -99,6 +102,51 @@
+ }
+ 
+ 
++bool
++BehaviorServer::costmapCopyFresh() const
++{
++  if (!costmap_sub_ || !costmap_sub_->received()) {
++    return false;
++  }
++  double tolerance = 0.0;
++  get_parameter(kCostmapFreshnessParam, tolerance);
++  if (tolerance <= 0.0) {
++    return false;
++  }
++  const rclcpp::Time stamp = costmap_sub_->getStamp();
++  if (stamp.nanoseconds() == 0) {
++    return false;
++  }
++  return (now() - stamp).seconds() <= tolerance;
++}
++
++
++nav2_behaviors::Status
++BehaviorServer::costmapTickStatusFor(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node)
++{
++  auto * server = dynamic_cast<BehaviorServer *>(node.get());
++  if (server == nullptr) {
++    return nav2_behaviors::Status::SUCCEEDED;
++  }
++  return server->costmapTickStatus();
++}
++
++
++nav2_behaviors::Status
++BehaviorServer::costmapTickStatus() const
++{
++  if (costmapCopyFresh()) {
++    stale_costmap_skips_ = 0;
++    return nav2_behaviors::Status::SUCCEEDED;
++  }
++  stale_costmap_skips_++;
++  if (stale_costmap_skips_ <= kMaxStaleCostmapSkips) {
++    return nav2_behaviors::Status::RUNNING;
++  }
++  return nav2_behaviors::Status::FAILED;
++}
++
++
+ bool
+ BehaviorServer::loadBehaviorPlugins()
+ {
+diff -ruN a/nav2_costmap_2d/include/nav2_costmap_2d/costmap_subscriber.hpp b/nav2_costmap_2d/include/nav2_costmap_2d/costmap_subscriber.hpp
+--- a/nav2_costmap_2d/include/nav2_costmap_2d/costmap_subscriber.hpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_costmap_2d/include/nav2_costmap_2d/costmap_subscriber.hpp	2026-11-23 19:57:07.300474911 +0300
+@@ -65,6 +65,17 @@
+    */
+   void costmapCallback(const nav2_msgs::msg::Costmap::SharedPtr msg);
+ 
++  /**
++   * @brief #5003: stamp of the costmap_raw copy this subscriber holds.
++   * Zero when none has arrived.
++   */
++  rclcpp::Time getStamp() const;
++
++  /**
++   * @brief #5003: true once costmapCallback has stored a message.
++   */
++  bool received() const;
++
+ protected:
+   std::shared_ptr<Costmap2D> costmap_;
+   nav2_msgs::msg::Costmap::SharedPtr costmap_msg_;
+diff -ruN a/nav2_costmap_2d/src/costmap_subscriber.cpp b/nav2_costmap_2d/src/costmap_subscriber.cpp
+--- a/nav2_costmap_2d/src/costmap_subscriber.cpp	2025-11-17 20:48:57.000000000 +0300
++++ b/nav2_costmap_2d/src/costmap_subscriber.cpp	2026-11-23 19:57:07.300474911 +0300
+@@ -94,4 +94,18 @@
+   }
+ }
+ 
++rclcpp::Time CostmapSubscriber::getStamp() const
++{
++  auto msg = std::atomic_load(&costmap_msg_);
++  if (!msg) {
++    return rclcpp::Time(0, 0, RCL_ROS_TIME);
++  }
++  return rclcpp::Time(msg->header.stamp);
++}
++
++bool CostmapSubscriber::received() const
++{
++  return costmap_received_;
++}
++
+ }  // namespace nav2_costmap_2d

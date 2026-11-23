@@ -1,0 +1,230 @@
+--- a/nav2_controller/include/nav2_controller/controller_server.hpp
++++ b/nav2_controller/include/nav2_controller/controller_server.hpp
+@@ -178,6 +178,26 @@
+   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose);
+ 
+   /**
++   * @brief #5003: progress fails when a non-zero command was held in the
++   * window, the base did not move required_movement_radius, and the local
++   * costmap is blocked on the last non-zero command course. The decision is
++   * this function (ADR-0148). It does not embed CPython: #5021.
++   * The wall is read in the body frame: the local costmap lives in odom.
++   */
++  bool stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose);
++  void stuckAgainstReset();
++  bool stuckAgainstCourseBlocked(
++    double course_vx, double robot_x, double robot_y, double robot_yaw) const;
++
++  struct StuckSample
++  {
++    double t{0.0};
++    double x{0.0};
++    double y{0.0};
++    bool held{false};
++  };
++
++  /**
+    * @brief get the thresholded velocity
+    * @param velocity The current velocity from odometry
+    * @param threshold The minimum velocity to return non-zero
+@@ -230,6 +250,14 @@
+   std::string progress_checker_id_;
+   std::string progress_checker_type_;
+ 
++  // #5003: twist published on the previous control tick, and the window the
++  // stuck check accumulates. Same numbers as the teleop stuck-against module.
++  geometry_msgs::msg::Twist last_cmd_vel_;
++  bool have_last_cmd_{false};
++  std::vector<StuckSample> stuck_samples_;
++  double stuck_cmd_since_{-1.0};
++  double stuck_last_course_{0.0};
++
+   // Goal Checker Plugin
+   pluginlib::ClassLoader<nav2_core::GoalChecker> goal_checker_loader_;
+   GoalCheckerMap goal_checkers_;
+--- a/nav2_controller/src/controller_server.cpp
++++ b/nav2_controller/src/controller_server.cpp
+@@ -23,6 +23,8 @@
+ #include "nav2_core/exceptions.hpp"
+ #include "nav_2d_utils/conversions.hpp"
+ #include "nav_2d_utils/tf_help.hpp"
++#include "nav2_costmap_2d/cost_values.hpp"
++#include "tf2/utils.h"
+ #include "nav2_util/node_utils.hpp"
+ #include "nav2_util/geometry_utils.hpp"
+ #include "nav2_controller/controller_server.hpp"
+@@ -381,6 +383,8 @@
+ 
+     setPlannerPath(action_server_->get_current_goal()->path);
+     progress_checker_->reset();
++    have_last_cmd_ = false;
++    stuckAgainstReset();
+ 
+     last_valid_cmd_time_ = now();
+     rclcpp::WallRate loop_rate(controller_frequency_);
+@@ -533,11 +537,165 @@
+   feedback->distance_to_goal =
+     nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
+   action_server_->publish_feedback(feedback);
++  last_cmd_vel_ = cmd_vel_2d.twist;
++  have_last_cmd_ = true;
++
++  // #5003: checked after the command is recorded, including the zero twist
++  // this catch writes when DWB throws NoLegalTrajectoriesException. A check
++  // before compute never sees that zero, and failure_tolerance (0.3 s) aborts
++  // the goal before a second tick. The decision is a recent command in the
++  // window, not a command on this tick. The wall is read in the body frame:
++  // the local costmap lives in odom, so body metres are not map-cell indices.
++  if (stuckAgainstObstacle(pose)) {
++    throw nav2_core::PlannerException("Failed to make progress: stuck against obstacle");
++  }
+ 
+   RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
+   publishVelocity(cmd_vel_2d);
+ }
+ 
++void ControllerServer::stuckAgainstReset()
++{
++  stuck_samples_.clear();
++  stuck_cmd_since_ = -1.0;
++  stuck_last_course_ = 0.0;
++}
++
++bool ControllerServer::stuckAgainstCourseBlocked(
++  double course_vx, double robot_x, double robot_y, double robot_yaw) const
++{
++  // Strip ahead of the body edge, out to the guard corridor stop
++  // (proximity stop_m, 0.20 m), not the side-touch gap (0.08 m) and not
++  // the body itself. The guard holds a stop while a command still pushes
++  // into an obstacle inside 0.20 m, so an 0.08 m strip in front of the
++  // nose is empty and the failure stays silent (HIL 22.11). Only
++  // lethal/inscribed counts: inflation alone is not a wall. The strip is
++  // in base_footprint. The local costmap lives in odom (nav2_params.yaml
++  // global_frame), so a cell is on the course only after its centre is
++  // turned back into the body frame. Reading the body metres as map-cell
++  // coordinates looks near the map origin and misses the wall in front of
++  // the robot (#5003, Gate 2 21.11: Running backup = 0).
++  // Course is the sign of the last non-zero vx. A zero course has no
++  // direction, so the map cannot call this a block.
++  constexpr double kCmdEps = 0.03;
++  constexpr double kBlockGapM = 0.20;
++  constexpr double kXMax = 0.3064;
++  constexpr double kXMin = -0.3036;
++  constexpr double kYMax = 0.3025;
++  constexpr double kYMin = -0.3025;
++  if (std::abs(course_vx) <= kCmdEps) {
++    return false;
++  }
++  auto * costmap = costmap_ros_->getCostmap();
++  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(costmap->getMutex()));
++  const double resolution = costmap->getResolution();
++  if (resolution <= 0.0) {
++    return false;
++  }
++  const bool forward = course_vx > 0.0;
++  const double edge = forward ? kXMax : kXMin;
++  const double cos_yaw = std::cos(robot_yaw);
++  const double sin_yaw = std::sin(robot_yaw);
++  const double step = resolution / 2.0;
++  const double reach = forward ? edge + kBlockGapM : edge - kBlockGapM;
++  const unsigned char lethal = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
++  for (double bx = std::min(edge, reach); bx <= std::max(edge, reach) + 1e-9; bx += step) {
++    for (double by = kYMin; by <= kYMax + 1e-9; by += step) {
++      const double wx = robot_x + bx * cos_yaw - by * sin_yaw;
++      const double wy = robot_y + bx * sin_yaw + by * cos_yaw;
++      unsigned int mx = 0;
++      unsigned int my = 0;
++      if (!costmap->worldToMap(wx, wy, mx, my)) {
++        continue;
++      }
++      double cx = 0.0;
++      double cy = 0.0;
++      costmap->mapToWorld(mx, my, cx, cy);
++      const double dx = cx - robot_x;
++      const double dy = cy - robot_y;
++      const double local_x = dx * cos_yaw + dy * sin_yaw;
++      const double local_y = -dx * sin_yaw + dy * cos_yaw;
++      if (forward && local_x <= edge) {
++        continue;
++      }
++      if (!forward && local_x >= edge) {
++        continue;
++      }
++      if (std::abs(local_x - edge) > kBlockGapM) {
++        continue;
++      }
++      if (local_y < kYMin || local_y > kYMax) {
++        continue;
++      }
++      if (costmap->getCost(mx, my) >= lethal) {
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
++bool ControllerServer::stuckAgainstObstacle(const geometry_msgs::msg::PoseStamped & pose)
++{
++  // Window of 2 s (shorter than the 30 s radius allowance, else a wall slide
++  // accumulates the radius), command held 0.3 s above the guard epsilon,
++  // displacement under required_movement_radius.
++  constexpr double kWindowS = 2.0;
++  constexpr double kCmdHoldS = 0.3;
++  constexpr double kCmdEps = 0.03;
++  constexpr double kProgressRadiusM = 0.08;
++  if (!have_last_cmd_) {
++    return false;
++  }
++  const double now_s = now().seconds();
++  const double vx = last_cmd_vel_.linear.x;
++  const double wz = last_cmd_vel_.angular.z;
++  const bool commanded = std::abs(vx) > kCmdEps || std::abs(wz) > kCmdEps;
++  if (commanded) {
++    if (stuck_cmd_since_ < 0.0) {
++      stuck_cmd_since_ = now_s;
++    }
++  } else {
++    stuck_cmd_since_ = -1.0;
++  }
++  const bool held =
++    commanded && stuck_cmd_since_ >= 0.0 && now_s - stuck_cmd_since_ >= kCmdHoldS;
++  stuck_samples_.push_back(
++    StuckSample{now_s, pose.pose.position.x, pose.pose.position.y, held});
++  const double cutoff = now_s - kWindowS;
++  stuck_samples_.erase(
++    std::remove_if(
++      stuck_samples_.begin(), stuck_samples_.end(),
++      [cutoff](const StuckSample & sample) {return sample.t < cutoff;}),
++    stuck_samples_.end());
++  if (std::abs(vx) > kCmdEps) {
++    stuck_last_course_ = vx;
++  }
++  if (stuck_samples_.size() < 2) {
++    return false;
++  }
++  const StuckSample & start = stuck_samples_.front();
++  if (stuck_samples_.back().t - start.t < kWindowS) {
++    return false;
++  }
++  bool any_held = false;
++  bool moved = false;
++  for (const StuckSample & sample : stuck_samples_) {
++    any_held = any_held || sample.held;
++    const double dx = sample.x - start.x;
++    const double dy = sample.y - start.y;
++    if (std::hypot(dx, dy) > kProgressRadiusM) {
++      moved = true;
++    }
++  }
++  if (!any_held || moved) {
++    return false;
++  }
++  const double yaw = tf2::getYaw(pose.pose.orientation);
++  return stuckAgainstCourseBlocked(
++    stuck_last_course_, pose.pose.position.x, pose.pose.position.y, yaw);
++}
++
+ void ControllerServer::updateGlobalPath()
+ {
+   if (action_server_->is_preempt_requested()) {

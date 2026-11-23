@@ -96,6 +96,7 @@ from .tools import (
     PlayAnimationTool,
     PlaySoundTool,
     GetSoundInfoTool,
+    ChimeraPerformTool,
     SpeakTextTool,
     ListenForResponseTool,
     EstimateTtsDurationTool,
@@ -559,7 +560,7 @@ class MCPServer(Node):
         # подписчика. У этой ноды уже была история CPU-петли
         # (mcp-server-cpu-loop-2026-08-22), так что периодическая рассылка
         # мегабайтного JSON в никуда — не мелочь. Теперь публикуем один раз
-        # при старте, а late joiner'ы (dialogue_node, `ros2 topic echo`)
+        # при старте, а late joiner'ы (dialog_node, `ros2 topic echo`)
         # получают последнее сообщение из durability-кэша.
         tools_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -576,7 +577,7 @@ class MCPServer(Node):
         # /voice/music/state — JSON-снимок {state, track_id, form_ends_at,
         # stops_at, dj, finished_track_id, ts}, контракт — модуль
         # rob_box_dialog_host.music_player_state. Latched (TRANSIENT_LOCAL,
-        # KEEP_LAST 1): перезапущенный audio_node/dialogue_node сразу
+        # KEEP_LAST 1): перезапущенный audio_node/dialog_node сразу
         # получает последний снимок, а не «ничего не играет» до тика.
         # Подписчики обязаны подписываться тоже TRANSIENT_LOCAL.
         self.music_state_pub = self.create_publisher(String, MUSIC_STATE_TOPIC, tools_qos)
@@ -866,7 +867,7 @@ class MCPServer(Node):
         # Navigation tools (require waypoint_store and/or pose snapshot)
         self.registry.register(NavigateToWaypointTool(self, self.waypoint_store))
         self.registry.register(NavigateToCoordinatesTool(self))
-        self.registry.register(MoveDirectionTool(self))
+        self.registry.register(MoveDirectionTool(self, self.map_pose_source))
         self.registry.register(StopNavigationTool(self))
         self.registry.register(ListWaypointsTool(self, self.waypoint_store))
         self.registry.register(
@@ -904,6 +905,8 @@ class MCPServer(Node):
         # Sound tools
         self.registry.register(PlaySoundTool(self))
         self.registry.register(GetSoundInfoTool(self))
+        # ADR-0175 §2.1: одно разовое выступление Химерой (вызов, речь, пение, игра по названию).
+        self.registry.register(ChimeraPerformTool(self))
 
         # FAQ / Event tools
         self.registry.register(FaqSearchTool(self))
@@ -1380,10 +1383,14 @@ class MCPServer(Node):
             self.result_pub.publish(msg_out)
             self.get_logger().info(f"✅ Результат опубликован на /mcp/result")
 
+            from .tool_outcome import tool_outcome_line
+
+            line = tool_outcome_line(tool_name, result.success, result.data, result.error)
+            # Уровень — из результата, не из текста строки (#5092): отказ остаётся WARNING.
             if result.success:
-                self.get_logger().info(f"✅ Инструмент {tool_name} выполнен успешно")
+                self.get_logger().info(line)
             else:
-                self.get_logger().warning(f"❌ Инструмент {tool_name} завершился с ошибкой: {result.error}")
+                self.get_logger().warning(line)
 
         except json.JSONDecodeError as e:
             self.get_logger().error(f"❌ Ошибка парсинга JSON запроса: {e}")

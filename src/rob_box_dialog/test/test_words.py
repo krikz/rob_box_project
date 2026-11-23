@@ -2,6 +2,7 @@
 
 import pytest
 
+from rob_box_dialog import knowledge as kn
 from rob_box_dialog.knowledge import (
     MUSIC_AMBIGUOUS_STEMS, MUSIC_AMBIGUOUS_WORDS, MUSIC_MUTE_WORDS, MUSIC_OFF_WORDS, REACH_NEXT, SILENCE_WORDS,
     STOP_LEAD_WORDS, STOP_WORDS, TIER1_POLICY, UNSILENCE_WORDS, VOLUME_CHANNEL_STEMS, VOLUME_LEVEL_WORDS,
@@ -187,8 +188,10 @@ def test_tier1_stop_words_are_stop_words():
         for word in TIER1_POLICY[policy].words:
             assert word in STOP_WORDS, word
     for word in STOP_WORDS:
-        assert word in TIER1_POLICY["stop"].words + TIER1_POLICY["halt"].words + ("стойте",) or has_word(
-            word, SILENCE_WORDS), word
+        # Тишина — основа SILENCE_WORDS («помолчи») или точная форма SILENCE_EXACT_FORMS
+        # («молчи», #5108). Основа «молч» запрещена: поймала бы «молчит» и «молчание».
+        silence = has_word(word, SILENCE_WORDS) or word in kn.SILENCE_EXACT_FORMS
+        assert word in TIER1_POLICY["stop"].words + TIER1_POLICY["halt"].words + ("стойте",) or silence, word
     assert not set(STOP_LEAD_WORDS) & set(STOP_WORDS)
 
 

@@ -94,6 +94,18 @@ def test_note_of_a_launch_that_failed_is_not_said():
     assert said == [phrases.text("media.rejected")]
 
 
+@pytest.mark.parametrize("tool,args", [
+    ("request_music", {"intent": "melody", "text": "спой Running Up That Hill"}),
+    ("generate_music", {"kind": "song", "theme": "Running Up That Hill"}),
+])
+def test_source_refusal_says_the_owner_message_not_generic_media_failure(tool, args):
+    """#4015: фраза владельца с настоящей причиной доходит до голоса, а не тонет в общем отказе музыки."""
+    message = ("Спеть «Running Up That Hill» не могу: чужие песни по названию я не пою — только свои. "
+               "Могу сыграть её мелодию.")
+    said = _music_turn(tool, args, ("rejected", "music_source", {"ok": False, "message": message}))
+    assert said == [message]
+
+
 def test_late_music_outcome_carries_its_note_too():
     """Музыка заиграла после срока хода (``on_late``, #3960) — поздняя фраза кода та же: с фразой владельца."""
     ports = Ports()

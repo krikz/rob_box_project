@@ -230,7 +230,7 @@ SILENCE_AUDIO = b"\x00\x00" * 16000
 #
 # Background:
 #   * ``unit/node/conftest.py:97`` installs ``httpx = SimpleNamespace(Timeout=...)``
-#     so the dialogue_node tests don't need real network.
+#     so the dialog_node tests don't need real network.
 #   * That shim lacks ``TimeoutException`` / ``HTTPError``, so when
 #     ``MiniMaxSTTProvider.transcribe`` is invoked and one of the
 #     ``except httpx.TimeoutException as exc:`` / ``except httpx.HTTPError``

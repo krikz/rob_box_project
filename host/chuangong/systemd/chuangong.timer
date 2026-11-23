@@ -1,0 +1,11 @@
+# Тик агента chuangong раз в 5 минут (rbt_infra ADR-0003 §4.2). Лежит в репо, НЕ установлен.
+[Unit]
+Description=chuangong tick every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

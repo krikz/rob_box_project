@@ -5,7 +5,7 @@
 -----------------
 Дать трейсы для трёх ключевых этапов голосового ассистента:
 
-* ``dialogue.llm_call`` — dialogue_node (обёртка ``process_input`` → LLM)
+* ``dialogue.llm_call`` — dialog_node (обёртка ``process_input`` → LLM)
 * ``tts.synthesize`` — tts_node (обёртка цепочки синтеза)
 * ``stt.recognize`` — stt_node (обёртка распознавания)
 
@@ -171,7 +171,7 @@ def init_tracing(service_name: str) -> bool:
     MiniMax TTS держат свои httpx-клиенты).
 
     :param service_name: имя сервиса в атрибуте ``service.name`` (например
-        ``"dialogue_node"``, ``"tts_node"``, ``"stt_node"``).
+        ``"dialog_node"``, ``"tts_node"``, ``"stt_node"``).
     :return: ``True`` если трассировка включена, ``False`` если OTel
         недоступен или инициализация упала (не фатально).
     """

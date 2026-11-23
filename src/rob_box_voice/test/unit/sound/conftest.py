@@ -43,7 +43,31 @@ def _install_all_mocks():
     rcl_ifaces_msg.SetParametersResult = MagicMock
 
     pydub = types.ModuleType("pydub")
-    pydub.AudioSegment = type("AudioSegment", (), {})
+
+    class _AudioSegment:
+        """Минимальный читатель wav: тесты загрузки клипов не тянут настоящий pydub."""
+
+        def __init__(self, frame_rate, channels, duration_ms):
+            self.frame_rate = frame_rate
+            self.channels = channels
+            self._duration_ms = duration_ms
+
+        def __len__(self):
+            return self._duration_ms
+
+        def __add__(self, other):
+            return self
+
+        @staticmethod
+        def from_wav(path):
+            import wave
+
+            with wave.open(path) as handle:
+                frames = handle.getnframes()
+                rate = handle.getframerate() or 1
+                return _AudioSegment(rate, handle.getnchannels(), int(frames * 1000 / rate))
+
+    pydub.AudioSegment = _AudioSegment
 
     # --- Defensive: issue #1879 -------------------------------------------
     # ``install_ros_stubs()`` is additive — if a *prior* conftest (e.g.

@@ -81,6 +81,20 @@ def test_registered_with_conflict_and_twin():
     assert _roundtrip(payload) == payload
 
 
+def test_registered_conflict_with_unnamed_profile_keeps_voice_conflict():
+    """#5019: безымянный профиль именем не называется, но конфликт по его id обязан доехать до ack.
+
+    Пустое ``conflict_name`` раньше читалось как «конфликта нет», и диалог не видел,
+    что регистрация села рядом с чужим безымянным профилем.
+    """
+    payload = {
+        "event": "registered", "name": "Нина", "speaker_id": "s-new", "reused_profile": False,
+        "utterance_id": "u721",
+        "voice_conflict": {"name": "", "speaker_id": "e9582716", "score": 0.73},
+    }
+    assert _roundtrip(payload) == payload
+
+
 def test_registered_already_known_without_utterance():
     payload = {"event": "registered", "name": "Д", "speaker_id": "s", "reused_profile": True,
                "already_known": True, "utterance_id": None}

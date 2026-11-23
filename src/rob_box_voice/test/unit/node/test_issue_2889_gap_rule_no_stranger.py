@@ -139,7 +139,7 @@ def node(request):
 
 def test_process_utterance_publishes_no_name_for_gena(node):
     """Весь путь identify → classify → /voice/speaker/result: ни «Борис»,
-    ни «Саша» в payload нет ни в каком поле (dialogue_node получает
+    ни «Саша» в payload нет ни в каком поле (dialog_node получает
     contested и задаёт максимум нейтральный «Как тебя зовут?»)."""
     node._process_utterance(b"\x00\x00" * 16000, utterance_id="utt-n709")
 

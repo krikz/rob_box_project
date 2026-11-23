@@ -368,7 +368,7 @@ class TestDialogueControlSwapTryFinally(unittest.TestCase):
             self.assertIsInstance(payload["ts_s"], float)
             # reason содержит диагностическую подсказку.
             self.assertTrue(payload["reason"])
-        # reason для pause и resume разный (чтобы логи dialogue_node
+        # reason для pause и resume разный (чтобы логи dialog_node
         # отличали «оператор начал работать» от «оператор закончил»).
         pause_payload = json.loads(pub.published[0].data)
         resume_payload = json.loads(pub.published[1].data)
@@ -701,7 +701,7 @@ class TestDialogueControlSwapPayload(unittest.TestCase):
     ``_capture_current_voice_mode`` удалён вместе с ``voice_input_mode``
     (ADR-0066 §6.7): новая модель — pause↔resume через
     ``_publish_dialogue_control``, snapshot предыдущего состояния не
-    нужен (dialogue_node сам хранит FSM-стейт).
+    нужен (dialog_node сам хранит FSM-стейт).
     """
 
     def setUp(self) -> None:

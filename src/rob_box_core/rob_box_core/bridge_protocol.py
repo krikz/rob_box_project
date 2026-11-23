@@ -625,7 +625,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
         name="admin_logs",
         payload=_p({"cmd": "admin_logs",
             "ts_ms": "int",
-            "service": {"type": "literal", "values": ["dialogue_node", "rob_box_quest", "all"]},
+            "service": {"type": "literal", "values": ["dialog_node", "rob_box_quest", "all"]},
             "tail": "int?",
             "follow": "bool?",}),
         subprotocol="any",
@@ -912,7 +912,7 @@ EVENTS: tuple[EventSpec, ...] = (
     EventSpec(
         name="admin_logs_chunk",
         payload=_p({"type": "admin_logs_chunk",
-            "service": {"type": "literal", "values": ["dialogue_node", "rob_box_quest", "all"]},
+            "service": {"type": "literal", "values": ["dialog_node", "rob_box_quest", "all"]},
             "lines": "list[str]",
             "ts_ms": "int",}),
         subprotocol="any",

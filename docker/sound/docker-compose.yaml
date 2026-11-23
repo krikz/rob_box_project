@@ -400,12 +400,8 @@ services:
       # (``operator`` / ``personality``, миграция 011_agent_namespace.sql).
       # Тот же host-path, что у voice-assistant (./data/voice → /data) — теперь и тот же УЗЕЛ.
       - ./data/voice:/data
-      # issue #3299 — инструмент ТАРС ``list_faces`` читает лицевую базу.
-      # Только чтение: пишет её vision-face на Vision Pi, supervisor не должен менять
-      # базу даже случайно (ADR-0123). На Sound Pi каталог наполняет cutover-rsync;
-      # синхронизации Vision→Sound в PR-2b НЕТ, пока он пуст, list_faces честно
-      # отвечает «пуста на этом узле», а не «лиц нет».
-      - ./data/faces:/data/faces:ro
+      # issue #3655 — ``list_faces`` зовёт ``/perception/people`` (владелец на
+      # Vision Pi). Каталог ``/data/faces`` в supervisor не монтируем.
     command: ["/ros_scripts/ros_with_namespace.sh", "/bin/bash", "/scripts/start_supervisor.sh"]
     depends_on:
       zenoh-router:
@@ -490,8 +486,7 @@ services:
   # ветку ДО сборки образа. Если его нет — COPY в Dockerfile упадёт
   # (явная ошибка зависимости, не silent degradation).
   quest:
-    # Тег QUEST_TAG в .image-versions не пишется (манифест: image_versions: false),
-    # поэтому образ берётся по ${IMAGE_TAG} (dev/test/latest), как и на Vision Pi.
+    # Tag tracked in docker/sound/.image-versions.{env} — updated by CI after each build
     image: ${SERVICE_IMAGE_PREFIX:-ghcr.io/krikz/rob_box}:quest-${ROS_DISTRO:-humble}-${QUEST_TAG:-${IMAGE_TAG}}
     container_name: rob-box-quest
     pull_policy: if_not_present
@@ -591,13 +586,9 @@ services:
       # Без тома бот стартует, но Vosk-фолбэк недоступен: STT остаётся на
       # одном Yandex, и об этом есть строка в логе (не молчаливая деградация).
       - /opt/rob_box/models:/models:ro
-      # issue #3025: том лицевой базы, пишет её vision-face (Vision Pi, без :ro).
-      # :ro гарантирует, что telegram-bot только ЧИТАЕТ (ADR-0123 §4: FaceStore
-      # пишет только в своём контейнере).
-      # НА SOUND PI это КОПИЯ-СНИМОК (cutover 19.10), а не живая база: пока нет
-      # синхронизации Vision→Sound (карточка #3655), команды бота /faces и карточки
-      # лиц показывают галерею на момент копирования и отстают от vision-face.
-      - ./data/faces:/data/faces:ro
+      # issue #3655: ``/faces`` берёт список у владельца ``/perception/people``
+      # (vision-face на Vision Pi). Том ``./data/faces`` боту не монтируем —
+      # копия-снимок отставала от живой галереи и врала «лиц нет».
     mem_limit: 512m
     memswap_limit: 640m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_telegram_bot.sh"]

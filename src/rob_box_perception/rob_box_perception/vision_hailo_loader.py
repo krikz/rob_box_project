@@ -139,6 +139,10 @@ STUB_EVENT_TYPE: str = 'stub'
 #: source_camera выдуманного события. Камеры у него нет по определению.
 STUB_SOURCE_CAMERA: str = 'stub'
 
+#: Кадр прогнан, людей и лиц в нём нет (#3780 C). Это не детекция и не выдумка: ``event_type`` вне набора
+#: "person"|"face"|"object"|"scene"|"stub", чтобы агрегатор не отдал пустой кадр Личности как человека.
+EMPTY_FRAME_EVENT_TYPE: str = 'empty_frame'
+
 
 @dataclass(frozen=True)
 class LetterboxInfo:
@@ -1136,6 +1140,39 @@ def is_stub_event(event: Dict[str, Any]) -> bool:
         event.get('event_type') == STUB_EVENT_TYPE
         or event.get('source_camera') == STUB_SOURCE_CAMERA
     )
+
+
+def frame_clear(events: Iterable[Dict[str, Any]]) -> bool:
+    """Кадр прогнан и в нём нет ни человека, ни лица.
+
+    Выдумка (``is_stub_event``) кадр не очищает и человеком его не делает.
+    Считаются события до фильтра уверенности: человек ниже порога — всё ещё кто-то в кадре.
+    """
+    for event in events:
+        if is_stub_event(event):
+            return False
+        if event.get('event_type') in ('person', 'face'):
+            return False
+    return True
+
+
+def empty_frame_event(source_camera: str) -> Dict[str, Any]:
+    """Факт «кадр пуст» для сна лица. Не детекция: бокса нет, в Observation не идёт."""
+    return {
+        'source_camera': source_camera,
+        'event_type': EMPTY_FRAME_EVENT_TYPE,
+        'class_name': '',
+        'class_id': -1,
+        'confidence': 0.0,
+        'bbox_cx': -1.0,
+        'bbox_cy': -1.0,
+        'bbox_w': -1.0,
+        'bbox_h': -1.0,
+        'distance_m': -1.0,
+        'embedding_id': '',
+        'display_name': '',
+        'attributes_json': '',
+    }
 
 
 def filter_by_confidence(

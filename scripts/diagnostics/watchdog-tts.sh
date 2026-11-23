@@ -61,7 +61,7 @@ robot_ssh() {
 }
 
 # 1. Publisher count на /voice/tts/request через DDS (ros2 topic info).
-#    Robust к типу publisher'а (mcp_server, dialogue_node, telegram_node).
+#    Robust к типу publisher'а (mcp_server, dialog_node, telegram_node).
 PUBLISH_RATE=$(robot_ssh \
     "docker exec voice-assistant bash -c \"
         source /opt/ros/humble/setup.bash

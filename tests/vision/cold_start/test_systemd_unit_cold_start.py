@@ -1,12 +1,11 @@
 """Regression tests for ``robbox-vision.service`` systemd unit (cold-start contract).
 
-Issue #2610 + PR #2635 — после ребута Vision Pi systemd-юнит
+Issues #2610, #4533 — после ребута Vision Pi systemd-юнит
 ``robbox-vision.service`` ОБЯЗАН:
 
 1. Поднять весь compose-стек с локального кэша (``--pull never``),
    даже если katana build-registry offline.
-2. Best-effort pre-pull (``--ignore-pull-failures``), чтобы при
-   доступном registry сначала обновить локальный кэш, а потом стартовать.
+2. Не делать pre-pull: образы обновляет деплой, автозапуск не ждёт registry.
 3. Не падать на ``docker compose ps`` post-action — там нужен
    ``-`` префикс, чтобы диагностический вывод не валил unit.
 4. Рестартовать при сбое (``Restart=on-failure`` + ``RestartSec``
@@ -21,7 +20,8 @@ Issue #2610 + PR #2635 — после ребута Vision Pi systemd-юнит
 ``Restart=on-failure``) — тесты красные.
 
 Refs:
-    * issue #2610 — корневая проблема
+    * issue #2610 — запуск стека на локальном кэше
+    * issue #4533 — pre-pull задерживал холодный старт
     * PR #2635 — фикс юнита
     * ADR-0111 — ликвидация отдельного образа voice-resources (образа и его
       init-контейнера больше нет; Renardo-сэмплы кладёт на хост Ресурсный пак
@@ -110,31 +110,64 @@ def test_exec_start_does_not_use_pull_always() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 2. ExecStartPre: best-effort pull с --ignore-pull-failures
+# 2. ExecStartPre: нет pull из registry
 # --------------------------------------------------------------------------- #
 
 
-def test_exec_start_pre_is_best_effort_pull() -> None:
-    """``ExecStartPre`` обязан быть best-effort (``-`` prefix + ``--ignore-pull-failures``).
+def test_exec_start_pre_does_not_pull_images() -> None:
+    """Автозапуск не ждёт registry: образы обновляет деплой (issue #4533)."""
+    body = _extract_unit_template()
+    pre_commands = re.findall(r"^ExecStartPre=(.+)$", body, re.MULTILINE)
+    assert not any("docker compose pull" in command for command in pre_commands), (
+        "ExecStartPre не должен вызывать docker compose pull: при недоступном "
+        f"registry это задерживает холодный старт. Текущие команды: {pre_commands!r}"
+    )
 
-    Если registry доступен — pre-pull обновит локальный кэш. Если
-    offline — не должен валить unit (Type=oneshot упадёт, а с ним
-    весь стек не поднимется).
+
+def test_unit_start_timeout_covers_healthy_wait() -> None:
+    """``compose up -d`` с ``condition: service_healthy`` не должен упереться в дефолт 90 с.
+
+    vision-hailo и vision-face ждут healthy у zenoh-router (start_period 30 с,
+    interval 5 с, retries 20 — до ~130 с только на healthcheck). Дефолт
+    TimeoutStartSec=90 с убивает ExecStart, Type=oneshot с StartLimitBurst=5
+    сжигает попытки и оставляет юнит failed — лицо не зажигается. Sound/Main
+    уже держат TimeoutStartSec=900 (issue #4533).
     """
     body = _extract_unit_template()
-    match = re.search(r"^ExecStartPre=(.+)$", body, re.MULTILINE)
-    assert match is not None, "ExecStartPre отсутствует — нет best-effort pull"
-    pre_cmd = match.group(1)
-    assert pre_cmd.startswith("-"), (
-        f"ExecStartPre должен начинаться с '-' (ignore-error), "
-        f"иначе ненулевой exit от pull уронит unit. Текущее: {pre_cmd!r}"
+    service = re.search(r"\[Service\](.*?)(?=\n\[)", body, re.DOTALL)
+    assert service is not None, "нет секции [Service]"
+    match = re.search(r"^TimeoutStartSec=(\d+)", service.group(1), re.MULTILINE)
+    assert match is not None, (
+        "TimeoutStartSec отсутствует: дефолт systemd 90 с короче ожидания "
+        "service_healthy у zenoh-router (issue #4533)"
     )
-    assert "pull" in pre_cmd.lower(), (
-        f"ExecStartPre должен вызывать 'docker compose pull'. Текущее: {pre_cmd!r}"
+    assert int(match.group(1)) >= 300, (
+        f"TimeoutStartSec={match.group(1)} меньше 300 с — не покрывает "
+        "ожидание service_healthy на холодном старте (issue #4533)"
     )
-    assert "--ignore-pull-failures" in pre_cmd, (
-        f"ExecStartPre должен игнорировать pull-фейлы (best-effort), иначе "
-        f"при недоступном registry unit опять упадёт. Текущее: {pre_cmd!r}"
+
+
+def test_unit_does_not_order_after_network_online_without_wants() -> None:
+    """LED-лицо не стоит в очереди за network-online.target (issue #4533).
+
+    ``After=network-online.target`` без ``Wants=`` не заказывает сеть и не
+    держит docker.service. Юнит ждёт, пока цель отпустит чужой заказчик
+    (cloud-init / NetworkManager-wait-online), хотя контейнерам лица сеть
+    не нужна. Если сеть снова понадобится юниту — только вместе с ``Wants=``.
+    """
+    body = _extract_unit_template()
+    unit_section = re.search(r"\[Unit\](.*?)(?=\n\[)", body, re.DOTALL)
+    assert unit_section is not None, "нет секции [Unit]"
+    unit_text = unit_section.group(1)
+    after = re.search(r"^After=(.*)$", unit_text, re.MULTILINE)
+    wants = re.search(r"^Wants=(.*)$", unit_text, re.MULTILINE)
+    assert after is not None, "After= отсутствует"
+    after_units = after.group(1).split()
+    wants_units = wants.group(1).split() if wants else []
+    assert "docker.service" in after_units, f"юнит должен идти после docker.service: {after_units!r}"
+    assert "network-online.target" not in after_units or "network-online.target" in wants_units, (
+        "After=network-online.target без Wants= не поднимает сеть и задерживает "
+        f"LED до чужого wait-online (issue #4533). After={after_units!r} Wants={wants_units!r}"
     )
 
 

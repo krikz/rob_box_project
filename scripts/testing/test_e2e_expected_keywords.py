@@ -30,12 +30,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS = REPO_ROOT / "scripts" / "ci" / "e2e" / "e2e_voice_test.sh"
 
-# Фрагмент лога робота из run 35699257202, шаг n209_recall_boris.
+# Фрагмент реплики робота из run 35699257202, шаг n209_recall_boris —
+# подан через живой v2-канал tts_node (#4354: строки «[handle_result]
+# spoken=» удалённый движок v1 больше не печатает, robot_speech их не видит).
+# Регистр не трогаем: «🔊 TTS:» в _VOICED_PATTERNS верхний, как в логе.
 LOGS = (
-    "[dialogue_node] 🔍 [handle_result] spoken='Тебя зовут Борис, ты друг Саши "
-    "и приходишь примерно раз в неделю с пиццей. Болеешь за Спартак, Саша над "
-    "этим посмеивается.' (len=122) tools=[]"
-).lower()
+    "[tts_node] 🔊 TTS: text='Тебя зовут Борис, ты друг Саши и приходишь "
+    "примерно раз в неделю с пиццей. Болеешь за Спартак, Саша над этим "
+    "посмеивается.'"
+)
 
 
 def load_keyword_hit(logs_low: str):

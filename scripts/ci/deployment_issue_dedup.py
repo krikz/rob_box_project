@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -16,7 +17,10 @@ WHITESPACE_RE = re.compile(r"\s+")
 SIGNATURE_MARKER_RE = re.compile(r"<!--\s*deploy-signature:\s*(.*?)\s*-->")
 
 CRITICAL_MATCH_RE = re.compile(
-    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped",
+    # illegal instruction / sigill — glibc печатает «Illegal instruction» на
+    # SIGILL (issue #5114, run 45019034598: controller_server умер
+    # `[ros2run]: Illegal instruction`, а сканер логов это не считал critical).
+    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped|illegal instruction|sigill",
     re.IGNORECASE,
 )
 WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
@@ -62,6 +66,60 @@ CRITICAL_DEMOTED_TO_WARNING = [
 PROXIMITY_BLIND_RE = re.compile(r"\[proximity_guard\]: .*нет свежих скана или одометрии", re.IGNORECASE)
 PROXIMITY_RECOVERED_RE = re.compile(r"\[proximity_guard\]: .*скан и одометрия идут — зона под контролем", re.IGNORECASE)
 PROXIMITY_BLIND_DEMOTION = r"\[proximity_guard\]: .*нет свежих скана или одометрии"
+# Эхо health_monitor — не лог самой ноды. print_report режет msg до 60 символов и
+# переписывает строку как `[LEVEL] <node> (Ns ago): <msg[:60]>`
+# (health_monitor.py:136-137), поэтому после `]` идёт ` (42s ago)`, а не `:`.
+# PROXIMITY_BLIND_RE это не матчит. Класс отдельный: эхо — дубль собственной строки
+# ноды, если она в дампе есть, и самостоятельный critical, если её нет. Само эхо
+# никогда не двигает окно возврата (возврат виден только из полной строки ноды).
+HEALTH_MONITOR_PROXIMITY_ECHO_RE = re.compile(
+    r"\[(?:ERROR|FATAL|WARN)\] proximity_guard \(\d+s ago\): .*нет свежих скана или одометрии",
+    re.IGNORECASE,
+)
+
+# Окно старта zenoh-роутера (issue #5124, run 45040975024): роутер в первые секунды
+# пишет ERROR «Error propagating <kind> @<zid>/router/**: cannot get index ...» —
+# gossip успел объявить лицо и потерять его, пока сеть ещё пуста. Одна такая строка
+# в пределах ~10 с после строки старта того же процесса — warning. Вне окна и без
+# строки старта в дампе класс остаётся critical: шторм переподключений посреди
+# работы (16.11, 18.11 — сотни строк) должен по-прежнему красить деплой.
+# Узко: только модуль zenoh::net::routing::hat::router и только propagation на
+# /router/**. Другие контейнеры и другие сообщения zenoh правило не касается.
+# zenohd красит вывод: тусклая метка времени, цвет уровня, тусклые имя модуля и
+# двоеточие после него (\x1b[2mzenohd\x1b[0m\x1b[2m:\x1b[0m). docker logs без -t
+# эти коды не снимает, и в дамп деплоя они доезжают как есть (run 45040975024).
+_ANSI = r"(?:\x1b\[[0-9;]*m)*"
+ZENOH_ROUTER_START_RE = re.compile(rf"zenohd{_ANSI} v|Zenoh can be reached at:")
+# После «@» слэш НЕОБЯЗАТЕЛЕН: боевой лог пишет «@/<zid>/router/**» (run 45040975024,
+# строка 3091), первый вариант шаблона ждал «@<hex>» и реальную строку не ловил.
+# ZID не привязан к hex — требуется только «@/?<что-то>/router/**».
+ZENOH_ROUTER_PROPAGATION_RE = re.compile(
+    rf"zenoh::net::routing::hat::router::{_ANSI}\w+{_ANSI}:{_ANSI}\s+"
+    rf"Error propagating \w+ @/?\S+?/router/\*\*"
+)
+ZENOH_ROUTER_STARTUP_WINDOW_SEC = 10.0
+# Имена контейнеров zenoh-роутера в репо: compose-сервис ``zenoh-router``
+# (docker/main, docker/sim), container_name ``zenoh-router-vision`` /
+# ``zenoh-router-sound``, сим ``${SIM_PREFIX}-zenoh-router``, диагностика
+# ``zenoh-router-local``. Образ — ``eclipse/zenoh`` (zenohd внутри).
+# Правило окна применяется только к ним: та же строка propagation из
+# voice-assistant / nav2 — не транзиент роутера и остаётся critical.
+ZENOH_ROUTER_CONTAINER_MARKERS = ("zenoh-router", "zenohd", "eclipse/zenoh")
+# Пометка в summary finding: понижение не молчит, в сводке видно, что это
+# стартовый транзиент, а не глухая ошибка.
+ZENOH_ROUTER_STARTUP_SUMMARY = "Стартовый транзиент zenoh-роутера (окно старта, не отказ)"
+
+
+def is_zenoh_router_container(container: str) -> bool:
+    """Контейнер — zenoh-роутер по имени, как их зовут compose и диагностика.
+
+    Маркеры те же, что в репо: ``zenoh-router`` (main/vision/sound/sim),
+    ``zenohd``, образ ``eclipse/zenoh``. Пустое имя — не роутер: без имени
+    контейнера окно не открывается (issue #5124, правило узкое).
+    """
+    name = container.lower()
+    return any(marker in name for marker in ZENOH_ROUTER_CONTAINER_MARKERS)
+
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
@@ -195,7 +253,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # (e.g. `ros2 topic list | head`) already hung up. Benign — the follow-up
     # BrokenPipeError line is already excluded above (retro 15.08 t_a14ac65d).
     r"exception ignored in:",
-    # dialogue_node INFO success echo: "process_input returned: ... error=None"
+    # dialog_node INFO success echo: "process_input returned: ... error=None"
     # is the normal turn-completion line — error=None means NO error. The bare
     # \berror\b matcher hits "error=None" and would file a false deploy-critical
     # issue on a fully green round (retro 15.08 t_29230e6f, issue #1335: deploy
@@ -302,8 +360,8 @@ CRITICAL_EXCLUDE_COMMON = [
     # preload separately; the deploy gate must not file a critical
     # issue every time it repeats.
     r"failure in server /n_free node \d+ not found",
-    # dialogue_node user_input echo (deploy run 33308557595, 30.08
-    # 11:17, kanban t_fe19566c, issue #1737): dialogue_node logs the
+    # dialog_node user_input echo (deploy run 33308557595, 30.08
+    # 11:17, kanban t_fe19566c, issue #1737): dialog_node logs the
     # entire `user_input='...'` payload it forwards to the LLM, so a
     # user who literally said the words "[CRITICAL]" / "[ERROR]" /
     # "traceback" in a sentence gets that text echoed verbatim into
@@ -312,12 +370,12 @@ CRITICAL_EXCLUDE_COMMON = [
     # deploy-critical issue even though no system error happened -
     # the robot is happily processing a turn. Excluding every
     # `user_input='` echo makes the rule tight (LLM payload is
-    # structured; a real dialogue_node crash shows up in a different
+    # structured; a real dialog_node crash shows up in a different
     # log shape, e.g. `Traceback (most recent call last):` followed by
     # a Python exception line that does NOT match `user_input='`).
     #
     # Issue #1834 (deploy run 33450019127, 31.08 23:17, kanban
-    # t_65a41c8c): dialogue_node formats the same payload via
+    # t_65a41c8c): dialog_node formats the same payload via
     # `{user_input!r}` (Python repr, see dialogue_node.py:4557).
     # Python's repr() picks SINGLE quotes by default but switches to
     # DOUBLE quotes whenever the string contains a `'` and no `"` -
@@ -333,14 +391,14 @@ CRITICAL_EXCLUDE_COMMON = [
     # `Traceback (most recent call last):` header followed by an
     # exception line that does not contain `user_input=...`).
     r"""user_input=['"]""",
-    # dialogue_node synthetic-retreat log line (deploy run 34908172365,
+    # dialog_node synthetic-retreat log line (deploy run 34908172365,
     # 14.09 23:17, issue #2462 / z-{e2e}/test-round-395): the DJ Bug B
     # synchronous retry path emits a single-shot
     # `_dispatch_turn(raw_user_command=user_input, is_synthetic=True)`
     # whose reminder payload is `[CRITICAL] В прошлом цикле ты НЕ вызвал
     # compose_music` (see dialogue_node.py:_build_dj_retry_prompt).
     # rclpy prints that user_input as a turn-start line in the form
-    # `[dialogue_node-N]   [<pid>] user: '<payload>'` (the `[<pid>]`
+    # `[dialog_node-N]   [<pid>] user: '<payload>'` (the `[<pid>]`
     # slot is the logger's process-id formatter; the value varies per
     # container restart). The CRITICAL_MATCH_RE `\bcritical\b` part of
     # that line is purely the reminder text, not a deployment failure
@@ -348,7 +406,7 @@ CRITICAL_EXCLUDE_COMMON = [
     # (issue #992 Bug C), and a successful follow-up turn is logged a
     # few lines later without errors. The exclusion is scoped to the
     # `[CRITICAL]` marker + `не вызвал`/`ни один` phrasing so a real
-    # dialogue_node crash on the same container (which prints a
+    # dialog_node crash on the same container (which prints a
     # `Traceback (most recent call last):` header followed by an
     # exception line) is still reported. The negative test
     # `test_dialogue_node_dj_retry_critical_reminder_still_reports_real_traceback`
@@ -368,11 +426,11 @@ CRITICAL_EXCLUDE_COMMON = [
     # deploy-critical issue on every green run until sclang finishes
     # preloading.
     r"music stack validation found non-critical errors \(degraded but usable\)",
-    # dialogue_node bare "Traceback" header without the exact
+    # dialog_node bare "Traceback" header without the exact
     # column-zero shape covered by the rule above (issue #1335 retro
     # 15.08 covered only `^traceback \(most recent call last\):$`,
-    # but ROS2 node loggers prepend a `[dialogue_node-4]` prefix
-    # before the header, so the line `[dialogue_node-4] Traceback
+    # but ROS2 node loggers prepend a `[dialog_node-4]` prefix
+    # before the header, so the line `[dialog_node-4] Traceback
     # (most recent call last):` slips through and triggers a
     # deploy-critical issue on otherwise green runs - deploy run
     # 33315845764, 30.08 14:08, kanban t_fe19566c, issue #1737). The
@@ -400,8 +458,8 @@ CRITICAL_EXCLUDE_COMMON = [
     # `[stt_attempt] yandex:error->vosk:error->rejected`) do not match
     # the `vosk:ok` half and continue to surface as critical issues.
     r"\[stt_attempt\][^]]*yandex:error[^]]*vosk:ok",
-    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
-    # 08:42, kanban t_c9c7238c, issue #1877): dialogue_node's babble
+    # dialog_node self-recovery echo (deploy run 33609815109, 02.09
+    # 08:42, kanban t_c9c7238c, issue #1877): dialog_node's babble
     # guard logs `[issue 992 Bug D] LLM babble detected — retrying
     # once with CRITICAL reminder (head=...)` at WARN level when the
     # metalanguage detector trips on the LLM's reply. The literal
@@ -649,7 +707,7 @@ WARNING_EXCLUDE_COMMON = [
     # explicit "Ignore this warning if the ini file does not exist yet" —
     # rtabmap creates the file on shutdown, benign (round-117).
     r"section .* in /config/rtabmap/rtabmap.ini doesn't exist",
-    # dialogue_node self-recovery echo (deploy run 33609815109, 02.09
+    # dialog_node self-recovery echo (deploy run 33609815109, 02.09
     # 08:42, kanban t_c9c7238c, issue #1877): the babble/tool-skipped
     # retry notifications in dialogue_node.py:3564 and 4023 log at
     # `[WARN]` severity, and the message text contains the literal
@@ -759,7 +817,7 @@ WARNING_EXCLUDE_COMMON = [
     # (music_guard.py:386-388, `_log_warning`). The Main Pi's
     # perception/health_monitor subscribes to the shared /rosout
     # bus and re-echoes the same line under
-    # `[WARN] dialogue_node (Ns ago): ...` — the bare `warn` token
+    # `[WARN] dialog_node (Ns ago): ...` — the bare `warn` token
     # in the echo trips WARNING_MATCH_RE in the main scope and
     # produces a false-positive deploy warning on every run where
     # the LLM happened to satisfy a vocal request without the
@@ -975,20 +1033,93 @@ def _critical_exclude_patterns(log_text: str, scope: str) -> list[str]:
     return patterns + CRITICAL_EXCLUDE_BY_SCOPE.get(scope, [])
 
 
+def _is_health_monitor_proximity_echo(line: str) -> bool:
+    """Эхо health_monitor строки proximity_guard, не собственный лог ноды.
+
+    Формат печатает print_report: `[LEVEL] proximity_guard (Ns ago): <msg[:60]>`.
+    Обрезка до 60 символов срезает хвост «зона НЕ контролируется», поэтому
+    возврат из эха не читается и эхо само окно возврата не двигает.
+    """
+    return bool(HEALTH_MONITOR_PROXIMITY_ECHO_RE.search(line))
+
+
+def _proximity_own_blind_present(log_text: str) -> bool:
+    """В дампе есть собственная (не эхо) строка слепоты proximity_guard."""
+    return any(
+        PROXIMITY_BLIND_RE.search(line) and not _is_health_monitor_proximity_echo(line)
+        for line in log_text.splitlines()
+    )
+
+
 def _proximity_guard_recovered(log_text: str) -> bool:
     """True, если последнее состояние proximity_guard в дампе — «зона под контролем».
 
     Нода пишет ERROR при каждом переходе в «слепой» режим и INFO при каждом возврате,
     поэтому решает порядок строк: стартовая гонка (ERROR, затем INFO) — шум, ERROR без
-    возврата после него — настоящая потеря скана или одометрии.
+    возврата после него — настоящая потеря скана или одометрии. Эхо health_monitor в
+    счёт не идёт: оно обрезано до 60 символов и не является строкой ноды.
     """
     state = None
     for line in log_text.splitlines():
+        if _is_health_monitor_proximity_echo(line):
+            continue
         if PROXIMITY_BLIND_RE.search(line):
             state = False
         elif PROXIMITY_RECOVERED_RE.search(line):
             state = True
     return bool(state)
+
+
+# Стартовый fail-fast (issue #4989, run 44817771673): нода пишет ERROR и падает
+# («process has died»), docker restart поднимает контейнер, и к проверке логов он
+# жив. Карточку на такую гонку не заводим. «Строка знакомая» сама по себе ничего
+# не решает (ADR-0148): без свидетельства «жив после» в ЭТОМ дампе строка остаётся
+# critical. X_LINK и любой отказ, после которого контейнер не поднялся или
+# поднялся и снова упал, карточку получают.
+#
+# ros2 launch без respawn пишет «process has died» и выходит — контейнер
+# перезапускает docker (`restart: unless-stopped`), повторный старт виден как
+# новый «process started with pid» ПОСЛЕ смерти. respawn=True того же launch
+# пишет «process has died ... restarting process» и контейнер не роняет.
+_PROCESS_DIED_RE = re.compile(r"process has died", re.IGNORECASE)
+_PROCESS_STARTED_RE = re.compile(r"process started with pid", re.IGNORECASE)
+_PROCESS_RESTARTING_RE = re.compile(r"restarting process", re.IGNORECASE)
+_FAILFAST_MARKERS = ("fail-fast", "fail fast")
+
+
+def _failfast_recovered(log_text: str) -> bool:
+    """True, если fail-fast в дампе умер, контейнер поднялся и больше не падает.
+
+    Решает порядок строк, а не текст ошибки: смерть процесса, затем старт, и после
+    этого старта — ни одной новой смерти. Нет старта после смерти или смерть
+    повторилась — контейнер не «жив после», окно не закрыто.
+    """
+    died = False
+    started_after_death = False
+    for line in log_text.splitlines():
+        if _PROCESS_DIED_RE.search(line):
+            if started_after_death:
+                return False
+            died = True
+            started_after_death = False
+        elif died and (_PROCESS_STARTED_RE.search(line) or _PROCESS_RESTARTING_RE.search(line)):
+            started_after_death = True
+    return started_after_death
+
+
+def _is_recovered_failfast_line(line: str, log_text: str) -> bool:
+    """Строка, которую закрытое окно «жив после» снимает с critical.
+
+    Снимаются две строки и только они: сам fail-fast и служебное «process has died»,
+    которым ros2 launch отмечает ту же смерть. Вне закрытого окна (нет старта после
+    смерти или смерть повторилась) обе остаются critical — голый crash-loop карточку
+    получает. Любая другая ошибка в том же дампе не снимается.
+    """
+    if not _failfast_recovered(log_text):
+        return False
+    if any(marker in line.lower() for marker in _FAILFAST_MARKERS):
+        return True
+    return bool(_PROCESS_DIED_RE.search(line))
 
 
 def _classify_error_like_line(
@@ -1014,7 +1145,103 @@ def _classify_error_like_line(
     return "critical"
 
 
-def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
+def _zenoh_router_startup_transient(line: str, log_text: str, container: str) -> bool:
+    """True, если строка — propagation роутера в окне ~10 с после его же старта.
+
+    Решает дамп и имя контейнера, а не текст ошибки (ADR-0148). Три условия,
+    все обязательны: контейнер — zenoh-роутер (``is_zenoh_router_container``),
+    в дампе есть строка старта того же процесса (``zenohd v`` /
+    ``Zenoh can be reached at:``), ошибка идёт не позже
+    ZENOH_ROUTER_STARTUP_WINDOW_SEC после неё. Чужой контейнер, ошибка раньше
+    строки старта, позже окна или дамп без строки старта — не транзиент,
+    остаётся critical. Метка времени — ISO-8601 с Z; строки без неё окно
+    не двигают и не закрывают.
+    """
+    if not is_zenoh_router_container(container):
+        return False
+    if not ZENOH_ROUTER_PROPAGATION_RE.search(line):
+        return False
+    start_before_error, error_at = _zenoh_router_start_and_error(line, log_text)
+    if start_before_error is None or error_at is None:
+        return False
+    delta = (error_at - start_before_error).total_seconds()
+    return 0.0 <= delta <= ZENOH_ROUTER_STARTUP_WINDOW_SEC
+
+
+def _zenoh_router_start_and_error(line: str, log_text: str):
+    """(старт раньше ошибки, метка ошибки) или (None, None).
+
+    Старт привязан к ошибке, а не к дампу целиком: последний ``zenohd v`` /
+    ``Zenoh can be reached at:`` РАНЬШЕ этой строки. Старт после ошибки окно
+    не открывает, повторный старт позже в дампе — тоже. Строки без метки
+    ISO-8601 Z окно не двигают.
+    """
+    start_before_error = None
+    target = _strip_ansi(line).strip()
+    for row in log_text.splitlines():
+        stamp = _iso_z_timestamp(row)
+        if stamp is None:
+            continue
+        plain = _strip_ansi(row)
+        if plain.strip() == target and ZENOH_ROUTER_PROPAGATION_RE.search(plain):
+            return start_before_error, stamp
+        if ZENOH_ROUTER_START_RE.search(plain):
+            start_before_error = stamp
+    return None, None
+
+
+def _strip_ansi(text: str) -> str:
+    """Снять ANSI-коды цвета. zenohd красит метку времени, уровень и имя модуля."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def _iso_z_timestamp(line: str):
+    """Метка ISO-8601 с суффиксом Z из строки лога или None.
+
+    Метка ищется и в сырой строке, и без ANSI: zenohd оборачивает её в
+    ``\x1b[2m...\x1b[0m``, и ``\b`` перед цифрой года на таком стыке не срабатывает.
+    """
+    match = TIMESTAMP_RE.search(line) or TIMESTAMP_RE.search(_strip_ansi(line))
+    if match is None:
+        return None
+    return datetime.fromisoformat(match.group(0).replace("Z", "+00:00").replace("z", "+00:00"))
+
+
+def _classify_with_dump_windows(
+    line: str,
+    exclude_patterns: Iterable[str],
+    demoted_patterns: Iterable[str],
+    *,
+    own_blind_present: bool,
+    log_text: str,
+    container: str = "",
+) -> str | None:
+    """Классификация с окнами дампа: эхо proximity_guard, fail-fast и старт роутера.
+
+    Эхо — не самостоятельный пункт, только когда в дампе уже есть собственная
+    строка слепоты ноды (её и так классифицирует окно возврата). Без собственной
+    строки эхо остаётся critical: понижать его нечем, возврата из обрезки не видно.
+
+    Fail-fast снимается, только если тот же дамп показывает «жив после»: процесс
+    умер и после этого стартовал без новой смерти. Знакомая строка без этого
+    свидетельства остаётся critical.
+
+    Стартовый транзиент zenoh-роутера понижается до warning, только если контейнер
+    — роутер, тот же дамп несёт строку старта процесса и ошибка идёт в пределах
+    ~10 с после неё. Чужой контейнер, окно снаружи и дамп без строки старта
+    оставляют класс critical.
+    """
+    severity = _classify_error_like_line(line, exclude_patterns, demoted_patterns)
+    if severity == "critical" and own_blind_present and _is_health_monitor_proximity_echo(line):
+        return None
+    if severity == "critical" and _is_recovered_failfast_line(line, log_text):
+        return None
+    if severity == "critical" and _zenoh_router_startup_transient(line, log_text, container):
+        return "warning"
+    return severity
+
+
+def extract_relevant_log_line(log_text: str, *, scope: str, severity: str, container: str = "") -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
 
@@ -1023,9 +1250,20 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
     demoted = list(CRITICAL_DEMOTED_TO_WARNING)
     if _proximity_guard_recovered(log_text):
         demoted.append(PROXIMITY_BLIND_DEMOTION)
+    own_blind = _proximity_own_blind_present(log_text)
     if severity == "critical":
         for line in lines:
-            if _classify_error_like_line(line, critical_patterns, demoted) == "critical":
+            if (
+                _classify_with_dump_windows(
+                    line,
+                    critical_patterns,
+                    demoted,
+                    own_blind_present=own_blind,
+                    log_text=log_text,
+                    container=container,
+                )
+                == "critical"
+            ):
                 return line
         return None
 
@@ -1034,10 +1272,15 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         # Warning — это и строка со словом warn/warning, и строка, понижённая из
         # critical (см. _classify_error_like_line): без второго условия понижённые
         # строки пропали бы из отчёта совсем, а не стали предупреждением.
-        if not (
-            WARNING_MATCH_RE.search(line)
-            or _classify_error_like_line(line, critical_patterns, demoted) == "warning"
-        ):
+        classified = _classify_with_dump_windows(
+            line,
+            critical_patterns,
+            demoted,
+            own_blind_present=own_blind,
+            log_text=log_text,
+            container=container,
+        )
+        if not (WARNING_MATCH_RE.search(line) or classified == "warning"):
             continue
         if _matches_any(patterns, line):
             continue
@@ -1071,7 +1314,10 @@ def _build_issue_title(candidate: Mapping[str, str]) -> str:
     severity_emoji = "🚨" if candidate["severity"] == "critical" else "⚠️"
     severity_text = "Critical" if candidate["severity"] == "critical" else "Warning"
     scope = candidate["scope"].capitalize()
-    return f"{severity_emoji} Deployment {severity_text}: {candidate['environment']} / {scope} / {candidate['container']} / {candidate['kind']}"
+    return (
+        f"{severity_emoji} Deployment {severity_text}: {candidate['environment']} / {scope} / "
+        f"{candidate['container']} / {candidate['kind']}"
+    )
 
 
 def _build_issue_body(
@@ -1245,7 +1491,7 @@ def _cmd_filter(args: argparse.Namespace) -> int:
 
 def _cmd_extract_log(args: argparse.Namespace) -> int:
     log_text = sys.stdin.read()
-    line = extract_relevant_log_line(log_text, scope=args.scope, severity=args.severity)
+    line = extract_relevant_log_line(log_text, scope=args.scope, severity=args.severity, container=args.container)
     if line:
         sys.stdout.write(line + "\n")
     return 0
@@ -1275,6 +1521,9 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser = subparsers.add_parser("extract-log", help="Extract the first relevant log line for a scope and severity.")
     extract_parser.add_argument("--scope", required=True, choices=["main", "vision", "sound"])
     extract_parser.add_argument("--severity", required=True, choices=["critical", "warning"])
+    # Имя контейнера нужно окну старта zenoh-роутера (issue #5124). Старые
+    # вызовы без него валидны: окно просто не откроется, строка останется critical.
+    extract_parser.add_argument("--container", default="")
     extract_parser.set_defaults(func=_cmd_extract_log)
 
     return parser

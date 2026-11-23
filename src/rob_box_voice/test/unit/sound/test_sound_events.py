@@ -3,15 +3,18 @@
 import json
 import shutil
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from rob_box_dialog import knowledge as kn
-from rob_box_dialog_msgs.msg import ExpressionEvent, SoundEvent
 
 import rob_box_voice.sound_node as sn_module
+from rob_box_dialog import knowledge as kn
+from rob_box_dialog_msgs.msg import ExpressionEvent, SoundEvent
 from rob_box_voice.core.sound_requests import parse_trigger
 from rob_box_voice.sound_node import EARCON_SOUNDS, SoundNode
+
+_MANIFEST = Path(__file__).resolve().parents[3] / "config" / "sound_answer_manifest.json"
 
 
 class _Thread:
@@ -134,7 +137,12 @@ def test_earcon_starts_the_sound_and_answers_started(node):
     (thread,) = _Thread.started
     assert thread.args[:2] == ("button_click", "button_click") and thread.args[2] == "turn-1"
     (answer,) = _expression_events(node)
-    assert (answer.executor, answer.turn_id, answer.kind, answer.reason) == ("sound", "turn-1", ExpressionEvent.KIND_STARTED, "")
+    assert (answer.executor, answer.turn_id, answer.kind, answer.reason) == (
+        "sound",
+        "turn-1",
+        ExpressionEvent.KIND_STARTED,
+        "",
+    )
 
 
 def test_second_earcon_while_the_first_plays_is_skipped_busy_not_silently_dropped(node):
@@ -143,9 +151,17 @@ def test_second_earcon_while_the_first_plays_is_skipped_busy_not_silently_droppe
     assert len(_Thread.started) == 1
     (skipped,) = _sound_events(node)
     assert (skipped.kind, skipped.reason, skipped.request_id, skipped.sound) == (
-        SoundEvent.KIND_SKIPPED, "busy", "t2", "ui_confirm")
+        SoundEvent.KIND_SKIPPED,
+        "busy",
+        "t2",
+        "ui_confirm",
+    )
     first, second = _expression_events(node)
-    assert (first.kind, second.kind, second.reason) == (ExpressionEvent.KIND_STARTED, ExpressionEvent.KIND_SKIPPED, "busy")
+    assert (first.kind, second.kind, second.reason) == (
+        ExpressionEvent.KIND_STARTED,
+        ExpressionEvent.KIND_SKIPPED,
+        "busy",
+    )
 
 
 def test_voice_stream_wins_over_effects_and_says_so(node):
@@ -184,7 +200,11 @@ def test_play_sound_request_id_reaches_the_event(node):
     assert thread.args == ("button_click", "button_click", "rq-1")
     (skipped,) = _sound_events(node)
     assert (skipped.kind, skipped.reason, skipped.request_id, skipped.sound) == (
-        SoundEvent.KIND_SKIPPED, "busy", "rq-2", "error")
+        SoundEvent.KIND_SKIPPED,
+        "busy",
+        "rq-2",
+        "error",
+    )
 
 
 def test_trigger_forms():
@@ -202,6 +222,82 @@ def test_thread_reports_started_then_finished(node):
     assert (started.kind, started.request_id, started.sound) == (SoundEvent.KIND_STARTED, "r1", "button_click")
     assert (finished.kind, finished.reason) == (SoundEvent.KIND_FINISHED, "")
     assert node.is_playing is False
+
+
+def test_answer_clip_stop_is_skipped_not_finished(node, tmp_path, monkeypatch):
+    """«Стоп» рвёт клип режима. ``play_audio`` после ``sd.stop()`` возвращает True — это не ``finished``."""
+    monkeypatch.setattr(node, "sound_answer_clip_dir", str(tmp_path))
+    (tmp_path / "bird.wav").write_bytes(b"")
+    node._answer_ids = {"bird"}
+    node.sounds["bird"] = _segment()
+
+    def stop_during_play(*_args, **_kwargs):
+        node.sound_stop_callback(types.SimpleNamespace(data="STOP"))
+        return True
+
+    node.playback_manager.play_audio.side_effect = stop_during_play
+    node.play_sound_thread("bird", "bird", "clip-1")
+    last = _sound_events(node)[-1]
+    assert (last.kind, last.reason) == (SoundEvent.KIND_SKIPPED, "stopped")
+    node.playback_manager.stop_playback.assert_called()
+
+
+def test_ordinary_sound_stop_still_finishes_when_play_returns_true(node):
+    """Обычный эффект «стоп» не перекрашивает: рация закрывается, исход эффекта — как вернул ``play_audio``."""
+    node.play_sound_thread("button_click", "button_click", "earcon")
+    finished = _sound_events(node)[-1]
+    assert finished.kind == SoundEvent.KIND_FINISHED
+
+
+def test_radio_stop_does_not_silence_an_ordinary_effect(node):
+    """Конец PTT и конец рации публикуют тот же STOP. ``sd.stop()`` зовётся только для клипа режима.
+
+    Обычный эффект при этом доигрывает: его исход решает ``play_audio``, не чужой STOP.
+    """
+    node.current_sound = "button_click"
+    node.sound_stop_callback(types.SimpleNamespace(data="STOP"))
+    node.playback_manager.stop_playback.assert_not_called()
+
+    node.current_sound = "bird"
+    node._answer_ids = {"bird"}
+    node.sound_stop_callback(types.SimpleNamespace(data="STOP"))
+    node.playback_manager.stop_playback.assert_called()
+
+
+def test_stop_before_the_clip_thread_starts_is_skipped(node, tmp_path, monkeypatch):
+    """STOP до входа в поток клипа не забывается: поток видит уже поднятый флаг и не говорит ``finished``."""
+    monkeypatch.setattr(node, "sound_answer_clip_dir", str(tmp_path))
+    (tmp_path / "bird.wav").write_bytes(b"")
+    node._answer_ids = {"bird"}
+    node.sounds["bird"] = _segment()
+    node._answer_stop.set()
+    node.play_sound_thread("bird", "bird", "clip-early")
+    last = _sound_events(node)[-1]
+    assert (last.kind, last.reason) == (SoundEvent.KIND_SKIPPED, "stopped")
+
+
+def test_stop_drops_a_queued_answer_clip_and_keeps_an_ordinary_one(node):
+    """STOP снимает ждущий клип режима (``skipped{stopped}``) и не трогает обычный эффект в очереди."""
+    node._answer_ids = {"bird"}
+    node.is_playing, node.current_sound = True, "button_click"
+    node._queued = ("bird", "bird", "queued-clip")
+    node.sound_stop_callback(types.SimpleNamespace(data="STOP"))
+    assert node._queued is None
+    dropped = _sound_events(node)[-1]
+    assert (dropped.kind, dropped.reason, dropped.request_id) == (SoundEvent.KIND_SKIPPED, "stopped", "queued-clip")
+
+    node._queued = ("ui_confirm", "ui_confirm", "queued-earcon")
+    node.sound_stop_callback(types.SimpleNamespace(data="STOP"))
+    assert node._queued == ("ui_confirm", "ui_confirm", "queued-earcon")
+
+
+def test_answer_clip_without_a_file_is_not_found(node, tmp_path):
+    node.sound_answer_manifest = str(_MANIFEST)
+    node.sound_answer_clip_dir = str(tmp_path)
+    node._answer_ids = {"bird"}
+    _trigger(node, "bird", "missing")
+    (skipped,) = _sound_events(node)
+    assert (skipped.kind, skipped.reason) == (SoundEvent.KIND_SKIPPED, "not_found")
 
 
 def test_thread_reports_skipped_when_the_audio_device_refuses(node):
@@ -235,12 +331,44 @@ def _sound_pack():
     return root / "sound_pack"
 
 
+def test_chimera_abort_skips_finished_and_does_not_silence_another_sound(node):
+    """Обрыв Химеры глушит только её клип и публикует ``skipped/cancelled``, не ``finished``.
+
+    Чужой эффект (не ``source=chimera``) тот же ``{"abort": "chimera"}`` не трогает. Голый ``STOP`` клип не глушит:
+    он закрывает голосовой стрим рации.
+    """
+    node.sounds["owl_hoot"] = _segment()
+    node.trigger_callback(
+        types.SimpleNamespace(data=json.dumps({"sound": "owl_hoot", "request_id": "rq-owl", "source": "chimera"}))
+    )
+    assert node.abort_request("chimera") is True
+    node.playback_manager.stop_playback.assert_called_with("chimera")
+    node.play_sound_thread(*_Thread.started[-1].args)
+    last = _sound_events(node)[-1]
+    assert (last.request_id, last.kind, last.reason) == ("rq-owl", SoundEvent.KIND_SKIPPED, "cancelled")
+
+    node.is_playing, node._chimera, node._request_id = True, False, "rq-other"  # noqa: SLF001
+    assert node.abort_request("chimera") is False
+
+
+def test_queued_chimera_keeps_its_mark_until_it_plays(node):
+    """Клип Химеры, вставший в очередь за коротким earcon, не теряет метку: стоп диалога его обрывает."""
+    node.sounds.update(error=_segment(1.0), owl_hoot=_segment(2.0))
+    node.expression_callback(_request("fail"))
+    node.trigger_callback(
+        types.SimpleNamespace(data=json.dumps({"sound": "owl_hoot", "request_id": "rq-owl", "source": "chimera"}))
+    )
+    node.play_sound_thread(*_Thread.started[0].args)  # earcon доиграл, клип занял канал
+    assert node._chimera is True  # noqa: SLF001 — метка дожила до занятия канала
+    assert node.abort_request("chimera") is True
+
+
 def test_muffled_sound_file_lies_next_to_the_other_earcons_and_is_a_distinct_sound():
     pack = _sound_pack()
     assert (pack / "muffled.mp3").is_file() and (pack / "make_muffled.py").is_file()
     assert kn.SILENCED_EARCONS["heard"] == "muffled" and EARCON_SOUNDS["muffled"] == "muffled"
     assert EARCON_SOUNDS["muffled"] != EARCON_SOUNDS["heard"]
-    assert "muffled" not in kn.EARCONS                      # не выбор LLM (enum схемы команды)
+    assert "muffled" not in kn.EARCONS  # не выбор LLM (enum схемы команды)
     assert set(kn.SILENCED_EARCONS) <= set(kn.EARCONS)
 
 
@@ -250,8 +378,11 @@ def test_muffled_sound_is_short_and_quieter_than_the_heard_click():
     import subprocess
 
     def probe(name):
-        return subprocess.run(["ffmpeg", "-hide_banner", "-i", str(_sound_pack() / name), "-af", "volumedetect", "-f",
-                               "null", "-"], capture_output=True, text=True).stderr
+        return subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", str(_sound_pack() / name), "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+        ).stderr
 
     def peak(text):
         return float(re.search(r"max_volume: (-?[\d.]+) dB", text).group(1))
@@ -273,7 +404,7 @@ def test_in_silence_heard_plays_the_muffled_sound_not_the_click_and_unsilence_br
     (answer,) = _expression_events(node)
     assert (answer.kind, answer.reason) == (ExpressionEvent.KIND_STARTED, "")
     node.release_channel()
-    node.session_callback(_session())                       # «Робот, говори»: сцены Silence больше нет
+    node.session_callback(_session())  # «Робот, говори»: сцены Silence больше нет
     node.expression_callback(_request("heard", "t2"))
     assert _Thread.started[-1].args[:2] == ("button_click", "button_click")
 
@@ -309,8 +440,9 @@ def test_scenario_silence_then_a_phrase_then_robot_speak_ring_and_sound_follow_t
             return lambda *args: (self.calls.append((name, *args)) or True)
 
     timers = []
-    ring_reflex = rr.RingReflex(_Ring(), lambda delay, fn: timers.append(fn) or types.SimpleNamespace(cancel=lambda: None),
-                                lambda *answer: None)
+    ring_reflex = rr.RingReflex(
+        _Ring(), lambda delay, fn: timers.append(fn) or types.SimpleNamespace(cancel=lambda: None), lambda *answer: None
+    )
 
     def session(msg):
         node.session_callback(msg)
@@ -319,7 +451,7 @@ def test_scenario_silence_then_a_phrase_then_robot_speak_ring_and_sound_follow_t
     node.sounds["muffled"] = _segment()
     session(_session("Silence"))
     assert _Ring.calls == [("mono", *rr.SILENCE_FRAMES[0])] and ring_reflex.mode == "silence"
-    assert ring_reflex.on_turn_event("t1", "addressed", "started") is None   # стадия кольцо не трогает
+    assert ring_reflex.on_turn_event("t1", "addressed", "started") is None  # стадия кольцо не трогает
     node.expression_callback(_request("heard", "t1"))
     assert _Thread.started[-1].args[0] == "muffled" and _Thread.started[-1].args[0] != "button_click"
     node.release_channel()

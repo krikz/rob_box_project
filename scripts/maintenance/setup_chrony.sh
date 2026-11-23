@@ -45,8 +45,9 @@ set -euo pipefail
 # Main Pi на проводном линке с Vision Pi: eth0 = 10.1.1.10 (тот же адрес, что
 # ZENOH_CONNECT_ENDPOINTS роутера в docker/vision/docker-compose.yaml "tcp/10.1.1.10:7447#iface=eth0").
 # 10.1.1.20 — это Wi-Fi Main Pi (SSH), время по Wi-Fi не гоняем (ADR-0130 §2.11).
-DEFAULT_SERVER="10.1.1.10"
-ALLOW_SUBNET="10.1.1.0/24"
+# Адрес сервера времени — тот же ROBBOX_MAIN_HOST, что у деплоя (#4375); без него 10.1.1.10.
+DEFAULT_SERVER="${ROBBOX_MAIN_HOST:-10.1.1.10}"
+ALLOW_SUBNET="${ROBBOX_ALLOW_SUBNET:-10.1.1.0/24}"
 # Те же внешние серверы, что в sync_time.sh (из 10.1.1.x отвечают; ntp.ubuntu.com — нет).
 NTP_POOLS="ru.pool.ntp.org 0.ru.pool.ntp.org 1.ru.pool.ntp.org"
 FALLBACK_POOL="pool.ntp.org"

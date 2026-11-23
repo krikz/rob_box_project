@@ -87,6 +87,7 @@ class FakeNode:
         return MagicMock()
 
     def create_timer(self, period, callback):
+        self.__dict__.setdefault("timers", []).append((period, callback))
         return MagicMock()
 
     def create_service(self, *args, **kwargs):
@@ -121,6 +122,7 @@ def _install_ros_mocks():
     mock_rclpy = MagicMock()
     mock_rclpy_node = MagicMock()
     mock_rclpy_node.Node = FakeNode
+    mock_rclpy.qos = MagicMock()
 
     mock_sensor_msgs = MagicMock()
     mock_sensor_msgs_msg = MagicMock()
@@ -134,9 +136,44 @@ def _install_ros_mocks():
     mock_std_msgs_msg = MagicMock()
     mock_std_msgs_msg.Bool = FakeBool
 
+    # Tf2Lookup(buffer) в yaw_at_goal_node импортирует rclpy.time / rclpy.duration.
+    # Без модулей в sys.modules конструктор падает в юнит-тесте, и #4788 подсунул
+    # lambda s: s — на роботе lookup_transform(float) даёт TypeError каждый тик.
+    time_mod = types.ModuleType("rclpy.time")
+
+    class Time:
+        def __init__(self, *, nanoseconds=0):
+            self.nanoseconds = nanoseconds
+
+    time_mod.Time = Time
+    duration_mod = types.ModuleType("rclpy.duration")
+
+    class Duration:
+        def __init__(self, *, nanoseconds=0):
+            self.nanoseconds = nanoseconds
+
+    duration_mod.Duration = Duration
+    tf2_mod = MagicMock()
+
+    class _Tf2LookupExc(Exception):
+        pass
+
+    class _Tf2ConnectivityExc(Exception):
+        pass
+
+    class _Tf2ExtrapolationExc(Exception):
+        pass
+
+    tf2_mod.LookupException = _Tf2LookupExc
+    tf2_mod.ConnectivityException = _Tf2ConnectivityExc
+    tf2_mod.ExtrapolationException = _Tf2ExtrapolationExc
+
     mocks = {
         "rclpy": mock_rclpy,
         "rclpy.node": mock_rclpy_node,
+        "rclpy.qos": mock_rclpy.qos,
+        "rclpy.time": time_mod,
+        "rclpy.duration": duration_mod,
         "sensor_msgs": mock_sensor_msgs,
         "sensor_msgs.msg": mock_sensor_msgs_msg,
         "geometry_msgs": mock_geometry_msgs,
@@ -146,7 +183,11 @@ def _install_ros_mocks():
         # proximity_guard_node (#4365): одометрия и TF — только типы, сообщения в тестах — SimpleNamespace
         "nav_msgs": MagicMock(),
         "nav_msgs.msg": MagicMock(),
-        "tf2_ros": MagicMock(),
+        "tf2_ros": tf2_mod,
+        # followpath_watchdog_node: статусы action. Числа статусов код не берёт из этого модуля.
+        "action_msgs": MagicMock(),
+        "action_msgs.msg": MagicMock(),
+        "action_msgs.srv": MagicMock(),
     }
     for name, mock in mocks.items():
         sys.modules.setdefault(name, mock)

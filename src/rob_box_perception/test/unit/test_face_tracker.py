@@ -101,6 +101,9 @@ def test_steady_face_promotes_exactly_once_after_min_track_sec():
     assert isinstance(encounter, FaceEncounter)
     assert encounter.promoted_at == 2.0
     assert encounter.observation_count == 10
+    stamped = make_obs(2.0, face_px=100.0)
+    tracker.update([stamped], 2.4)
+    assert stamped.track_id == encounter.track_id
 
     # Дальнейшие кадры не производят повторного промоушна.
     now = 2.2
@@ -161,6 +164,12 @@ def test_two_faces_side_by_side_produce_two_independent_encounters():
     assert len(all_promoted) == 2
     track_ids = {e.track_id for e in all_promoted}
     assert len(track_ids) == 2
+    pair = [
+        make_obs(1.4, cx=0.2, cy=0.5, face_px=100.0),
+        make_obs(1.4, cx=0.8, cy=0.5, face_px=100.0),
+    ]
+    tracker.update(pair, 1.4)
+    assert {obs.track_id for obs in pair} == track_ids
     assert tracker.active_track_count() == 2
     assert tracker.promoted_track_count() == 2
 

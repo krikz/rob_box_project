@@ -51,18 +51,24 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
             self.topic = topic
             self.msg_type = msg_type
             self.qos = qos
-            # Latched QoS-проверка: храним durability явно (см.
-            # test_teleop_lock_uses_latched_qos — ADR-0081: twist_mux
-            # читает lock-топик при init, transient_local обязателен,
-            # иначе при реконнекте подписчик пропустит True и потеряет
-            # блокировку. mock должен отражать это).
+            # Durability издателя храним явно (см.
+            # test_teleop_lock_qos_matches_twist_mux — #4694: twist_mux
+            # подписан VOLATILE, transient_local с ним не стыкуется).
             self.durability = (
                 getattr(qos, "durability", None) if qos is not None else None
             )
+            self.reliability = (
+                getattr(qos, "reliability", None) if qos is not None else None
+            )
             self.published: list[Any] = []
+            # Подписчики, появившиеся ПОСЛЕ публикаций, прошлые сообщения
+            # не видят (VOLATILE). #4694.
+            self.subscribers: list[Any] = []
 
         def publish(self, msg: Any) -> None:
             self.published.append(msg)
+            for sub in list(self.subscribers):
+                sub.on_msg(msg)
 
     class FakeSubscription:
         def __init__(self, topic: str, callback: Any, msg_type: Any = None) -> None:
@@ -216,6 +222,10 @@ def _install_ros_mocks() -> None:  # noqa: C901 — test infra helpers grow with
         ReliabilityPolicy=_ReliabilityPolicy,
         QoSProfile=_QoSProfile,
     )
+    # arbiter_node читает rclpy.qos.ReliabilityPolicy (не from-import).
+    # MagicMock на mock_rclpy.qos отдал бы RELIABLE как MagicMock, и
+    # проверка VOLATILE+RELIABLE (#4694) не увидела бы строку "reliable".
+    mock_rclpy.qos = mock_rclpy_qos
 
     # ── std_msgs.msg.String ───────────────────────────────────────────
     class FakeStringMsg:

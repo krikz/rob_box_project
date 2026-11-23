@@ -67,7 +67,15 @@ import { createToast, type Toast } from "./ui/toast";
 import { formatClock } from "./state/tars1_layout";
 import { parseTarsStatus, type TarsStatusFields } from "./state/tars_status";
 import { parseConsoleEvent } from "./state/tars_console_lines";
-import { floorLabel, supervisorEffect, type FloorLabel, type SupervisorState } from "./state/supervisor_state";
+import {
+  armStickDecision,
+  floorLabel,
+  questServerClientId,
+  supervisorEffect,
+  teleopFloorClaim,
+  type FloorLabel,
+  type SupervisorState
+} from "./state/supervisor_state";
 import { createPreviewAudioSink, type PreviewAudioSink } from "./ui/preview_audio_sink";
 import { createOperatorAudioSink, type OperatorAudioSink } from "./ui/operator_audio_sink";
 import {
@@ -586,12 +594,14 @@ export function bootstrap(opts: BootstrapOptions): {
   let conn: Connection | null = null;
   let disconnected = true;
   // AV-19 (issue #1911, ADR-0028 §4.4): session_id нашей сессии.
-  // Сравнивается с WELCOME.teleop_floor_held_by — если равны, мы держим
-  // teleop_floor. Запоминается при первом WELCOME и сбрасывается на disconnect.
-  // В текущей реализации FSM уже синхронизируется через onWelcome
-  // (teleopFloorHeldBy === sessionId). Переменная оставлена как hook
-  // для Phase 2 (e.g. конкретный «Acquired by YOU» indicator в HUD).
+  // WELCOME.teleop_floor_held_by — server_client_id ``quest:<uuid>``
+  // (issue #2190), не голый session_id. Сверка — sameFloorClient.
+  // Запоминается при первом WELCOME и сбрасывается на disconnect.
   let mySessionId: string | null = null;
+  // true только после WELCOME или STATE_UPDATE. До этого «свободен»
+  // выдумывать нельзя (ADR-0018): клик ARM не берёт чужой руль вслепую.
+  let teleopFloorKnown = false;
+  let teleopFloorHeldBy: string | null = null;
   // AV-19: текст тоста «возьми руль», показывается когда ARM заблокирован
   // из-за чужого floor. Снимается когда floor снова наш.
   let floorBlockToast: { show(): void; hide(): void } | null = null;
@@ -1290,8 +1300,18 @@ export function bootstrap(opts: BootstrapOptions): {
    * Применить supervisor-state: HUD + дисарм на потере teleop-floor + тост.
    * Вызывается из onSupervisorState и из onStateChange (reset при reconnect).
    */
+  function noteTeleopFloor(heldBy: string | null, known: boolean): void {
+    teleopFloorKnown = known;
+    teleopFloorHeldBy = known ? heldBy : null;
+    if (!known) return;
+    const weHold = teleopFloorClaim(heldBy, mySessionId, true) === "my";
+    fsm.setHasFloor(weHold);
+    if (weHold) setFloorBlocked(false);
+  }
+
   function applySupervisorState(next: SupervisorState | null): void {
     supervisorState = next;
+    if (next !== null) noteTeleopFloor(next.teleopFloor.clientId, true);
     syncTarsInfo();
     // Вся логика перехода — в чистом редьюсере (state/supervisor_state.ts),
     // здесь только применение эффектов к железу UI.
@@ -1408,6 +1428,7 @@ export function bootstrap(opts: BootstrapOptions): {
             // настоящее состояние придёт из WELCOME.teleop_floor_held_by
             // и/или первого FLOOR_HELD/floor_lost.
             mySessionId = null;
+            noteTeleopFloor(null, false);
             fsm.setHasFloor(true);
             setFloorBlocked(false);
             // Аналогично supervisor-state: после разрыва мы не знаем, кто
@@ -1439,6 +1460,7 @@ export function bootstrap(opts: BootstrapOptions): {
             disconnected = true;
             // AV-19: сброс FSM-state и тостов.
             mySessionId = null;
+            noteTeleopFloor(null, false);
             fsm.setHasFloor(true);
             setFloorBlocked(false);
             // "closed" — окончательно (не reconnect). Прямо сейчас
@@ -1450,22 +1472,18 @@ export function bootstrap(opts: BootstrapOptions): {
             bridge.statusHud.setAlert(null);
           }
         },
-        onWelcome: (sessionId, _serverTimeMs, teleopFloorHeldBy) => {
-          // AV-19: запоминаем наш session_id для сравнения с WELCOME.teleop_floor_held_by.
+        onWelcome: (sessionId, _serverTimeMs, welcomeHeldBy) => {
+          // AV-19: session_id — uuid; держатель floor — ``quest:<uuid>``.
           mySessionId = sessionId;
-          // Сервер в WELCOME уже сообщил, держит ли floor наша сессия.
-          // Если да — hasFloor=true; если поле отсутствует (Phase 1 бэкенд)
-          // — оставляем оптимистичный default; первый FLOOR_HELD/floor_lost
-          // скорректирует.
-          if (teleopFloorHeldBy !== null) {
-            const weHold = teleopFloorHeldBy === sessionId;
-            fsm.setHasFloor(weHold);
-            setFloorBlocked(!weHold);
+          supervisorMyClientId = questServerClientId(sessionId);
+          // Поле отсутствует (Phase 1) — оптимистичный default, пока не
+          // придёт STATE_UPDATE / floor_lost. Явный null — руль свободен.
+          if (welcomeHeldBy !== null || !teleopFloorKnown) {
+            noteTeleopFloor(welcomeHeldBy, true);
+            if (teleopFloorClaim(welcomeHeldBy, sessionId, true) === "other") {
+              setFloorBlocked(true);
+            }
           }
-          // AV-17: тот же session_id — наш client_id для supervisor-HUD.
-          // Отдельного поля client_id в WELCOME нет; сервер формирует
-          // session_id сам, клиент ничего не выдумывает.
-          supervisorMyClientId = sessionId || null;
           // v1-сервер → supervisor-координации нет, HUD это показывает.
           supervisorDegraded = conn?.getNegotiatedVersion() === "v1";
           applySupervisorState(supervisorState);
@@ -1713,6 +1731,9 @@ export function bootstrap(opts: BootstrapOptions): {
           }
           // AV-19: JSON_EVENT{type:"floor_lost"} → мгновенный DISARM.
           if ((event as { type?: string }).type === "floor_lost") {
+            // Событие не говорит, свободен руль или его забрали.
+            // «lost» — не free: следующий клик не шлёт acquire вслепую.
+            noteTeleopFloor("lost", true);
             fsm.setHasFloor(false);
             setFloorBlocked(true);
             // eslint-disable-next-line no-console
@@ -1936,23 +1957,32 @@ export function bootstrap(opts: BootstrapOptions): {
         angular = r.angular;
       }
     }
-    // Edge-triggered toggle: нажал стик → ARM, нажал ещё раз → DISARM.
+    // Edge-triggered: нажал стик → ARM (свободный руль берём сами),
+    // нажал ещё раз → DISARM. Чужой руль не берём и twist не шлём.
     if (armPress && !xrArmWasPressed) {
-      // AV-19: ARM требует наш teleop_floor. Если нет — НЕ ставим
-      // armed=true (FSM сама не пошлёт twist благодаря setHasFloor(false),
-      // но XR-стейк мог быть включён, и нам нужно показать «возьми руль»
-      // + оставить deadman=false чтобы не накапливать «активность».
-      if (fsm.hasFloor()) {
+      const claim = teleopFloorClaim(teleopFloorHeldBy, mySessionId, teleopFloorKnown);
+      const decision = armStickDecision(claim, fsm.hasFloor());
+      if (decision.action === "block") {
+        // Чужой или ещё неизвестный floor — тост, armed не ставим.
+        setFloorBlocked(true);
+      } else if (decision.action === "acquire_then_arm") {
+        // Сначала заявка на свободный руль. armed — только после неё.
+        // hasFloor не поднимаем: twist ждёт подтверждения супервизора
+        // (STATE_UPDATE / WELCOME). require_teleop_floor не трогаем.
+        if (conn && !disconnected) {
+          conn.send({ cmd: "avatar_acquire_floor", ts_ms: Date.now(), kind: "teleop" });
+        }
+        armed = true;
+        bridge.setArmState(true);
+        modeManager.setTeleopState("armed");
+        setFloorBlocked(false);
+      } else if (fsm.hasFloor()) {
         armed = !armed;
         bridge.setArmState(armed);
-        // Phase 2.3: mode-manager синхронизируется с реальным arm-стейтом.
         modeManager.setTeleopState(armed ? "armed" : "disarmed");
         setFloorBlocked(false);
       } else {
-        // Floor чужой — показываем тост, ARM не активируем.
         setFloorBlocked(true);
-        // НЕ ставим armed=true; оставляем deadman=false чтобы FSM не
-        // пыталась слать twist из stopping-стейта (мы уже в idle).
       }
     }
     xrArmWasPressed = armPress;

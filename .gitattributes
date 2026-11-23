@@ -2,3 +2,10 @@
 scripts/**/*.sh text eol=lf
 # Точка входа контейнера симуляции (docker/sim) — тоже только LF.
 docker/sim/*.sh text eol=lf
+# Хостовые скрипты и юниты (host/: chuangong, CAN, zram) едут на Pi — только LF (#4375: git archive с
+# core.autocrlf=true отдал install.sh с CRLF, bash упал на $'\r').
+host/**/*.sh text eol=lf
+host/**/*.service text eol=lf
+host/**/*.timer text eol=lf
+host/**/*.conf text eol=lf
+host/**/*.example text eol=lf

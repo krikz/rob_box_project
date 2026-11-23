@@ -59,6 +59,23 @@
 первой попытки уже есть -- команда исполнена, повторять нельзя (n506 марафона-6: «ускорь» 134 -> 145 BPM исполнено,
 повтор упёрся в потолок и покраснел шаг), и шаг судится по первому исполнению (``stt --executed 1`` -> ``kept=executed``).
 
+Промах STT без ключевых слов (#4741, #4738)
+==========================================
+Гипотеза не пустая, но это не фраза шага («какой чай» -> «какой человек», стоп -> «Thank you.»). Шагу без
+``stt_keys`` нечем звать :data:`STT_REPLAY`, и судить робота по чужому входу нельзя. Решает :func:`stt_miss_retry`:
+повтор фразы, пока попытка меньше :data:`STT_GARBAGE_MAX_ATTEMPTS` (считая первую). Исчерпание -- честный FAIL,
+в вердикте ``stt_attempt``. Таймаут без гипотезы, падение робота, совпавшая фраза при отсутствии TTS/тула --
+не этот класс, повтора нет. Словаря подмен («человек»→«чай», «Thank you»→«стой») нет.
+
+Мусор STT вместо команды (#4694, 17.11)
+========================================
+Тот же потолок, когда ход не дошёл до команды, потому что STT вернул не её, а мусор («говори» -> «колории»,
+n805b run 43636148539: судья сказал ``silenced``, харнесс писал ``FAIL turn_silenced`` с первой попытки). Решает
+:func:`stt_garbage_retry`: распознанный текст не содержит ключевых слов шага и не похож на ожидаемую команду
+(:func:`heard_matches_command`) -- повтор, всего :data:`STT_GARBAGE_MAX_ATTEMPTS` попыток фразы. Исчерпание --
+честный FAIL, не зелёный; в вердикте виден ``stt_attempt``. Бесконечного ретрая нет. Словарь диалога и грамматика
+не правятся: «колории» командой не становится.
+
 Предусловие шага (#3971 R21)
 ============================
 Поле шага ``skip_when: {"reason": "KIE_QUOTA", "log": <regex>}`` -- без чего шаг теряет смысл: строка ``log`` в логе
@@ -74,9 +91,10 @@ n312 28.10). С ``"deck": "playing"`` (#4196, n512) -- наоборот: муз�
 
 Ссылка шага на трек песни акта (#3710, #4077)
 =============================================
-Поле шага ``track_ref`` -- шаг про «эту песню» (n707 «расскажи», n708 «включи»), а не про любой трек библиотеки:
-``{"reason": "CASCADE_N702", "log": <regex с одной группой -- id>, "tool": "music_library", "action": "info",
-"wait_sec": N}``. Id берётся из лога робота за акт, где его пишет сам заказ песни (``🎤 [song] … track=<id>``,
+Поле шага ``track_ref`` -- шаг про «эту песню» (n707 «расскажи», n708 «включи», n710 «удали»), а не
+про любой трек библиотеки:
+``{"reason": "CASCADE_N702", "log": <regex с одной группой -- id>, "tool": "music_library",
+"action": "info|play|delete", "wait_sec": N}``. Id берётся из лога робота за акт, где его пишет сам заказ песни (``🎤 [song] … track=<id>``,
 :func:`track_ref_bind`; последняя такая строка); строки нет за ``wait_sec`` -- заказ n702 песни не дал, шаг не
 играется: ``SKIP <reason>``, а не PASS. Шаг сыгран -- его вызов тула в окне шага (``📥 Запрос выполнения: <tool> с
 параметрами {…}``) обязан нести ЭТОТ id при этом ``action`` (:func:`track_ref_verdict`): вызов на чужой трек или
@@ -130,7 +148,7 @@ PERFORM_END_RE = re.compile(r"\[perform\] \S*: конец \((\w+)\)|PlanEvent bl
 PERFORM_CEILING_S = 240.0
 STALE_S = 60.0
 MAX_SKEW_S = 3600.0
-ANCHORS = ("speech_started", "llm_request", "segment_started")
+ANCHORS = ("speech_started", "llm_request", "segment_started", "perform_started")
 
 
 def _ts(line: str) -> Optional[float]:
@@ -349,14 +367,21 @@ def quiet(text: str) -> Dict[str, object]:
 
 def anchor(text: str, after: str, n: int) -> Dict[str, object]:
     """N-й ``SpeechEvent started`` (``speech_started``/``segment_started``) или N-я ``LLM REQUEST START``
-    (``llm_request``) ПОСЛЕ первой принятой фразы окна. Метка времени -- из лога робота (0, если нет)."""
+    (``llm_request``) ПОСЛЕ первой принятой фразы окна. ``perform_started`` -- N-й ``started`` после маркера
+    ``выступление старт kind=rap``: более ранняя waiting-фраза якорем не является. Метка -- из лога робота."""
     now, lines = split_input(text)
     accepted, count = False, 0
+    perform_marker = False
     for line in lines:
         if "ПРИНЯТО" in line:
             accepted = True
             continue
         if not accepted:
+            continue
+        if after == "perform_started" and not perform_marker:
+            started = PERFORM_START_RE.search(line)
+            if started and started.group(1) == "rap":
+                perform_marker = True
             continue
         hit, speech_id = _anchor_hit(line, after)
         if not hit:
@@ -407,8 +432,13 @@ WAKE_REPLAY = "wake_replay"
 #: слова не нашлись в ПРИНЯТО -- фраза звучит ещё раз, ОДИН раз за шаг, окно шага начинается с повтора (:func:`stt_verdict`).
 STT_REPLAY = "stt_replay"
 OPT_IN_RECOVERY: Tuple[str, ...] = (WAKE_REPLAY, STT_REPLAY)
+#: ``stt_inject`` (решение Шифу 19.11, #4951) -- STT не донёс фразу шага (``no_accept`` / мусор / потолок повторов):
+#: харнесс сам публикует ОРИГИНАЛЬНУЮ команду шага в ``/voice/stt/utterance`` -- один раз за шаг, только если у топика
+#: есть подписчик. Ход после инъекции судится как обычный, но шаг помечается ``OK recovered_stt_inject``, а не чистым
+#: PASS. Своей фразы у вида нет (это не реплика роботу), поэтому он вне :data:`RECOVERY`/:data:`OPT_IN_RECOVERY`.
+STT_INJECT = "stt_inject"
 #: Все виды, которые шаг может записать в ``recover`` и которые ставят маркер ``E2E_RECOVER <вид> <шаг>``.
-STEP_RECOVERY_KINDS: Tuple[str, ...] = RECOVERABLE + OPT_IN_RECOVERY
+STEP_RECOVERY_KINDS: Tuple[str, ...] = RECOVERABLE + OPT_IN_RECOVERY + (STT_INJECT,)
 #: Утечки прошлого акта, которые харнесс убирает на старте акта (#3989 п.5, #4027): тишина -- тем же видом и той же
 #: репликой, что у шага (:data:`RECOVERY`), играющая музыка -- стопом через ``/mcp/execute``.
 ACT_RECOVERY: Tuple[str, ...] = (SILENCED, "music")
@@ -424,6 +454,10 @@ BARE_WAKE_WORDS: Tuple[str, ...] = ("робот", "робби", "роббокс"
 #: Решение Шифу 06.11 («чтобы избежать глухости вейка, давать на вейк больше попыток для всех шагов, где у нас есть
 #: вейк, например три вейка по очереди»): ВСЕГО попыток фразы шага при ``no_wake``, считая первую. Единственная константа.
 WAKE_MAX_ATTEMPTS = 3
+#: Решение Шифу 17.11 (#4694, Telegram 15:45 UTC): STT вернул не команду, а мусор («говори» -> «колории») --
+#: не FAIL с первой попытки, а повтор хода. ВСЕГО попыток фразы шага, считая первую (как у вейка: три). Одна
+#: константа на оба класса «расслышал не то»: мусор вместо команды и промах heard≠expected. Исчерпание -- честный FAIL.
+STT_GARBAGE_MAX_ATTEMPTS = 3
 #: ``expect`` шага, который проверяет САМ вейк (фраза без вейка должна уйти в бэклог): ему вейк не повторяют.
 WAKE_RETRY_EXEMPT_EXPECT: Tuple[str, ...] = ("backlog",)
 
@@ -556,6 +590,117 @@ def stt_verdict(step: Mapping[str, Any], heard: str, executed: bool = False) -> 
     return verdict
 
 
+def stt_replay_inject(
+    stt_ok: bool, replayed: bool, fallback: bool, injected: bool, barge_in: bool, executed: bool
+) -> Dict[str, object]:
+    """После единственного звукового ``stt_replay`` распознанное снова разошлось с фразой шага (#4196, акт 4
+    марафона 20.11, run 44802283781, n411_pitch_bass: «говори басом» -> «галибаса»).
+
+    Один звуковой повтор уже был и слова шага снова не нашлись (``stt_ok`` ложь) -- последняя попытка не звуком,
+    а топиком: ``inject=1``. Не инжектить: звукового повтора не было, слова нашлись, инъекция шагу запрещена
+    (``fallback`` ложь), инъекция в шаге уже была, шаг перебивает речь, исход шага в окне первой попытки уже есть
+    (``executed``: второй заход дал бы другой исход, #4955). Потолок не растёт: это не вторая звуковая попытка.
+    Возвращает ``inject`` (0/1) и ``reason``."""
+    if not replayed:
+        reason = "not_replayed"
+    elif stt_ok:
+        reason = "keys_heard"
+    elif not fallback:
+        reason = "fallback_off"
+    elif injected:
+        reason = "already_injected"
+    elif barge_in:
+        reason = "barge_in"
+    elif executed:
+        reason = "executed"
+    else:
+        reason = "inject"
+    return {"inject": int(reason == "inject"), "reason": reason}
+
+
+def content_words(text: str) -> Tuple[str, ...]:
+    """Слова фразы без вейка и без пунктуации: «Робот, говори.» -> ``("говори",)``."""
+    return tuple(w for w in _norm(text).split() if w not in BARE_WAKE_WORDS)
+
+
+def heard_matches_command(text: str, heard: str) -> bool:
+    """Распознанный текст -- та же команда, что играл харнесс, а не мусор STT.
+
+    Совпадает, если каждое содержательное слово фразы нашлось в ПРИНЯТО подстрокой (как :func:`stt_verdict`:
+    «говори» ловит «говори», не «колории»). Пустая фраза или пустое ПРИНЯТО -- не команда: сверять нечего."""
+    words, folded = content_words(text), _fold_ru(heard)
+    return bool(words and folded) and all(_fold_ru(word) in folded for word in words)
+
+
+def stt_miss_retry(text: str, heard: str, attempt: int, timeout: bool = False,
+                   crash: bool = False, barge_in: bool = False,
+                   fallback: bool = False, injected: bool = False) -> Dict[str, Any]:
+    """Повтор шага, если STT принял непустую чужую фразу (#4741 n1009, #4738 n709; потолок -- 17.11).
+
+    Повтор (``retry=1``), когда гипотеза не пустая и :func:`heard_matches_command` ложь, пока попытка меньше
+    :data:`STT_GARBAGE_MAX_ATTEMPTS` (считая первую). На потолке ``reason=attempts_exhausted``, не PASS.
+    Повтора нет: пустое ПРИНЯТО (таймаут/нет гипотезы), голое вейк-слово (подхват бэклога после ``no_wake``),
+    падение робота, перебивание, совпавшая фраза (в том числе таймаут цикла после правильного ПРИНЯТО --
+    нет TTS/тула этим повтором не маскируется). Словарь подмен не нужен.
+    ``fallback`` (решение Шифу 19.11, #4951): на потолке -- исход ``inject`` вместо ``attempts_exhausted``:
+    харнесс отправляет оригинальную команду шага в /voice/stt/utterance, шаг судится по реакции робота.
+    ``injected`` -- инъекция в этом шаге уже была: тогда ``attempts_exhausted`` остаётся честным.
+    Возвращает ``retry``, ``reason``, ``attempt``, ``max``."""
+    if crash:
+        reason = "crash"
+    elif barge_in:
+        reason = "barge_in"
+    elif not _fold_ru(heard):
+        reason = "timeout" if timeout else "nothing_heard"
+    elif is_bare_wake(heard):
+        reason = "bare_wake"
+    elif heard_matches_command(text, heard):
+        reason = "timeout" if timeout else "command_heard"
+    elif attempt >= STT_GARBAGE_MAX_ATTEMPTS:
+        reason = "attempts_exhausted" if injected or not fallback else "inject"
+    else:
+        reason = "retry"
+    return {
+        "retry": int(reason == "retry"),
+        "reason": reason,
+        "attempt": attempt,
+        "max": STT_GARBAGE_MAX_ATTEMPTS,
+    }
+
+
+def stt_garbage_retry(text: str, heard: str, attempt: int, missing: str = "",
+                      allowed: bool = True, fallback: bool = False,
+                      injected: bool = False) -> Dict[str, Any]:
+    """Повтор хода, если STT вернул не команду, а мусор (#4694, 17.11).
+
+    Повтор (``retry=1``), когда шаг его разрешает (``stt_replay``), распознанный текст не совпал с командой
+    (:func:`heard_matches_command`) и ключевое слово шага в нём потеряно (``missing`` из :func:`stt_verdict`,
+    не ``-``), пока попытка меньше :data:`STT_GARBAGE_MAX_ATTEMPTS` (считая первую). На потолке ``retry=0``,
+    ``reason=attempts_exhausted`` -- честный FAIL, не зелёный. Не мусор (команда узнана, слова на месте,
+    ПРИНЯТО пусто) повтора не просит: тишина на узнанной команде -- отказ действия, не флак STT.
+    ``fallback``/``injected`` -- как у :func:`stt_miss_retry`: на потолке ``reason=inject``, пока инъекции
+    оригинальной команды в /voice/stt/utterance не было (решение Шифу 19.11, #4951).
+    Возвращает ``retry``, ``reason``, ``attempt``, ``max``."""
+    if not allowed:
+        reason = "not_allowed"
+    elif not _fold_ru(heard):
+        reason = "nothing_heard"
+    elif heard_matches_command(text, heard):
+        reason = "command_heard"
+    elif not missing or missing == "-":
+        reason = "keys_present"
+    elif attempt >= STT_GARBAGE_MAX_ATTEMPTS:
+        reason = "attempts_exhausted" if injected or not fallback else "inject"
+    else:
+        reason = "retry"
+    return {
+        "retry": int(reason == "retry"),
+        "reason": reason,
+        "attempt": attempt,
+        "max": STT_GARBAGE_MAX_ATTEMPTS,
+    }
+
+
 # -- тишина в снимке сессии (#3989 п.5) -------------------------------------------------------------------
 
 
@@ -592,6 +737,21 @@ def session_report(report: Any) -> Dict[str, object]:
         after = int(silence_frame(after, now) is not None)
     detail = _describe(frame, now) if report.get("snapshot") else "снимка нет (сессию с запуска ноды не меняли)"
     return {"fetch": 1, "silenced": int(frame is not None), "after": after, "detail": detail}
+
+
+def inject_report(report: Any) -> Dict[str, object]:
+    """Ответ рабочего процесса инъекции (``injected``, ``subscribers``) -> ``injected`` (1 -- реплика ушла в
+    /voice/stt/utterance, у топика был подписчик на момент публикации) и ``subscribers``.
+
+    Публикация в пустоту -- не инъекция: без подписчика сообщение теряется, и шаг остаётся честным FAIL, а не
+    «восстановлен инъекцией» (issue #4951, решение Шифу 19.11)."""
+    if not isinstance(report, Mapping) or "injected" not in report:
+        return {"injected": 0, "subscribers": 0}
+    try:
+        subscribers = int(report.get("subscribers") or 0)
+    except (TypeError, ValueError):
+        subscribers = 0
+    return {"injected": int(bool(report.get("injected")) and subscribers > 0), "subscribers": subscribers}
 
 
 # -- предусловие шага: skip_when (#3971 R21) --------------------------------------------------------------------
@@ -992,6 +1152,25 @@ def compare_kind(step: Mapping[str, Any]) -> str:
     return str(raw)
 
 
+#: Строка приёма STT: ``✅ ПРИНЯТО (respeaker): <фраза>``. Источник в скобках необязателен.
+ACCEPTED_RE = re.compile(r"✅ ПРИНЯТО(?: \([^)]*\))?:\s*(\S.*?)\s*$")
+#: TTS звучит: SpeechEvent started открывает окно, finished/cancelled/rejected его закрывает.
+#: ``✅ Воспроизведение завершено`` (tts_node) закрывает открытое окно, если события конца в логе нет.
+PLAYBACK_DONE_RE = re.compile(r"✅ Воспроизведение завершено")
+#: Источник фразы -- микрофон во время TTS (hardware AEC), не текст фразы.
+DURING_TTS_RE = re.compile(r"\[hardware AEC\].*во время TTS")
+#: Вызов тула в логе шага. Маркеры -- те же, что ``e2e_tool_match.invocation_markers``,
+#: но имя ловится в строке как есть: «Запрос выполнения: music_library» пишется с заглавной,
+#: а сравнение ниже приводит имя к lower. Свободная подстрока (каталог тулов в промпте) не матчится.
+#: Не путать с TOOL_CALL_RE разбора параметров: тот ловит имя и JSON, этот -- факт вызова.
+TOOL_INVOKED_RE = re.compile(
+    r"(?:запрос выполнения|Calling MCP tool|ToolCall\(name=)\s*:?\s*['\"]?([A-Za-z][A-Za-z0-9_]{1,40})"
+    r"|инструмент\s+['\"]?([A-Za-z][A-Za-z0-9_]{1,40})\s+выполнен"
+    r"|публикую результат для\s+['\"]?([A-Za-z][A-Za-z0-9_]{1,40})",
+    re.IGNORECASE,
+)
+
+
 def epoch_of(stamp: str) -> Optional[float]:
     """Начало окна шага: секунды epoch или ``STEP_BEFORE`` харнесса (``2026-10-27T23:24:30Z``, UTC робота)."""
     try:
@@ -1002,6 +1181,115 @@ def epoch_of(stamp: str) -> Optional[float]:
         return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
     except ValueError:
         return None
+
+
+def _speech_open(open_ids: Dict[str, float], kind: str, speech_id: str, ts: float) -> None:
+    """Открыть или закрыть реплику. Прогресс и очередь окно TTS не двигают."""
+    if kind == "started":
+        open_ids[speech_id] = ts
+    elif kind in CLOSING:
+        open_ids.pop(speech_id, None)
+
+
+def tts_speaking_at(lines: List[str], ts: float) -> bool:
+    """TTS звучал в момент ``ts``: есть SpeechEvent started без конца к этому моменту.
+
+    Конец -- finished/cancelled/rejected той же реплики или ``✅ Воспроизведение завершено``,
+    если открытая реплика ещё не закрыта событием. Очередь и синтез (queued/synthesized)
+    звучанием не считаются: микрофон эхо ловит, когда колонка уже играет.
+    """
+    open_ids: Dict[str, float] = {}
+    for line in lines:
+        line_ts = _ts(line)
+        if line_ts is None or line_ts > ts:
+            continue
+        event = speech_event(line)
+        if event is not None:
+            _speech_open(open_ids, event[0], event[1], line_ts)
+            continue
+        if PLAYBACK_DONE_RE.search(line) and open_ids:
+            open_ids.clear()
+    return bool(open_ids)
+
+
+def accepted_phrase(line: str) -> str:
+    """Текст ``✅ ПРИНЯТО`` или пустая строка, если это не приём."""
+    found = ACCEPTED_RE.search(line)
+    return found.group(1).strip() if found else ""
+
+
+def accept_is_tts_echo(lines: List[str], index: int) -> bool:
+    """``✅ ПРИНЯТО`` -- эхо собственного TTS, не ответ шага (#4981).
+
+    Признак детерминированный, не текст фразы: метка строки лежит внутри открытого
+    окна TTS (:func:`tts_speaking_at`) либо в том же окне лога есть строка hardware AEC
+    «во время TTS» не раньше предыдущего приёма и не позже этого. Чужой приём вне TTS
+    эхом не считается, даже если слова совпали с тем, что робот сказал.
+    """
+    ts = _ts(lines[index])
+    if ts is None or not accepted_phrase(lines[index]):
+        return False
+    if tts_speaking_at(lines, ts):
+        return True
+    prev = 0.0
+    for earlier in lines[:index]:
+        if accepted_phrase(earlier):
+            prev = _ts(earlier) or prev
+    for earlier in lines[: index + 1]:
+        mark = _ts(earlier)
+        if mark is None or mark < prev or mark > ts:
+            continue
+        if DURING_TTS_RE.search(earlier):
+            return True
+    return False
+
+
+def _in_window(line: str, since: Optional[float]) -> bool:
+    """Строка не старше начала окна. Нет метки или окна -- строка остаётся (её нечем отрезать)."""
+    if since is None:
+        return True
+    ts = _ts(line)
+    return ts is None or ts >= since
+
+
+def step_answer(lines: List[str], since: Optional[float] = None) -> str:
+    """Последний ``✅ ПРИНЯТО`` не старше ``since``, который не эхо TTS. Пусто -- ответа шага нет.
+
+    Последний, не первый: окно повтора начинается с нового PLAY, и принятая там фраза --
+    ответ на повтор. Эхо собственного TTS (микрофон во время звучания) ответом не считается,
+    даже если оно последнее в файле: иначе харнесс сдвигает окно и теряет вызов тула первой
+    попытки (#4981). ``since`` режет окно сам: ``docker logs --since`` на фейке лог не режет,
+    а прошлый ход в том же файле ответом этого шага не является.
+    """
+    window = [line for line in lines if _in_window(line, since)]
+    answer = ""
+    for index, line in enumerate(window):
+        phrase = accepted_phrase(line)
+        if phrase and not accept_is_tts_echo(window, index):
+            answer = phrase
+    return answer
+
+
+def tool_called_since(lines: List[str], since: float, names: List[str]) -> bool:
+    """Каждое имя из ``names`` вызвано в строке с меткой не раньше ``since``.
+
+    Пустой список -- вызов не доказан (шаг без ожидаемых тулов этим не «исполнен»).
+    Имя ищется маркером вызова, не свободной подстрокой: каталог тулов в промпте
+    ложным вызовом не считается.
+    """
+    wanted = [name.strip().lower() for name in names if name.strip()]
+    if not wanted:
+        return False
+    found = set()
+    for line in lines:
+        ts = _ts(line)
+        if ts is None or ts < since:
+            continue
+        for match in TOOL_INVOKED_RE.finditer(line):
+            name = next((group for group in match.groups() if group), "")
+            if name:
+                found.add(name.lower())
+    return all(name in found for name in wanted)
 
 
 def music_compare(kind: str, text: str, since: float) -> Dict[str, object]:
@@ -1100,6 +1388,16 @@ def _cmd_session(opts: Dict[str, str], flags: List[str]) -> int:
     return 0
 
 
+def _cmd_inject(opts: Dict[str, str], flags: List[str]) -> int:
+    """``inject < report.json`` -> ``injected=`` / ``subscribers=`` (см. :func:`inject_report`)."""
+    try:
+        report = json.loads(sys.stdin.read())
+    except ValueError:
+        report = None
+    _emit(inject_report(report))
+    return 0
+
+
 def _cmd_mark(opts: Dict[str, str], flags: List[str]) -> int:
     """``--kind K --where W [--detail D]`` -> строка маркера ``E2E_RECOVER``; чужой вид -- rc 2 и причина в stderr."""
     try:
@@ -1153,6 +1451,87 @@ def _cmd_stt(opts: Dict[str, str], flags: List[str]) -> int:
         sys.stderr.write(f"{opts['--scenario']}: {exc}\n")
         return 2
     _emit(verdict)
+    return 0
+
+
+def _cmd_stt_replay_inject(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--stt-ok 0|1 --replayed 0|1 [--fallback 0|1] [--injected 0|1] [--barge-in 0|1] [--executed 0|1]``
+    -> ``inject=`` / ``reason=``. Решает :func:`stt_replay_inject`, не bash: после звукового повтора слова
+    шага снова не нашлись -- последняя попытка топиком, не второй звуковой повтор."""
+    _emit(stt_replay_inject(
+        stt_ok=opts["--stt-ok"] == "1", replayed=opts["--replayed"] == "1",
+        fallback=opts["--fallback"] == "1", injected=opts["--injected"] == "1",
+        barge_in=opts["--barge-in"] == "1", executed=opts["--executed"] == "1",
+    ))
+    return 0
+
+
+def _cmd_step_answer(opts: Dict[str, str], flags: List[str]) -> int:
+    """Последний ПРИНЯТО окна, который не эхо TTS (#4981). Лог -- stdin, первая строка -- часы робота.
+
+    Печатает ``heard`` (пусто -- ответа шага нет) и ``echo`` (1 -- в окне было эхо, его отбросили).
+    ``--since`` необязателен: без него окно уже отрезал ``docker logs``.
+    """
+    _now, lines = split_input(sys.stdin.read())
+    since = epoch_of(opts["--since"]) if opts["--since"] else None
+    window = [line for line in lines if _in_window(line, since)]
+    heard = step_answer(lines, since)
+    echo = 0
+    for index, line in enumerate(window):
+        if accepted_phrase(line) and accept_is_tts_echo(window, index):
+            echo = 1
+            break
+    _emit({"heard": heard or "-", "echo": echo})
+    return 0
+
+
+def _cmd_tool_since(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--tools a,b`` и необязательный ``--since`` (epoch или STEP_BEFORE).
+
+    Лог -- stdin, первая строка -- часы робота. Без ``--since`` режет сам ``docker logs``:
+    любой вызов в отданном логе считается (фейк ``--since`` не режет, строки ``{NOW-x}``
+    старше UTC-штампа окна). С ``--since`` режет судья. ``called=0``, если лог без часов,
+    окно задано и не разобрано, или хоть одного вызова нет.
+    """
+    now, lines = split_input(sys.stdin.read())
+    since = epoch_of(opts["--since"]) if opts["--since"] else 0.0
+    names = [part.strip() for part in opts["--tools"].split(",") if part.strip()]
+    window_ok = since is not None
+    called = int(now is not None and window_ok and tool_called_since(lines, since, names))
+    _emit({"called": called})
+    return 0
+
+
+def _cmd_stt_retry(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]``
+    -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``. ``--attempt`` не число -- rc 2. Решает
+    :func:`stt_garbage_retry`, не bash."""
+    try:
+        attempt = int(opts["--attempt"] or "1")
+    except ValueError:
+        sys.stderr.write(f"--attempt: не число: {opts['--attempt']}\n")
+        return 2
+    _emit(stt_garbage_retry(
+        opts["--text"], opts["--heard"], attempt, opts["--missing"], allowed=opts["--allowed"] != "0",
+        fallback=opts["--fallback"] == "1", injected=opts["--injected"] == "1",
+    ))
+    return 0
+
+
+def _cmd_stt_miss(opts: Dict[str, str], flags: List[str]) -> int:
+    """``--text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1]
+    [--fallback 0|1] [--injected 0|1]`` -> ``retry=`` / ``reason=`` / ``attempt=`` / ``max=``. ``--attempt``
+    не число -- rc 2. Решает :func:`stt_miss_retry`, не bash."""
+    try:
+        attempt = int(opts["--attempt"] or "1")
+    except ValueError:
+        sys.stderr.write(f"--attempt: не число: {opts['--attempt']}\n")
+        return 2
+    _emit(stt_miss_retry(
+        opts["--text"], opts["--heard"], attempt, timeout=opts["--timeout"] == "1",
+        crash=opts["--crash"] == "1", barge_in=opts["--barge-in"] == "1",
+        fallback=opts["--fallback"] == "1", injected=opts["--injected"] == "1",
+    ))
     return 0
 
 
@@ -1250,14 +1629,22 @@ def _cmd_require(opts: Dict[str, str], flags: List[str]) -> int:
 COMMANDS: Mapping[str, Callable[[Dict[str, str], List[str]], int]] = MappingProxyType({
     "state": _cmd_state, "quiet": _cmd_quiet, "anchor": _cmd_anchor,
     "policy": _cmd_policy, "recovery": _cmd_recovery, "wake-retry": _cmd_wake_retry, "session": _cmd_session,
+    "inject": _cmd_inject,
     "mark": _cmd_mark, "skips": _cmd_skips, "skip": _cmd_skip, "compare": _cmd_compare, "stt": _cmd_stt,
+    "stt-retry": _cmd_stt_retry, "stt-miss": _cmd_stt_miss, "stt-replay-inject": _cmd_stt_replay_inject,
+    "step-answer": _cmd_step_answer, "tool-since": _cmd_tool_since,
     "requires": _cmd_requires, "require": _cmd_require, "barewake": _cmd_barewake,
     "trackrefs": _cmd_trackrefs, "trackbind": _cmd_trackbind, "trackcheck": _cmd_trackcheck,
 })
 USAGE = ("usage: e2e_events.py state|quiet|anchor [--silent-ok] [--barge] [--waited S --accept-window S]"
          " [--perform-ceiling S] [--after A --n N] | policy --scenario FILE | recovery [--kind K] | session < report.json"
+         " | inject < report.json"
          " | wake-retry --expect E --verdict V --attempt N --text T [--barge-in 1] | mark --kind K --where W [--detail D] | skips --scenario FILE | skip --scenario FILE --label L < log"
          " | compare --scenario FILE --label L [--since S < log] | stt --scenario FILE --label L --heard TEXT [--executed 0|1]"
+         " | stt-retry --text ФРАЗА --heard ПРИНЯТО --attempt N --missing СЛОВА [--allowed 0|1] [--fallback 0|1] [--injected 0|1]"
+         " | stt-miss --text ФРАЗА --heard ПРИНЯТО --attempt N [--timeout 0|1] [--crash 0|1] [--barge-in 0|1] [--fallback 0|1] [--injected 0|1]"
+         " | stt-replay-inject --stt-ok 0|1 --replayed 0|1 [--fallback 0|1] [--injected 0|1] [--barge-in 0|1] [--executed 0|1]"
+         " | step-answer < log | tool-since --since S --tools a,b < log"
          " | requires --scenario FILE | require --labels A,B [--steps FILE] [--prior L=S,…]"
          " | barewake --heard TEXT | trackrefs --scenario FILE | trackbind --scenario FILE --label L < log"
          " | trackcheck --scenario FILE --label L --track ID < log\n")
@@ -1275,7 +1662,10 @@ def main(argv: List[str]) -> int:
     opts = {"--after": "speech_started", "--n": "1", "--waited": "0", "--accept-window": "0",
             "--scenario": "", "--kind": "", "--perform-ceiling": "", "--where": "", "--detail": "", "--label": "",
             "--since": "", "--heard": "", "--track": "", "--executed": "0", "--labels": "", "--steps": "",
-            "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0"}
+            "--prior": "", "--expect": "", "--verdict": "", "--attempt": "", "--text": "", "--barge-in": "0",
+            "--missing": "", "--allowed": "1", "--timeout": "0", "--crash": "0",
+            "--fallback": "0", "--injected": "0", "--stt-ok": "0", "--replayed": "0",
+            "--tools": ""}
     flags = argv[2:]
     for i, tok in enumerate(flags):
         if tok in opts and i + 1 < len(flags):

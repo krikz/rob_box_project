@@ -156,7 +156,7 @@ class TestRecoverPolicy:
         rows = dict(line.split("\t") for line in out.stdout.splitlines())
         assert rows["n801_wake_open"] == "no_wake,silenced"
         assert rows["n803_barge_in_new_topic"] == "-"
-        assert rows["n805b_unsilence"] == "no_wake"
+        assert rows["n805b_unsilence"] == "no_wake,stt_replay"
 
     def test_cli_policy_bad_field_exits_2(self, tmp_path):
         scen = tmp_path / "s.json"
@@ -222,9 +222,11 @@ class TestKnowledgeDrift:
 
 # -- bash: run_step с восстановлением на фейковом роботе ---------------------------------------------------
 
-def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
+def _run_step(tmp_path, log_text, plays, body, env="", replace=False, extra=()):
     """``plays[i]`` -- куски лога, которые робот «скажет» после (i+2)-го PLAY (первый PLAY -- фраза шага).
-    ``replace`` -- кусок ЗАМЕНЯЕТ лог (окно нового PLAY начинается с чистого листа: фейк не режет ``--since``)."""
+    ``replace`` -- кусок ЗАМЕНЯЕТ лог (окно нового PLAY начинается с чистого листа: фейк не режет ``--since``).
+    ``extra`` -- имена функций, которые вынуть из e2e_voice_test.sh поверх LIB (например ``robot_ros`` и
+    ``step_stt_inject`` для #4951: инъекция живёт в основном скрипте, а ``stt_inject_command`` -- в LIB)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "robot.log"
@@ -258,7 +260,8 @@ def _run_step(tmp_path, log_text, plays, body, env="", replace=False):
         *(extract_function(name) for name in (
             "ensure_outdir", "emit_step", "mark_fail_kind", "vad_reject_reason", "emit_step_fail_or_vad",
             "check_cycle", "eq_command_wav", "play_eq_wav", "phrase_eq_wav", "step_recover", "step_wake_replay",
-            "check_patterns", "check_music_compare", "_stt_step_executed", "step_stt_replay", "run_step")),
+            "check_patterns", "check_music_compare", "_stt_step_executed", "step_heard", "step_stt_replay",
+            "step_stt_garbage_retry", "synth_surface_log", "check_eq_vad_budget", "run_step") + tuple(extra)),
         # синтез: фраза восстановления -- файл с её текстом (по нему видно, ЧТО сыграно)
         'synth_command() { printf "%s" "$1" > "$3"; }',
         env,
@@ -310,7 +313,7 @@ class TestRunStepRecovery:
         # 06.11: recover запрещён -- «Робот!» не говорим, но фраза шага при no_wake звучит ещё до 3 попыток всего.
         assert "RC=1" in out and "PLAY_COUNT=3" in out, (out, err)
         assert "E2E_RECOVER no_wake" not in out and out.count("E2E_RECOVER wake_replay a ") == 2
-        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 (no_wake)" in out
+        assert "E2E_STEP a FAIL turn_no_wake after_recover_wake_replay wake_attempt=3/3 inject_failed (no_wake)" in out
         assert took < 90, took
 
     def test_recovery_that_did_not_help_is_fail_not_second_recovery(self, tmp_path):

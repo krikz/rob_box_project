@@ -32,7 +32,7 @@ N605_M6 = "поставь сайт из трех треков объявляй �
 
 
 def test_the_stt_scrap_stays_what_it_is_a_bare_word_without_support():
-    assert heard_theme(N605_M6) == "сайт"
+    assert heard_theme(N605_M6) == ""  # #3493: одно неизвестное слово — в журнал, а не в положительный слот темы
     assert not names_theme("сайт", N605_M6)
 
 
@@ -44,7 +44,6 @@ def test_the_llm_theme_is_not_replaced_by_the_stt_scrap():
 @pytest.mark.parametrize("phrase", [
     "поставь сет про космос",              # слово таблицы тем
     "поставь сет про динозавров",          # человек ввёл тему сам («про»)
-    "включи сет динозавры",                # слово сета названо - слова после него тема
     "поставь сет в стиле Stranger Things",  # описание из слов
     "поставь Nirvana из трех треков",      # название латиницей
     "поставь сет Звездные войны",          # вселенная
@@ -78,6 +77,17 @@ def _running_set(tmp_path, monkeypatch, cached=2):
     return dj, kie
 
 
+def _wait_first_set_ordered(kie, timeout=5.0):
+    """#4959: заказ трека первого сета уходит из фонового потока. Снимок ``len(kie.jobs)`` до него считает
+    этот заказ заказом следующего вызова (флак CI job 136050355242, attempt 1; attempt 2 того же коммита зелёный).
+    Ждём появления хотя бы одного заказа, как делал соседний тест; пустой список по таймауту — честный ноль,
+    ассерт вызывающего не ослабляется."""
+    deadline = time.monotonic() + timeout
+    while not kie.jobs and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return len(kie.jobs)
+
+
 def _routes(caplog):
     return [r.getMessage() for r in caplog.records if "[source] сет" in r.getMessage()]
 
@@ -98,10 +108,7 @@ def test_n605_m6_verbatim_keeps_the_llm_theme_and_never_logs_the_substitution(tm
 def test_n605_m6_without_an_llm_theme_the_scrap_orders_nothing_paid(tmp_path, monkeypatch, caplog):
     """Роутер медиакоманд шлёт ``dj_set`` без темы: тему выделяет код, и это огрызок «сайт» - сет из кэша/синтезом."""
     dj, kie = _running_set(tmp_path, monkeypatch, cached=0)
-    deadline = time.monotonic() + 5.0  # первый сет (кэш пуст) заказывает трек 1 в своём потоке - дождаться его заказа,
-    while not kie.jobs and time.monotonic() < deadline:  # иначе под нагрузкой (-n 8) заказ первого сета прилетал
-        time.sleep(0.01)  # после снимка и считался заказом по огрызку
-    ordered = len(kie.jobs)
+    ordered = _wait_first_set_ordered(kie)
     caplog.clear()
     with caplog.at_level(logging.INFO):
         data = dj.execute(action="start", tracks=3, heard_text=N605_M6).data

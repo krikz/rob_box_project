@@ -8,23 +8,26 @@ uint8 OP_SET_NAME=2
 uint8 OP_SIMILAR=3
 uint8 OP_MERGE=4
 uint8 OP_COLLAGE=5
+# Карточка одного лица (issue #3655): коллаж его снимков, не «похожие». person_id - 8 hex или точное имя.
+uint8 OP_CARD=6
 # Что сделать.
 uint8 op
 # OP_LIST: all | unnamed | today. OP_MERGE: id склеиваемых записей через запятую, до 12 (поле переиспользовано,
 # чтобы не менять тип сообщения между Pi).
 string filter
 # OP_PHOTO, OP_SET_NAME, OP_SIMILAR, OP_COLLAGE: 8 первых символов id лица (или полный id); должен совпасть с
-# существующей записью. OP_MERGE: id записи-цели, в неё склеиваем.
+# существующей записью. OP_CARD: то же либо точное имя (без регистра). OP_MERGE: id записи-цели, в неё склеиваем.
 string person_id
 # OP_SET_NAME: новое имя (до 40 знаков).
 string name
 ---
 # Принято ли; нет - причина в reason (person_not_found, ambiguous_id, bad_name, bad_filter, exhibition_mode,
-# no_snapshot, bad_id, bad_op, store_error, bad_ids, same_person, merge_failed, collage_failed, no_collage).
+# no_snapshot, bad_id, bad_op, store_error, bad_ids, same_person, merge_failed, collage_failed, no_collage,
+# ambiguous_name, no_card).
 bool ok
 string reason
 # OP_LIST: JSON-массив лиц; остальные операции: JSON-объект исхода (OP_SIMILAR - кандидаты с номерами). Данные пишет владелец, не модель.
 string data_json
-# OP_PHOTO, OP_COLLAGE: сам снимок или коллаж (JPEG, не больше 200 КБ: большее владелец пережимает); у остальных операций пуст.
+# OP_PHOTO, OP_COLLAGE, OP_CARD: сам снимок или коллаж (JPEG, не больше 200 КБ: большее владелец пережимает); у остальных операций пуст.
 # Байты, а не путь: каталог лиц есть только у владельца на Vision Pi, копия на Sound Pi отстаёт.
 uint8[] jpeg

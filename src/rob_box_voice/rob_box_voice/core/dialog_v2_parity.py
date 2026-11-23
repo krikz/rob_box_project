@@ -2,7 +2,7 @@
 
 Логика — в ``rob_box_dialog`` (чистый Python): ``meeting`` (приветствие по встрече лицом), ``startup`` (стартовая
 фраза), ``status_feed`` (статус LLM/вейков для ТАРС). Здесь — только ROS: подписка, таймеры, latched-паблишеры,
-речь через владельца речи (``V2Ports.say`` → ``SpeechRequest``). v1 ``dialogue_node`` берёт отсюда же
+речь через владельца речи (``V2Ports.say`` → ``SpeechRequest``). v1 ``dialog_node`` берёт отсюда же
 ``start_status_feeds`` и ``catalog_model`` — реализация одна. Функции, а не методы: ``DialogNode`` — тонкий хост.
 
 Окно ответа на приветствие (#3776) — тот же ``core.greeting_window``, что у v1: кадр ``GreetingReply`` сессии.
@@ -18,6 +18,7 @@ from rob_box_dialog import knowledge as kn
 from rob_box_dialog.meeting import MeetingGreeter, MeetingMarker, greet_on_meeting, parse_meeting_marker
 from rob_box_dialog.meeting import unprompted_quiet
 from rob_box_dialog.shift_log import FACE
+from rob_box_dialog.speaker_adapter import FaceSightings
 from rob_box_dialog.startup import NodeReport, Readiness, ReadinessWatch, assess, llm_usable, pick_startup_phrase
 from rob_box_dialog.status_feed import StatusFeed, describe_chain, describe_wake
 
@@ -73,9 +74,10 @@ def turn_busy(node: Any) -> bool:
 
 
 def subscribe_meeting(node: Any) -> bool:
-    """Подписка на ``/vision/hailo/events`` — источник Встречи. Импорт сообщения защищён, как в v1: без лицевых
-    сообщений в образе диалог работает, робот просто не здоровается первым."""
+    """Подписка на ``/vision/hailo/events`` — источник Встречи и журнал лиц в кадре (``FaceSightings``). Импорт
+    сообщения защищён, как в v1: без лицевых сообщений в образе диалог работает, робот просто не здоровается первым."""
     node._meeting_greeter = MeetingGreeter()
+    node._faces = FaceSightings()
     try:
         from rob_box_perception_msgs.msg import VisionEvent  # noqa: PLC0415
 
@@ -88,12 +90,14 @@ def subscribe_meeting(node: Any) -> bool:
 
 
 def on_vision_event(node: Any, msg: Any) -> Optional[str]:
-    """Маркер начала Встречи → приход в журнал смены (#4076: имя лица или незнакомое) и не больше одной фразы (правила
-    — ``rob_box_dialog.meeting``). Колбэк горячий (~5 событий в секунду на человека): всё, кроме маркера, отсеивается
-    разбором. Ошибка не роняет колбэк."""
+    """Лица из кадра — в ``FaceSightings``; маркер начала Встречи → приход в журнал смены и не больше одной фразы.
+    Колбэк горячий (~5 событий в секунду на человека): приветствие только по маркеру. Ошибка не роняет колбэк."""
+    camera = str(getattr(msg, "source_camera", "") or "")
+    if camera not in ("stub", "unknown"):
+        node._faces.note_event(msg, time.time())
     marker = parse_meeting_marker(event_type=getattr(msg, "event_type", "") or "",
                                   attributes_json=getattr(msg, "attributes_json", "") or "",
-                                  source_camera=getattr(msg, "source_camera", "") or "")
+                                  source_camera=camera)
     if marker is None:
         return None
     node._shift.seen(marker.name if marker.is_named else None, FACE)
@@ -108,13 +112,19 @@ def _greet(node: Any, marker: MeetingMarker) -> Optional[str]:
     spoken = {}
 
     def speak(text: str) -> None:
-        spoken["speech_id"] = node._ports.say("", node._session.snapshot.epoch, text, emotion="happy")
+        epoch = node._session.snapshot.epoch
+        speech_id = node._ports.say("", epoch, text, emotion="happy")
+        spoken["speech_id"] = speech_id
+        # Тот же журнал, что у реплики хода: ``said`` сейчас, в историю — по ``SpeechEvent`` через ``spoken``.
+        from rob_box_dialog.turn_log import note_proactive  # noqa: PLC0415
+
+        note_proactive(node._engine.log, speech_id, epoch, speech_id, text)
 
     quiet = unprompted_quiet(node._session.snapshot, turn_busy(node))
     phrase = greet_on_meeting(node._meeting_greeter, marker, idle=not quiet, allowed=lambda _m: True, speak=speak)
     if phrase:
         # #3776: после приветствия окно 15 с — «привет» в ответ без «робот» (кадр ждёт конца речи).
-        open_window(node, marker.person_id, marker.name.strip(), str(spoken.get("speech_id") or ""))
+        open_window(node, marker.person_id, marker.name.strip(), str(spoken.get("speech_id") or ""), text=phrase)
         node.get_logger().info(f"🗣 [встреча] {marker.name} (person={marker.person_id[:8]}): {phrase!r}")
     return phrase
 

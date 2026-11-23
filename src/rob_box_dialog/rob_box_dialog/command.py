@@ -152,18 +152,28 @@ class Busy:
     заново и не сверяются - так перепроверяется уже решённая команда).
 
     ``voice_genders`` — пол голосов каталога ``(голос, пол)``: по нему код даёт голос роли; ``cast`` — роли
-    идущего выступления и их голоса ``(ключ роли, голос)``: правка выступления их не перекрашивает."""
+    идущего выступления и их голоса ``(ключ роли, голос)``: правка выступления их не перекрашивает.
+    ``voice_catalogue`` — все голоса звучащего провайдера (``tts_voice_registry.voices_for``), не каталог ролей:
+    по нему сверяется явно названный голос реплики и строится enum схемы (пусто — не сверяется и enum как раньше,
+    из ``voices``). Роли (``voices``) не расширяются: каст марафона в роли не идёт (#3998, #4084, #5103)."""
 
     classes: FrozenSet[str] = frozenset()
     active_segment: Optional[int] = None
     voices: Tuple[str, ...] = ()
     voice_genders: Tuple[Tuple[str, str], ...] = ()
     cast: Tuple[Tuple[str, str], ...] = ()
+    voice_catalogue: Tuple[str, ...] = ()
 
     def role_pool(self) -> Tuple[Tuple[str, str], ...]:
         """Каталог ролей для :func:`.cast.assign`: голоса ``voices`` в их порядке и их пол (неизвестен — ``""``)."""
         genders = dict(self.voice_genders)
         return tuple((voice, genders.get(voice, "")) for voice in self.voices)
+
+    def line_voices(self) -> Tuple[str, ...]:
+        """Голоса реплики для enum схемы и сверки явного голоса: каталог провайдера, а не роли.
+
+        Пустой каталог — ``voices`` (старые вызовы и перепроверка вне хода). Роли отсюда не растут."""
+        return self.voice_catalogue or self.voices
 
 
 Result = Union[Command, Invalid]
@@ -190,8 +200,13 @@ class Form:
     до ``SPEECH_PUSHES_MAX`` повторов хода за словами, затем страховка - код говорит по данным,
     ``turn.query_answer``). Схему поле не меняет: ``required: [speech]`` спорил бы с
     ``VIOLATION_SPEECH_WITH_ACTIONS`` - слышимое действие (звук, музыка) после запроса законно без слов, а со словами -
-    нарушение. Ставит его ход (``turn.answer_form``). По умолчанию всё открыто — так зовут валидатор вне хода (режим
-    команд v1, тесты)."""
+    нарушение. Ставит его ход (``turn.answer_form``). ``library`` — реплика просит найти в библиотеке
+    (``tools_view.library_asked``, #5093): ``memory_save`` вне среза и вне команды. Запись памяти таким ходом не
+    исполняет поиск, и нарушение своё (``VIOLATION_LIBRARY_REQUEST``), не ``tool_not_available``: мост по тому срез
+    расширяет. ``needs_speech`` — реплика просит говорить (``tools_view.speech_asked``, #5094): ход нельзя закрыть
+    только тем, чего не слышно (``SILENT_DONE_TOOLS``, ``INAUDIBLE_TOOLS``, одно лицо). Нарушение своё
+    (``VIOLATION_SPEECH_ASKED``). Поле не в ``FORM_FIELDS``: схему не закрывает, речь рядом с тихой анимацией законна.
+    По умолчанию всё открыто — так зовут валидатор вне хода (режим команд v1, тесты)."""
 
     passed: bool = True
     voice: bool = True
@@ -199,6 +214,11 @@ class Form:
     sing_over: bool = False
     backing: bool = True
     speech_required: bool = False
+    #: Реплика хода: «химер» в живом пении переводит форму в семью ``chimera`` (#5074). Пусто — как раньше.
+    #: В равенстве формы не участвует: тесты и сброс хода сравнивают поля решения, не текст реплики.
+    text: str = field(default="", compare=False)
+    library: bool = False
+    needs_speech: bool = False
 
     def closed(self) -> Tuple[str, ...]:
         """Поля команды, которых в этом ходе нет (порядок ``knowledge.FORM_FIELDS``)."""
@@ -207,12 +227,14 @@ class Form:
     @property
     def sing_form(self) -> Optional[kn.SingForm]:
         """Что форма хода закрывает и требует по пути пения; не пение — ``None``."""
-        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over))
+        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over, self.text))
 
     def closed_tools(self) -> Tuple[str, ...]:
-        """Тулы, которых в этом ходе нет по пути пения (вне среза и вне команды)."""
+        """Тулы, которых в этом ходе нет: путь пения и библиотечная просьба (вне среза и вне команды)."""
         form = self.sing_form
-        return form.closed_tools if form is not None else ()
+        sing = form.closed_tools if form is not None else ()
+        library = kn.LIBRARY_REQUEST_CLOSED_TOOLS if self.library else ()
+        return sing + tuple(name for name in library if name not in sing)
 
 
 #: Форма хода, в котором идёт вызов LLM: ставит ход (:func:`turn_form`), читают мост (схема) и :func:`validate`. Вызов
@@ -239,7 +261,28 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
     """Схема команды без полей, закрытых формой хода (``None`` — текущей): модель их не видит
     (``knowledge.without_fields``); путь пения сужает перечни выступления (``knowledge.with_sing``)."""
     form = form or current_form()
-    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over)
+    return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over, form.text)
+
+
+def tool_schema(name: str, form: Optional[Form] = None) -> Mapping[str, Any]:
+    """Схема тула, которую ход показывает модели и которой судит ответ.
+
+    Каталог — как есть, кроме семьи ``chimera``: там действие — ``sing`` формы, не ``call`` поставки,
+    и поля чужих действий уходят (#5074, #5152). Одна функция и для схемы модели, и для :func:`validate`.
+    Показ модели сужает поля ещё и вне этой семьи (``knowledge.chimera_model_schema``): валидатор вне
+    хода каталог не режет, иначе ``sing`` стал бы «лишним полем», а не «не из enum».
+    """
+    form = form or current_form()
+    schema = get_tool(name).parameters
+    sing = form.sing_form
+    if name != kn.CHIMERA_TOOL or sing is None:
+        return schema
+    return kn.chimera_tool_schema(schema, sing)
+
+
+def _tool_schema(name: str) -> Mapping[str, Any]:
+    """Схема тула в текущей форме хода. Валидатор зовёт её, не каталог напрямую."""
+    return tool_schema(name, current_form())
 
 
 @dataclass
@@ -602,7 +645,7 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     ``session`` — снимок сессии агента (берётся ``agent``: ``say_aloud`` — только оператору и телеграму);
     ``busy`` — что занято сейчас; ``form`` — форма команды хода (``None`` — текущая, :func:`current_form`):
     голый ``passed`` на адресованную реплику — нарушение ``VIOLATION_PASSED_ADDRESSED``, ``passed`` рядом с ответом там
-    же и голос реплики без просьбы о голосе или не из каталога ролей (текущий голос робота, чужое имя, #4225)
+    же и голос реплики без просьбы о голосе или не из каталога провайдера (чужое имя, #4225, #5103)
     отбрасываются (``dropped``); форма последней итерации после запроса
     (``Form.speech_required``): ответ без слов (одно лицо, анимация) - нарушение ``VIOLATION_SPEECH_REQUIRED``
     (:func:`_check_answered`). Невалидная сцена лица и earcon не из перечня
@@ -615,6 +658,15 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
+    token = _FORM.set(form)  # схема тула читает ту же форму, что судит ход (#5074, #5152)
+    try:
+        return _validate_form(cmd, available_tools, session, busy, form)
+    finally:
+        _FORM.reset(token)
+
+
+def _validate_form(cmd: Command, available_tools: Collection[str], session: Any, busy: Busy, form: Form) -> Result:
+    """Проверки :func:`validate` при уже выставленной форме хода."""
     cmd = _drop_closed_passed(_drop_cosmetic_voice(_fit_soft_args(_drop_nested_extras(cmd)), form, busy), form)
     cmd = _drop_replaced_stops(cmd)  # stop+start одного тула - смена, не два действия класса (#4347)
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
@@ -643,6 +695,8 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
         lambda: _check_args_without_action(cmd),
         lambda: _check_perform(cmd, busy),
         lambda: _check_sing(cmd, form),
+        lambda: _check_library(cmd, form),
+        lambda: _check_speech_asked(cmd, form),
         lambda: _check_when(cmd.when, busy),
         lambda: _drop_bad_expression(cmd),
     )
@@ -812,15 +866,23 @@ def _drop_closed_passed(cmd: Command, form: Form) -> Command:
     return replace(cmd, passed=None, dropped=cmd.dropped + ("passed",))
 
 
+def _voice_allowed(voice: str, busy: Busy) -> bool:
+    """Явно названный голос принимается, если он есть в каталоге, который видит модель (``Busy.line_voices``).
+    Каталог пуст — не сверяется: так перепроверяется уже решённая команда вне хода."""
+    return not busy.line_voices() or voice in busy.line_voices()
+
+
 def _drop_cosmetic_voice(cmd: Command, form: Form, busy: Busy) -> Command:
     """Голос реплики, который ничего не меняет, — не нарушение, а лишнее поле: реплика звучит текущим голосом робота
     (голос сессии после ``set_voice``), поле — в ``dropped`` (лог ``fields_dropped``). Это голос без просьбы о голосе
-    (форма хода закрыла ``voice``, n109) и голос не из каталога ролей звучащего провайдера (``busy.voices``; пусто —
-    не сверяется): в каталоге нет текущего голоса робота (``plan_host.perform_busy``: рассказчик), и «скажи этим
-    голосом» с ``voice`` = текущий голос было ``bad_enum`` → повтор → модель брала другой голос из списка нарушения
-    (#4225, марафон-7 n404: после ``set_voice alena`` прозвучал ``arina`` через MiniMax мужским голосом). Чужое имя
-    тоже не уходит в TTS: подменил бы молча."""
-    if cmd.voice is None or (form.voice and (not busy.voices or cmd.voice in busy.voices)):
+    (форма хода закрыла ``voice``, n109) и голос, которого нет в каталоге звучащего провайдера
+    (``busy.voice_catalogue`` — все голоса реестра, не каталог ролей; пусто — сверяется ``busy.voices``, и он пуст —
+    не сверяется). Каталог ролей (``busy.voices``) сюда не годится: в нём нет текущего голоса робота
+    (``plan_host.perform_busy``: рассказчик) и нет голосов каста марафона (``English_Jovialman``, #5103), и «скажи
+    этим голосом» с ``voice`` из реестра было ``dropped`` → TTS брал ``default`` (#4225, марафон-7 n404: после
+    ``set_voice alena`` прозвучал ``arina`` через MiniMax мужским голосом). Чужое имя тоже не уходит в TTS:
+    подменил бы молча. Решение Шифу 22.11.2026: явно названный голос из каталога провайдера — используем."""
+    if cmd.voice is None or (form.voice and _voice_allowed(cmd.voice, busy)):
         return cmd
     return replace(cmd, voice=None, dropped=cmd.dropped + ("voice",))
 
@@ -880,7 +942,7 @@ def _check_sing(cmd: Command, form: Form) -> None:
     sing = form.sing_form
     if sing is None or cmd.edit_pending:
         return
-    kinds = kn.sing_kinds(form.sing)
+    kinds = kn.sing_kinds(form.sing, form.text)
     closed = [a.tool for a in cmd.actions if a.tool in sing.closed_tools]
     if closed:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: {', '.join(closed)} закрыт", ("perform",))
@@ -890,6 +952,35 @@ def _check_sing(cmd: Command, form: Form) -> None:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: perform.kind={cmd.perform.kind}", kinds)
     if sing.needs_tool and sing.needs_tool not in {a.tool for a in cmd.actions}:
         raise _Bad(kn.VIOLATION_SING_ROUTE, f"путь {form.sing}: нужен {sing.needs_tool}", (sing.needs_tool,))
+
+
+def _speechless(cmd: Command) -> bool:
+    """Ход нечем услышать: нет речи, вопроса и выступления, а действия — только тихие
+    (``knowledge.SILENT_DONE_TOOLS``: ``play_sound``, ``play_animation``) либо неслышимые
+    (``INAUDIBLE_TOOLS``). Звук, который слышно, и любой тул вне этих множеств просьбу говорить исполняют."""
+    if cmd.speech or cmd.ask is not None or cmd.perform is not None:
+        return False
+    heard = set(kn.SILENT_DONE_TOOLS) | set(kn.INAUDIBLE_TOOLS)
+    return all(a.tool in heard for a in cmd.actions)
+
+
+def _check_speech_asked(cmd: Command, form: Form) -> None:
+    """Просьба говорить (``Form.needs_speech``): одна мигалка, один звук или одно лицо — не ответ. Правка идущего
+    выступления — не новая просьба, форма её не судит. Слышимое действие вне тихих множеств и речь — законны."""
+    if not form.needs_speech or cmd.edit_pending or not _speechless(cmd):
+        return
+    raise _Bad(kn.VIOLATION_SPEECH_ASKED, "просили рассказать — нужен текст или звук, одна мигалка не ответ")
+
+
+def _check_library(cmd: Command, form: Form) -> None:
+    """Библиотечная просьба (``Form.library``): закрытый тул — своё нарушение, не «тула нет в срезе». Мост по
+    ``tool_not_available`` открывает группу обратно (``tools_view.widen_for``); ``memory_save`` этим ходом поиск не
+    исполняет. Правка идущего выступления — не новая просьба, форма её не судит."""
+    if not form.library or cmd.edit_pending:
+        return
+    closed = [a.tool for a in cmd.actions if a.tool in kn.LIBRARY_REQUEST_CLOSED_TOOLS]
+    if closed:
+        raise _Bad(kn.VIOLATION_LIBRARY_REQUEST, "библиотека: " + ", ".join(closed) + " закрыт", (kn.LIBRARY_TOOL,))
 
 
 def is_empty(cmd: Command) -> bool:
@@ -955,10 +1046,11 @@ def overlong_only(result: Result) -> bool:
 
 
 def words_only(result: Result) -> bool:
-    """Команда отвергнута только за ответ без слов на последней итерации (все нарушения —
-    ``VIOLATION_SPEECH_REQUIRED``): повтор за словами даёт ход (``turn._push_for_words``: он знает потолок
-    хода), мост такую команду отдаёт ходу сразу, без своего повтора."""
-    return isinstance(result, Invalid) and all(v.reason == kn.VIOLATION_SPEECH_REQUIRED for v in result.all)
+    """Команда отвергнута только за ответ без слов (все нарушения — из :data:`knowledge.WORDS_ONLY_VIOLATIONS`:
+    последняя итерация после запроса, ``VIOLATION_SPEECH_REQUIRED``, и просьба говорить, ``VIOLATION_SPEECH_ASKED``,
+    #5094). Повтор за словами даёт ход (``turn._push_for_words``: он знает потолок хода), мост такую команду отдаёт
+    ходу сразу, без своего повтора: свой повтор съел бы вызов, который ход считает повтором за словами."""
+    return isinstance(result, Invalid) and all(v.reason in kn.WORDS_ONLY_VIOLATIONS for v in result.all)
 
 
 def fit_speech(cmd: Command) -> Command:
@@ -1055,17 +1147,18 @@ def _check_search_promise(cmd: Command, agent: str) -> None:
 
 
 def unkept_done_claims(cmd: Command) -> Tuple[str, ...]:
-    """Виды утверждений о сделанном в ``speech`` (``words.done_claims``), которых команда не делает: нет тула
+    """Виды утверждений о действии в ``speech`` (``words.done_claims``), которых команда не делает: нет тула
     ``knowledge.DONE_CLAIMS[вид].tools`` среди ``actions``."""
     called = {a.tool for a in cmd.actions}
     return tuple(kind for kind in done_claims(cmd.speech or "") if not called & set(kn.DONE_CLAIMS[kind].tools))
 
 
 def _check_done_claim(cmd: Command, agent: str) -> None:
-    """Речь говорит, что действие уже сделано («Готово, хил-окно удалена.», «сохранил точку», «поехал»), а тула, что его
-    делает, в команде нет (#4391, ADR-0148: фразу об успехе строит код по результату тула, не модель). Нарушение
-    ``VIOLATION_DONE_CLAIM`` - повтор с подсказкой, после него - фраза кода «не сделал»; ``allowed`` - тулы, что
-    сделали бы слова правдой. Речь, что не прозвучит (:func:`_speech_is_dropped`), ничего не утверждает."""
+    """Речь говорит о действии («Готово, хил-окно удалена.», «сохранил точку», «поехал», «говорю медленнее»,
+    «пришлю снимки»), а тула,
+    что его делает, в команде нет (#4391, #4505; ADR-0148: фразу об успехе строит код по результату тула, не модель).
+    Нарушение ``VIOLATION_DONE_CLAIM`` - повтор с подсказкой, после него - фраза кода «не сделал»; ``allowed`` - тулы,
+    что сделали бы слова правдой. Речь, что не прозвучит (:func:`_speech_is_dropped`), ничего не утверждает."""
     if _speech_is_dropped(cmd, agent):
         return
     # план вереницы звучит до шагов: «удалил» в нём - неправда, даже если тул в команде есть (ADR-0165 §3, §9.1)
@@ -1111,7 +1204,7 @@ def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], ag
     for call in actions:
         cls = _action_class(call.tool, available, agent)
         per_class[cls] = per_class.get(cls, 0) + 1
-        error = _schema_error(get_tool(call.tool).parameters, call.args, call.tool)
+        error = _schema_error(_tool_schema(call.tool), call.args, call.tool)
         if error:
             raise _Bad("bad_args", error)
     crowded = [c for c in kn.SINGLE_ACTION_CLASSES if per_class.get(c, 0) > 1]
@@ -1403,6 +1496,8 @@ HINTS: Mapping[str, str] = MappingProxyType({
                              "генерацию и трек не зови; generate — позови generate_music, песню выступлением не пой; "
                              "edit — музыка играет и её правят: позови edit_music, новый трек, сет и генерацию не "
                              "заказывай",
+    kn.VIOLATION_LIBRARY_REQUEST: kn.LIBRARY_REQUEST_HINT,
+    kn.VIOLATION_SPEECH_ASKED: kn.SPEECH_ASKED_HINT,
 })
 
 

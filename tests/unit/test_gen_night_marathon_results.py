@@ -149,7 +149,10 @@ def test_every_music_action_step_has_a_result_marker():
     for label in ACTION_LABELS:
         step = steps[label]
         pats = step["patterns"]
-        assert any(p.startswith("✅ Инструмент ") and p.endswith(" выполнен успешно") for p in pats), label
+        # n702 (#5092): фоновый заказ ещё не исполнен — маркер «принят, готовится», не «выполнен успешно»
+        done = any(p.startswith("✅ Инструмент ") and p.endswith(" выполнен успешно") for p in pats)
+        accepted = any(p.startswith("⏳ Инструмент ") and "принят, готовится" in p for p in pats)
+        assert done or accepted, label
         # n709 (#4020, марафон-6): ход законно закрыт фразой кода (`code_closes`) -- конец хода `finished|done`
         assert gen.TURN_DONE in pats or gen.TURN_WITH_LLM in pats or gen.TURN_CLOSED_BY_CODE in pats, label
         assert gen.TURN_TIMEOUT in step["acceptance"]["must_not_call"], label
@@ -276,6 +279,16 @@ def test_act8_unsilence_precedes_n806_and_n805_is_unchanged():
     assert step.get("silent_ok") is True
     assert steps["n805_hard_stop"]["text"] == "Робот, всё, хватит, замолчи."
     assert steps["n806_long_count_again"]["patterns"] == [gen.SPEECH_STARTED]
+
+
+def test_n604_n805b_have_stt_keys_and_stt_replay():
+    """#4694: шаги с хрупким STT-входом получают `stt_keys` и `stt_replay`."""
+    steps = _steps()
+    for label in ("n604_dj_rock", "n805b_unsilence"):
+        step = steps[label]
+        assert eev.STT_KEYS_FIELD in step, label
+        assert "stt_replay" in step.get("recover", []), label
+        assert eev.stt_keys(step), label
 
 
 def test_patterns_are_valid_regex():
@@ -413,7 +426,12 @@ def test_n902_n903_silent_sound_is_judged_by_tool_result():
     assert steps["n902_sound_doorbell"]["silent_ok"] is True and steps["n903_sound_siren_anim"]["silent_ok"] is True
     sound = "✅ Инструмент play_sound выполнен успешно"
     anim = "✅ Инструмент play_animation выполнен успешно"
-    assert _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"]
+    # #4077 П6: doorbell -- именно ui_bell (параметр в строке запроса тула)
+    bell = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'ui_bell'}"
+    wrong_bell = "📥 Запрос выполнения: play_sound с параметрами {'sound': 'robot_happy'}"
+    assert _verdict("n902_sound_doorbell", "\n".join([bell, sound, DONE]))["pass"]
+    assert not _verdict("n902_sound_doorbell", "\n".join([sound, DONE]))["pass"], "не ui_bell"
+    assert not _verdict("n902_sound_doorbell", "\n".join([wrong_bell, sound, DONE]))["pass"], "не doorbell"
     assert not _verdict("n902_sound_doorbell", "\n".join(["📤 Отправлен запрос ab: play_sound", DONE]))["pass"]
     # #4077 П6: анимация -- именно police_lights (параметр в строке запроса тула)
     req = "📥 Запрос выполнения: play_animation с параметрами {'animation': 'police_lights', 'duration': 4}"
@@ -512,8 +530,6 @@ def test_n811_stops_speech_and_keeps_music():
 
 
 @pytest.mark.parametrize("label,ok,bad", [
-    ("n409_speed_down", [_param("minimax_speed", "0.8")], [_param("minimax_speed", "1.2"),
-                                                           "✅ Инструмент set_speed выполнен успешно"]),
     ("n411_pitch_bass", [_param("pitch_shift", "0.8")], [_param("pitch_shift", "1.2"),
                                                          "✅ Инструмент set_pitch выполнен успешно"]),
 ])
@@ -523,6 +539,22 @@ def test_prosody_steps_judge_the_effect_not_the_call(label, ok, bad):
         assert _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
     for line in bad:
         assert not _verdict(label, "\n".join([line, DONE]))["pass"], (label, line)
+
+
+def test_n409_needs_the_effect_and_a_real_set_speed_call():
+    """#4039: ось ниже нормы, не имя тула. #5007 (run 44890078495): actions=[] и «говорю медленнее» прошли приёмку,
+    потому что expected_tool_calls был пуст -- паттерн поймал PATTERN_MISS, acceptance сказал «all checks passed».
+    Теперь нужны оба: ось ниже нормы И маркер реального вызова set_speed (имя в списке тулов хода вызовом не считается)."""
+    axis = _param("minimax_speed", "0.8")
+    called = "✅ Инструмент set_speed выполнен успешно"
+    assert _verdict("n409_speed_down", "\n".join([axis, called, DONE]))["pass"]
+    for bad in (
+        "\n".join([axis, DONE]),                                          # эффект есть, вызова нет
+        "\n".join([called, DONE]),                                        # вызов есть, оси ниже нормы нет
+        "\n".join([_param("minimax_speed", "1.2"), called, DONE]),        # ось не ниже нормы (#4039)
+        "\n".join([axis, "tools(3): set_speed, set_pitch, set_volume", DONE]),  # имя в списке тулов - не вызов
+    ):
+        assert not _verdict("n409_speed_down", bad)["pass"], bad
 
 
 def _speed_said(provider: str, param: str, said: str) -> str:
@@ -601,12 +633,12 @@ def test_n1002_and_n1007_judge_honesty_not_narrow_words():
     assert _acc("n1007_no_leak")["must_not_call"] == [gen.TURN_FALLBACK], "подстрока по всему логу ловила факты памяти"
 
 
-def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructive_is_left():
-    """#4077 П1: песни прогона нет (баланс KIE 0 / провал заказа / отказ пути) -- n707-n709 SKIP NO_SONG; удаления нет."""
+def test_no_song_rule_marks_the_steps_about_this_runs_song_and_n710_ask_binds_track_id():
+    """#4077: песни нет -- n707-n710 SKIP NO_SONG; n710 вопрос delete с track_ref; n710b confirm нет."""
     import re
 
     steps = _steps()
-    for label in ("n707_gen_track_info", "n708_gen_play", "n709_stop_generated"):
+    for label in ("n707_gen_track_info", "n708_gen_play", "n709_stop_generated", "n710_gen_delete"):
         # ревью #4046: харнесс поле читает (e2e_events.skip_rule) -- без «_», как остальные поля для харнесса
         assert steps[label]["skip_when"] == {"reason": "NO_SONG", "log": gen.NO_SONG_LOG}, label
         assert eev.skip_rule(steps[label]).reason == "NO_SONG", label
@@ -617,10 +649,15 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
     # KIE_QUOTA влит в NO_SONG: одна таблица, без второго ключа на ту же беду; NOT_SILENCED (#3971, n805b) -- другая беда
     assert set(gen.SKIP_WHEN) == {"NO_SONG", "NOT_SILENCED", "NO_MUSIC_N310", "NO_MUSIC_N506", "NO_STOP_N511"}  # #4196: дека пуста (каскад)
     assert [label for label, s in steps.items() if s.get("skip_when", {}).get("reason") == "NO_SONG"] == [
-        "n707_gen_track_info", "n708_gen_play", "n709_stop_generated"]
-    for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710_gen_delete", "n710b_gen_delete_confirm"):
+        "n707_gen_track_info", "n708_gen_play", "n709_stop_generated", "n710_gen_delete"]
+    for label in ("n703_merge_komar", "n706_gen_save_for_boris", "n710b_gen_delete_confirm"):
         assert label not in steps, label
-    assert "'action': 'delete'" not in json.dumps([s["patterns"] for s in steps.values()], ensure_ascii=False)
+    n710 = steps["n710_gen_delete"]
+    assert n710["track_ref"] == {
+        "reason": "CASCADE_N702", "log": gen.SONG_TRACK_LOG, "tool": "music_library", "action": "delete"}
+    assert gen.LIBRARY_DELETE_CALL in n710["patterns"] and gen.LIBRARY_DELETE_ASKED in n710["patterns"]
+    assert gen.LIBRARY_DELETE_CONFIRMED not in json.dumps(
+        [s["patterns"] for s in steps.values()], ensure_ascii=False)
     for line in ("[mcp_server]: 🎼 [cover] баланс KIE: 0.0", "🎼 [cover] баланс KIE: 0",
                  "[voice_assistant]: 🎤 [song] не вышло: задача t1 без сохранённых треков",
                  "🎤 [song] сбой: TimeoutError: ", "🎤 [song] не заиграла: not_started",
@@ -635,6 +672,24 @@ def test_no_song_rule_marks_the_steps_about_this_runs_song_and_nothing_destructi
         assert not re.search(gen.NO_SONG_LOG, fine), fine
 
 
+def test_n702_does_not_pass_an_order_that_never_became_a_song():
+    """#5092: «выполнен успешно» про фоновый заказ — не PASS. PASS — «принят, готовится»; песни при этом нет."""
+    step = _steps()["n702_generate_raccoon"]
+    assert gen.tool_accepted("generate_music") in step["patterns"]
+    assert gen.tool_done("generate_music") not in step["patterns"]
+    route = ("🎚️ [source] asked=[generated,vocal,robot_voice] genre=— кандидаты=['generate:robot_song:V6'] → "
+             "generate:robot_song:V6 (code) gen=ok")
+    asked = "📥 Запрос выполнения: generate_music с параметрами {}"
+    accepted = "\n".join([route, asked, "⏳ Инструмент generate_music принят, готовится: song",
+                          TURN_LINE % ("done", "finished")])
+    assert _verdict("n702_generate_raccoon", accepted)["pass"]
+    # акт 7 марафона №3: тул сказал «успех», через 14 мс студия отвергла текст, песни нет
+    lied = "\n".join([route, asked, "✅ Инструмент generate_music выполнен успешно",
+                      "🎤 [song] не вышло: lyrics: строк мало: нужно от 6, есть 1",
+                      TURN_LINE % ("done", "finished")])
+    assert not _verdict("n702_generate_raccoon", lied)["pass"]
+
+
 def test_n702_asks_the_generate_robot_song_cell_of_the_fork_not_a_live_performance():
     """Вилка Шифу 27.10 (#4070/#4079): «сгенерируй песню своим голосом» -- generate:robot_song; пение вживую -- ошибка."""
     step = _steps()["n702_generate_raccoon"]
@@ -642,7 +697,8 @@ def test_n702_asks_the_generate_robot_song_cell_of_the_fork_not_a_live_performan
     assert gen.ROUTE_GENERATE_ROBOT_SONG in step["patterns"]
     assert gen.PERFORM_STARTED_MARK in step["acceptance"]["must_not_call"]
     ok = "\n".join(["🎚️ [source] asked=[generated,vocal,robot_voice] genre=— кандидаты=['generate:robot_song:V6'] → "
-                    "generate:robot_song:V6 (code) gen=ok", "✅ Инструмент generate_music выполнен успешно", DONE])
+                    "generate:robot_song:V6 (code) gen=ok", "📥 Запрос выполнения: generate_music с параметрами {}",
+                    "⏳ Инструмент generate_music принят, готовится: song", DONE])
     assert _verdict("n702_generate_raccoon", ok)["pass"]
     live = "\n".join(["🎚️ [source] пение song слова=— кандидаты=[live:song] → live:song (code)",
                       "🧭 [turn-v2] выступление старт kind=song backing=none segments=3", DONE])
@@ -652,9 +708,8 @@ def test_n702_asks_the_generate_robot_song_cell_of_the_fork_not_a_live_performan
 
 
 # ── #4025 (PR #4056): удаление трека в два шага - вопрос, затем «да» ─────────────────────────────────────────
-# #4077 П1: шаги n710/n710b сняты из марафона (удаление бьёт по живой библиотеке, а к треку ЭТОГО прогона шаг не
-# привязан -- нужен track_id песни, П5). Маркеры результата удаления остаются в генераторе для их возврата, и их
-# контракт с логом контейнера держит тест ниже.
+# #4077 П5: n710 (вопрос) возвращён с track_ref CASCADE_N702 action=delete; n710b (confirm/стереть) не возвращён
+# (необратимо). Маркеры LIBRARY_DELETE_* и их контракт с логом контейнера держит тест ниже.
 
 QUESTION = "Удалить «Енот-мастер»? Скажи «да, удаляй»."
 #: Что тул отдал в лог контейнера, когда спросил вместо удаления: ``mcp_server.py`` (ROS-логгер, WARNING).
@@ -712,8 +767,9 @@ def _src(rel: str) -> str:
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/player_owner.py", 'f"🎵 [music] stop track_id={last} reason={reason}"'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/engine/gen/cover.py", 'f"🎼 [cover] баланс KIE: {value if value is not None'),
     ("src/rob_box_mcp_tools/rob_box_mcp_tools/base.py", 'self.node.get_logger().info(f"[{self.name}] {message}")'),
-    ("src/rob_box_mcp_tools/rob_box_mcp_tools/mcp_server.py",
-     'f"❌ Инструмент {tool_name} завершился с ошибкой: {result.error}"'),
+    # #5092: строку исхода строит tool_outcome.tool_outcome_line, mcp_server только печатает её
+    ("src/rob_box_mcp_tools/rob_box_mcp_tools/tool_outcome.py",
+     'return f"❌ Инструмент {tool_name} завершился с ошибкой: {error}"'),
     # #4062: текст вопроса - одна фраза каталога (её берут и тул через media_phrases, и диалог v2 по причине)
     ("src/rob_box_dialog/rob_box_dialog/phrases/ru.yaml",
      'music.library_fail.needs_confirmation: ["Удалить {name}? Скажи «да, удаляй»."]'),
@@ -769,8 +825,47 @@ def test_n402_names_the_voice_not_the_provider_4077():
     synth = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
     wrong = "\n".join([_tts("Сейчас я говорю на MiniMax, голос Надёжный мужчина."), synth, DONE])
     assert not _verdict("n402_current_voice", wrong)["pass"]
-    for said in ("Я на MiniMax, мой голос Qingse.", "Сейчас голос male-qn-qingse.", "Это голос Цинсе."):
+    for said in (
+        "Я на MiniMax, мой голос Qingse.",
+        "Сейчас голос male-qn-qingse.",
+        "Это голос Цинсе.",
+        "Сейчас говорю через MiniMax, голос называется Цинсэ, это старый базовый голос, мужской.",
+    ):
         assert _verdict("n402_current_voice", "\n".join([_tts(said), synth, DONE]))["pass"], said
+
+
+def test_n402_accepts_qingse_alias_kvingse_and_keeps_provider_minimax_4694():
+    """#4694: live n402 ответил «Квингсе»; alias должен матчиться при provider=minimax и оставаться FAIL при yandex/anton."""
+    minimax = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=minimax"
+    yandex = "🗣️ SpeechEvent synthesized speech_id=e492c4cd agent=personality epoch=8 text_len=134 provider=yandex"
+    # RED -> GREEN: «Квингсе» с MiniMax должен быть PASS.
+    kvingse_minimax = "\n".join([
+        _tts("Сейчас мой голос называется Квингсе, из старой линейки MiniMax, мужской."),
+        minimax, DONE,
+    ])
+    assert _verdict("n402_current_voice", kvingse_minimax)["pass"]
+    # negative: «Квингсе» + Yandex -- голос не дефолтный MiniMax, FAIL.
+    kvingse_yandex = "\n".join([
+        _tts("Сейчас мой голос называется Квингсе, из старой линейки MiniMax, мужской."),
+        yandex, DONE,
+    ])
+    assert not _verdict("n402_current_voice", kvingse_yandex)["pass"]
+    # negative: «Антон» + Yandex -- не дефолтный голос, FAIL.
+    anton_yandex = "\n".join([_tts("Голосом Антона."), yandex, DONE])
+    assert not _verdict("n402_current_voice", anton_yandex)["pass"]
+
+
+def test_n803_requires_finished_playback_of_the_new_answer():
+    """Act8 run 43206628264: synthesized «56» без playback — не ответ n803."""
+    cancelled = "🗣️ SpeechEvent cancelled speech_id=4a436e4b agent=personality epoch=9 reason=stopped"
+    said = _tts("Семь умножить на восемь — пятьдесят шесть.")
+    synthesized = "🗣️ SpeechEvent synthesized speech_id=8a5d332a agent=personality epoch=10 provider=minimax"
+    started = "🗣️ SpeechEvent started speech_id=8a5d332a agent=personality epoch=10"
+    finished = "🗣️ SpeechEvent finished speech_id=8a5d332a agent=personality epoch=10 spoken_chars=42"
+    assert not _verdict("n803_barge_in_new_topic", "\n".join([cancelled, said, synthesized, DONE]))["pass"]
+    assert _verdict(
+        "n803_barge_in_new_topic", "\n".join([cancelled, said, synthesized, started, finished, DONE])
+    )["pass"]
 
 
 def test_n709_conditional_offer_after_stop_is_not_a_false_action_4077():

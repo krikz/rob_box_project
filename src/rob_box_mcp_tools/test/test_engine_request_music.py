@@ -1,7 +1,7 @@
 """ADR-0149 PR-6 — ``request_music`` v2, ``ok`` только по ``started``, каталог тулов при v1/v2 (эпик #3312).
 
 Настоящие ``PlayerOwner`` + ``RenardoAdapter`` + ``compose``/``render`` на симуляторе клока из
-``test_engine_session``; события плеера — тот же ``MusicEventLog``, что слушает ``dialogue_node``.
+``test_engine_session``; события плеера — тот же ``MusicEventLog``, что слушает ``dialog_node``.
 """
 
 import json

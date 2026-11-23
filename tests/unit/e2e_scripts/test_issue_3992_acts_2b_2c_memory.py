@@ -444,7 +444,10 @@ def test_conflict_lines_are_the_robot_f_strings():
     node = SPEAKER_ID_NODE.read_text(encoding="utf-8")
     assert "конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in embeddings
     assert "регистрируют как {name!r}" in embeddings
-    assert "голос похож на уже " in node and "известного '{outcome.conflict_name}'" in node
+    # #5019: ту же фразу пишет get_logger() ноды. logging модуля БД в docker logs не попадает,
+    # а паттерн 2 читает именно лог ноды (run 35667281570).
+    assert "регистрируют как '{name}' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in node
+    assert "голос похож на уже " in node and "известного '{shown}'" in node
     assert "профиль переименован {owner.name!r}" in node
     step = _steps(ACT2C)["n721_nina_own_profile"]
     assert "регистрируют как 'Нина' — конфликт имён, слияния НЕ делаю, завожу отдельный профиль" in step["patterns"][1]

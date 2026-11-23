@@ -20,6 +20,7 @@
 
 Обрыв потока ПОСЛЕ начала звука честно закрывает реплику ошибкой ``minimax_stream_broken`` (не ``finished``):
 хвост фразы не прозвучал, и молча делать вид, что прозвучал, нельзя (capability-honest, tts-extension-points).
+Одну фразу оператору из этого факта говорит ``tts_cut`` (ADR-0148), не текст LLM.
 """
 
 from __future__ import annotations

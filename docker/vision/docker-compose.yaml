@@ -89,9 +89,10 @@ services:
     #
     # #4532: процесса мало. Камеру переткнули — camera_node жив на мёртвом XLink
     # (X_LINK_ERROR), кадров нет, а health был `healthy`, restarts=0. Теперь вторым
-    # условием heartbeat кадров (oak_frame_watchdog.py: подписка на топик кадров,
-    # порог OAK_FRAME_STALE_SEC=30 с, льгота OAK_START_GRACE_SEC=90 с после старта).
-    # Лечит сам сторож: без кадров он выходит, start_oak_d.sh гасит launch,
+    # условием verdict сторожа: свежий кадр И нет отметки X_LINK_ERROR этого запуска
+    # (oak_frame_watchdog.py, порог OAK_FRAME_STALE_SEC=30 с, льгота
+    # OAK_START_GRACE_SEC=90 с). Свежий heartbeat при X_LINK_ERROR — не здоровье.
+    # Лечит сам сторож: stale → выход, start_oak_d.sh гасит launch,
     # `restart: unless-stopped` поднимает контейнер (autoheal в репо нет).
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f '[d]epthai_ros_driver/camera_node' && python3 /scripts/oak_frame_watchdog.py check || exit 1"]

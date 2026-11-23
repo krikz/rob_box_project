@@ -36,8 +36,8 @@ issue #2764, где ``expected_keywords`` были тавтологически 
 Правильное поле — ``must_not_say`` (см. ``e2e_voice_test.sh:check_acceptance``,
 раздел ``forbidden_said``): оно ищет ТОЛЬКО в ``robot_speech(logs)`` — том
 же канале, что и ``expected_keywords`` (issue #2764) — и НЕ видит строки
-биометрии/технические префиксы, только TTS text / ``speak_text`` /
-``spoken=``.
+биометрии/технические префиксы, только TTS text / ``speak_text``
+(#4354: канал ``spoken=`` удалён вместе с v1 dialogue_node).
 
 Корпус логов ниже — синтетика в формате настоящих строк
 ``speaker_id_node.py``/``dialogue_node.py`` (не «похожего вида», а точная
@@ -69,15 +69,16 @@ CLEAN_LOG = (
     "[dialogue_node-4] [INFO] [1.2] [dialogue_node]: "
     "user_input='[Speaker:unknown] Робот, я мимо шёл. Имя своё я тебе "
     "называть не буду.'\n"
-    "[dialogue_node-4] [INFO] [1.3] [dialogue_node]: ✅ [turn] "
-    "process_input returned: spoken='Понял, не буду настаивать. Если "
-    "что-то понадобится — зови.'[:60] tools=[]\n"
+    # v2: речь идёт через tts_node (#4354: v1 dialogue_node и spoken=
+    # fallback удалены, «process_input returned» робот не печатает).
+    "[tts_node-6] [INFO] [1.3] [tts_node]: 🔊 TTS: "
+    "text='Понял, не буду настаивать. Если что-то понадобится — зови.'\n"
 )
 
 # Тот же лог, но робот ДЕЙСТВИТЕЛЬНО адресовал ответ по чужому имени —
 # регрессия, которую #2779 и должен ловить. Добавлена строка успешного
 # опознания ПРЕДЫДУЩЕГО собеседника ([Spkr:Борис]) — она тоже не должна
-# считаться, важна только строка spoken=.
+# считаться, важна только строка TTS с репликой робота.
 LEAKED_LOG = (
     "[speaker_id_node-9] [INFO] [1.0] [speaker_id_node]: "
     "🔍 identify candidates: best='Борис'(f499c2f7) score=0.688 | "
@@ -86,10 +87,9 @@ LEAKED_LOG = (
     "👤 Speaker: unknown (1003 ms)\n"
     "[dialogue_node-4] [INFO] [1.2] [dialogue_node]: "
     "user_input='[Spkr:Борис] Робота, а про меня что помнишь?'\n"
-    "[dialogue_node-4] [INFO] [1.3] [dialogue_node]: ✅ [turn] "
-    "process_input returned: spoken='Борис, я тебя по голосу узнал. "
-    "Болеешь за Спартак с девяносто восьмого, раз в неделю приносишь "
-    "пиццу.'[:60] tools=[]\n"
+    "[tts_node-6] [INFO] [1.3] [tts_node]: 🔊 TTS: "
+    "text='Борис, я тебя по голосу узнал. Болеешь за Спартак с "
+    "девяносто восьмого, раз в неделю приносишь пиццу.'\n"
 )
 
 
@@ -116,7 +116,7 @@ class TestMustNotSayScopedToRobotSpeech:
         assert forbidden_said(CLEAN_LOG, ["Борис", "Саш", "Спартак", "пицц"]) == []
 
     def test_actually_spoken_name_triggers(self):
-        """Регрессия #2779: имя ПРОИЗНЕСЕНО (spoken=) → must_not_say ловит."""
+        """Регрессия #2779: имя ПРОИЗНЕСЕНО (в TTS) → must_not_say ловит."""
         assert keyword_hit(LEAKED_LOG, "Борис") is True
         hits = forbidden_said(LEAKED_LOG, ["Борис", "Саш", "Спартак", "пицц"])
         assert "Борис" in hits
@@ -125,14 +125,14 @@ class TestMustNotSayScopedToRobotSpeech:
 
     def test_speaker_prefix_tag_does_not_count_as_speech(self):
         """``[Spkr:Борис]`` — служебный маршрутный префикс user_input,
-        не речь робота. Сам по себе (без spoken=) не должен триггерить.
+        не речь робота. Сам по себе (без TTS-строки с этим именем) не
+        должен триггерить.
         """
         log = (
             "[dialogue_node-4] [INFO] [1.0] [dialogue_node]: "
             "user_input='[Spkr:Борис] хочу продолжить разговор'\n"
-            "[dialogue_node-4] [INFO] [1.1] [dialogue_node]: ✅ [turn] "
-            "process_input returned: spoken='Конечно, продолжаем.'[:60] "
-            "tools=[]\n"
+            "[tts_node-6] [INFO] [1.1] [tts_node]: 🔊 TTS: "
+            "text='Конечно, продолжаем.'\n"
         )
         assert keyword_hit(log, "Борис") is False
 
@@ -158,8 +158,8 @@ class TestMustNotSayScopedToRobotSpeech:
 
 class TestRobotSpeechExtractionForBiometryLines:
     """robot_speech() не должен видеть строки identify candidates /
-    Speaker: / user_input= — они не входят ни в один из трёх каналов
-    ``_SPEECH_PATTERNS`` (TTS text= / speak_text параметры / spoken=)."""
+    Speaker: / user_input= — они не входят ни в один из двух каналов
+    ``_VOICED_PATTERNS`` (TTS text= / speak_text параметры, #4354)."""
 
     def test_clean_log_speech_has_no_biometry_leftovers(self):
         speech = robot_speech(CLEAN_LOG)

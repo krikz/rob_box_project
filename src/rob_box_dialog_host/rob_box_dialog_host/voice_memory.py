@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 voice_memory.py  Cross-session persistent memory for the voice assistant.
 
@@ -67,6 +67,7 @@ except ImportError:
 # Ollama embeddings (lazy, gracefully degrades)
 # ---------------------------------------------------------------------------
 
+
 def query_words(query: str) -> List[str]:
     """Слова запроса: casefold + только буквы/цифры (#3890).
 
@@ -75,6 +76,59 @@ def query_words(query: str) -> List[str]:
     правило токенизации для поиска по фактам и по FTS5-репликам.
     """
     return re.findall(r"\w+", query.casefold())
+
+
+def _yo_fold(word: str) -> str:
+    """``ё`` → ``е``: «пьёт» и «пьет» — одна форма (#4956)."""
+    return word.replace("ё", "е")
+
+
+#: Замкнутые словоизменительные семьи (#4956). Суффиксный стеммер их не
+#: сводит: «еда»/«ест» и «пить»/«пьёт» — супплетивные корни, а на роботе
+#: нет Ollama (``vec=no``), так что векторный fallback мёртв. Семья — точное
+#: равенство формы, не префикс: «если» не «есть», «письмо» не «пить».
+#: Расширять только вместе с тестом на ложного соседа.
+_EAT_FORMS = frozenset(
+    _yo_fold(w)
+    for w in (
+        "еда еды еде еду едой едою едам едами едах "
+        "есть ест ем ешь едят едите ешьте "
+        "ел ела ело ели"
+    ).split()
+)
+_DRINK_FORMS = frozenset(
+    _yo_fold(w)
+    for w in (
+        "пить пью пьешь пьёт пьет пьем пьём пьете пьёте пьют пей пейте "
+        "пил пила пило пили"
+    ).split()
+)
+_INFLECTION_FAMILIES = (_EAT_FORMS, _DRINK_FORMS)
+
+
+def same_inflection(left: str, right: str) -> bool:
+    """Одна замкнутая семья форм (#4956), иначе False.
+
+    Не стеммер: «пицца»/«пиццу» по-прежнему разные (#3890), «чай» находится
+    подстрокой как раньше. Сравниваются уже нормализованные токены
+    (``query_words`` / ``casefold``).
+    """
+    a, b = _yo_fold(left), _yo_fold(right)
+    return any(a in family and b in family for family in _INFLECTION_FAMILIES)
+
+
+def _fact_matches(fact: str, tokens: List[str]) -> bool:
+    """Токен запроса — подстрока факта или та же семья форм (#4956).
+
+    Подстрока — прежний контракт («чай» в «зелёный чай»). Семья — точное
+    равенство формы (``same_inflection``): «еда» находит «ест», «если» нет.
+    """
+    folded = fact.casefold()
+    fact_words = query_words(fact)
+    return any(
+        token in folded or any(same_inflection(token, word) for word in fact_words)
+        for token in tokens
+    )
 
 
 class OllamaEmbedder:
@@ -587,6 +641,7 @@ class VoiceMemory:
         query: str,
         limit: int = 5,
         speaker_id: Optional[str] = None,
+        browse_when_empty: bool = False,
     ) -> List[Dict]:
         """
         Search stored user facts AND conversation turns (issue #2793).
@@ -614,6 +669,11 @@ class VoiceMemory:
                         ``speaker_id`` OR legacy global rows (NULL).
                         ``None`` returns all rows regardless of speaker
                         (used by the LLM with no current biometric context).
+            browse_when_empty: If True and both fact and turn searches are
+                        empty, return the speaker's fact catalog
+                        (``source="fact_browse"``, #4956) instead of ``[]``.
+                        Default False keeps the #3890 contract for direct
+                        callers.
 
         Returns:
             List of dicts: {id, session_id, role, content, timestamp,
@@ -622,7 +682,8 @@ class VoiceMemory:
             (``MemorySearchTool``) can tell a saved fact apart from a
             historical conversation line instead of presenting both as an
             undifferentiated "turn". ``source`` = "fact" | "fts" | "vec" |
-            "hybrid".
+            "hybrid" | "fact_browse" (только при ``browse_when_empty=True``
+            и пустом поиске, #4956).
         """
         if not query or not query.strip() or limit <= 0:
             return []
@@ -637,6 +698,16 @@ class VoiceMemory:
         )
         for hit in turn_hits:
             hit.setdefault("kind", "turn")
+
+        # #4956: каталог — последний fallback, не замена поиска. Семьи форм
+        # («еда»↔«ест», «пить»↔«пьёт») сводит ``same_inflection`` в
+        # ``_fact_search``: на стенде Ollama нет (``vec=no``), вектор мёртв.
+        # Каталог остаётся для запроса, которого нет ни в факте, ни в реплике,
+        # и только по флагу: иначе он вытеснил бы найденные реплики. Дефолт
+        # False, чтобы прямой search() не ломал контракт #3890 (ложный
+        # запрос → []). Каталог просит memory_search (browse_when_empty=True).
+        if browse_when_empty and not fact_hits and not turn_hits:
+            return self._browse_facts(limit, speaker_id=speaker_id)
 
         return fact_hits + turn_hits
 
@@ -713,9 +784,7 @@ class VoiceMemory:
         except sqlite3.OperationalError:
             return []
 
-        matches = [
-            r for r in rows if any(t in r["fact"].casefold() for t in tokens)
-        ]
+        matches = [r for r in rows if _fact_matches(r["fact"], tokens)]
 
         return [
             {
@@ -731,6 +800,61 @@ class VoiceMemory:
                 "kind": "fact",
             }
             for r in matches[:limit]
+        ]
+
+    def _browse_facts(
+        self,
+        limit: int,
+        speaker_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Каталог фактов говорящего, свежие сверху (#4956).
+
+        Детерминированный fallback без эмбеддингов (ADR-0148): вызывается
+        из ``search()`` только когда и ``_fact_search``, и ``_search_turns``
+        вернули пусто. Тот же скоуп спикера, что у ``get_facts``: запрошенный
+        ``speaker_id`` плюс legacy-строки с ``speaker_id IS NULL``;
+        ``speaker_id=None`` — все строки. ``score`` = 0.0, чтобы модель
+        отличала каталог от подстрочного попадания (``source="fact"``, 1.0).
+        """
+        if limit <= 0:
+            return []
+
+        where = ""
+        params: List[Any] = []
+        if speaker_id:
+            where = "WHERE (speaker_id = ? OR speaker_id IS NULL)"
+            params.append(speaker_id)
+        params.append(limit)
+
+        try:
+            with self.lock:
+                rows = self.conn.execute(
+                    f"""
+                    SELECT id, fact, category, speaker_id, updated_at
+                    FROM voice_facts
+                    {where}
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    params,
+                ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        return [
+            {
+                "id": r["id"],
+                "role": "fact",
+                "content": r["fact"],
+                "session_id": None,
+                "speaker_id": r["speaker_id"],
+                "category": r["category"],
+                "timestamp": r["updated_at"],
+                "score": 0.0,
+                "source": "fact_browse",
+                "kind": "fact",
+            }
+            for r in rows
         ]
 
     def _speaker_clause(self, speaker_id: Optional[str]) -> Tuple[str, list]:
