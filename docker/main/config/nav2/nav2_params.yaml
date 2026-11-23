@@ -327,6 +327,12 @@ behavior_server:
     # и ICP. Ложных отказов больше не станет: симуляция обрезается остатком угла
     # (Spin) или пути (BackUp), отказ = столкновение в пределах самой команды.
     simulate_ahead_time: 2.0
+    # #5003: копия costmap_raw публикуется на 2 Гц (local_costmap.publish_frequency),
+    # а BackUp тикает на 10 Гц. Тик в десятки миллисекунд после очистки читал
+    # копию со стеной и отменял BackUp строкой «Collision Ahead». Копия старше
+    # этого допуска не решает столкновение: тик пропускается (до 3 раз), дальше
+    # проверка закрывается отказом. Число живёт здесь, код его читает (ADR-0148).
+    costmap_freshness_tolerance: 0.6
     max_rotational_vel: 0.6  # Original value from e367f09
     min_rotational_vel: 0.2  # Allow slow spins
     rotational_acc_lim: 0.6  # Original value from e367f09, match DWB

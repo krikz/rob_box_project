@@ -75,12 +75,17 @@ RUN apt-get update && apt-get install -y \
 #   a held command, no motion of required_movement_radius, blocking cell on
 #   the command course. The decision is C++ in controller_server (ADR-0148).
 #   The process does not embed CPython (#5021).
+# - recovery BackUp skips a collision tick when the costmap_raw copy is older
+#   than costmap_freshness_tolerance (#5003): the copy is published at 2 Hz,
+#   so a tick within tens of milliseconds of a clear still shows the wall.
+#   Past the skip limit the check fails closed. Decision is C++ (ADR-0148).
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
 COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 COPY controller_stuck_against.patch /tmp/controller_stuck_against.patch
 COPY navfn_refuse_unknown_tail.patch /tmp/navfn_refuse_unknown_tail.patch
 COPY navfn_gradient_origin.patch /tmp/navfn_gradient_origin.patch
 COPY costmap_publish_on_clear.patch /tmp/costmap_publish_on_clear.patch
+COPY behavior_costmap_freshness.patch /tmp/behavior_costmap_freshness.patch
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -99,20 +104,25 @@ RUN apt-get update && apt-get install -y \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_refuse_unknown_tail.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_gradient_origin.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/costmap_publish_on_clear.patch \
+    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/behavior_costmap_freshness.patch \
     && rm -rf /var/lib/apt/lists/*
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix && \
     colcon build --symlink-install --base-paths /tmp/nav2-fix/src/navigation2 \
-        --packages-select nav2_controller nav2_navfn_planner nav2_costmap_2d --cmake-args -DCMAKE_BUILD_TYPE=Release" \
+        --packages-select nav2_controller nav2_navfn_planner nav2_costmap_2d nav2_behaviors --cmake-args -DCMAKE_BUILD_TYPE=Release" \
     && cp /tmp/nav2-fix/install/nav2_controller/lib/libcontroller_server_core.so \
         /opt/ros/${ROS_DISTRO}/lib/libcontroller_server_core.so \
     && cp /tmp/nav2-fix/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_navfn_planner.so \
     && cp /tmp/nav2-fix/install/nav2_costmap_2d/lib/libnav2_costmap_2d_core.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_costmap_2d_core.so \
+    && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libbehavior_server_core.so \
+        /opt/ros/${ROS_DISTRO}/lib/libbehavior_server_core.so \
+    && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_drive_on_heading_behavior.so \
+        /opt/ros/${ROS_DISTRO}/lib/libnav2_drive_on_heading_behavior.so \
     && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch \
         /tmp/controller_progress_abort.patch /tmp/controller_stuck_against.patch \
         /tmp/navfn_refuse_unknown_tail.patch /tmp/navfn_gradient_origin.patch \
-        /tmp/costmap_publish_on_clear.patch
+        /tmp/costmap_publish_on_clear.patch /tmp/behavior_costmap_freshness.patch
 # #4475: узел дерева WouldSpinOnStall. Угол считает rob_box_teleop.turn_in_place
 # (том compose, PYTHONPATH в start_nav2_direct.sh) — тот файл, что проверяет pytest.
 # doTransform<PoseStamped> в tf2_geometry_msgs.hpp зовёт KDL. Без -lorocos-kdl
