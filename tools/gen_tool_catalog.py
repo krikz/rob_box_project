@@ -295,7 +295,8 @@ def _collect_module_list_constants(tree: ast.Module) -> dict[str, ast.AST]:
 
 
 #: Tools whose ``description`` property is computed at runtime. Each entry
-#: rebuilds the exact same string from the exact same source literal.
+#: rebuilds the exact same string from the exact same source. Резолвер Химеры
+#: дописывается ниже, рядом с ``_chimera_action_values``: текст берёт тот же список.
 DYNAMIC_DESCRIPTIONS: dict[str, Any] = {}
 
 
@@ -385,9 +386,31 @@ def _chimera_delivery_dir() -> str:
     return str(REPO_ROOT / "sound_pack" / "chimera")
 
 
+def _chimera_offer():
+    """``chimera_offer`` из дерева репо. Без ROS: описание и поля схемы живут в ядре диалога."""
+    import importlib.util
+
+    path = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "chimera_offer.py"
+    spec = importlib.util.spec_from_file_location("_chimera_offer_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _chimera_action_values() -> list[str]:
     """``chimera_perform.action`` — ``enum_values`` поставки, не вторая таблица (ADR-0148, #5152)."""
     return list(_chimera_package().enum_values(_chimera_delivery_dir())[0])
+
+
+def _chimera_description() -> str:
+    """Текст ``chimera_perform`` из действий поставки — тот же список, что enum ``action``."""
+    return _chimera_offer().perform_description(_chimera_action_values())
+
+
+DYNAMIC_DESCRIPTIONS["chimera_perform"] = _chimera_description  # текст из enum поставки, не вторая копия строки
 
 
 def _chimera_creature_values() -> list[str]:

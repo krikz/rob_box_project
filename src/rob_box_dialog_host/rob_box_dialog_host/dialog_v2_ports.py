@@ -30,7 +30,7 @@ from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Busy, Expression, Result, ToolCall as CommandCall
-from rob_box_dialog.command import tool_schema as form_tool_schema
+from rob_box_dialog.command import current_form
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor, owner_event
@@ -153,9 +153,12 @@ def tool_schema(entry: Any) -> Mapping[str, Any]:
     Остальные тулы отдают параметры записи как есть: подмена каталогом ломала бы заглушку теста.
     """
     parameters = entry.parameters
+    description = entry.description
     if entry.name == kn.CHIMERA_TOOL:
-        parameters = form_tool_schema(entry.name)
-    return {"type": "function", "function": {"name": entry.name, "description": entry.description,
+        parameters = kn.chimera_model_schema(entry.parameters, current_form().sing_form)
+        actions = ((parameters.get("properties") or {}).get("action") or {}).get("enum") or ()
+        description = kn.chimera_offer_description(actions)
+    return {"type": "function", "function": {"name": entry.name, "description": description,
                                              "parameters": dict(parameters)}}
 
 

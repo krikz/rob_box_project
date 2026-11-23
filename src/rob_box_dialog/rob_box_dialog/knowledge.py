@@ -4087,9 +4087,9 @@ def chimera_tool_schema(schema: Mapping[str, Any], form: SingForm) -> Dict[str, 
     """Схема ``chimera_perform`` на форме семьи ``chimera``.
 
     Каталог поставки честно объявляет только ``call`` (#5152). Этот ход — живой синтез-маршрут (#5074):
-    действие в схеме — ``tool_actions`` формы, не список файлов. Существо и вызов клипа из схемы уходят:
-    их нет в маршруте пения, и оставлять enum поставки значило бы звать клип действием ``sing``.
-    Другие формы каталог не трогают.
+    действие в схеме — ``tool_actions`` формы, не список файлов. Поля чужих действий уходят той же
+    функцией, что сужает показ модели (``chimera_offer.offered_schema``): существо и вызов клипа
+    при ``sing`` звали бы клип действием пения. Другие формы каталог не трогают.
     """
     if form.needs_tool != CHIMERA_TOOL or not form.tool_actions:
         return dict(schema)
@@ -4099,9 +4099,31 @@ def chimera_tool_schema(schema: Mapping[str, Any], form: SingForm) -> Dict[str, 
         return out
     props["action"] = dict(props["action"])
     props["action"]["enum"] = list(form.tool_actions)
-    props.pop("creature", None)
-    props.pop("call", None)
-    return out
+    from rob_box_dialog.chimera_offer import offered_schema
+
+    return offered_schema(out, form.tool_actions)
+
+
+def chimera_model_schema(schema: Mapping[str, Any], form: Optional["SingForm"] = None) -> Dict[str, Any]:
+    """Схема ``chimera_perform``, которую видит модель: enum формы, иначе enum каталога, поля только его.
+
+    Валидатор вне хода эту функцию не зовёт: он судит каталог как есть (#5152).
+    """
+    from rob_box_dialog.chimera_offer import offered_schema
+
+    narrowed = chimera_tool_schema(schema, form) if form is not None and form.tool_actions else dict(schema)
+    actions = ((narrowed.get("properties") or {}).get("action") or {}).get("enum") or ()
+    return offered_schema(narrowed, actions)
+
+
+def chimera_offer_description(actions: Sequence[str]) -> str:
+    """Описание ``chimera_perform`` из того же списка действий, что enum схемы.
+
+    Текст строит ``chimera_offer.perform_description``. Своей копии строк здесь нет (ADR-0148).
+    """
+    from rob_box_dialog.chimera_offer import perform_description
+
+    return perform_description(actions)
 
 
 def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False, text: str = "") -> Dict[str, Any]:

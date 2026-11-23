@@ -34,12 +34,9 @@ class ChimeraPerformTool(MCPTool):
 
     @property
     def description(self) -> str:
-        return (
-            "Разовое выступление Химерой готовым клипом. action берётся из поставки: сейчас это call — "
-            "короткий вызов существа, creature и call из того же списка. Речь, пение и игра по названию "
-            "эта поставка не обещает и в список действий не входит. «Сказал» — только после конца "
-            "проигрывания, не после старта. Произвольный русский текст не поддержан."
-        )
+        from rob_box_dialog.chimera_offer import perform_description
+
+        return perform_description(self._profile.actions)
 
     @property
     def parameters(self) -> List[MCPToolParameter]:

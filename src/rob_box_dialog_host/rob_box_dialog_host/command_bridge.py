@@ -36,10 +36,9 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
-from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, fit_speech,
-                                    form_schema, is_empty, is_query_data, loud_actions, overlong_only, parse, to_args,
-                                    tool_schema,
-                                    validate, words_only)
+from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, current_form, explain,
+                                    fit_speech, form_schema, is_empty, is_query_data, loud_actions, overlong_only,
+                                    parse, to_args, validate, words_only)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
 from rob_box_dialog.speech_channel import FieldChannel, ModeRequest
@@ -98,8 +97,13 @@ def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
 
     out = []
     for t in map(get_tool, names):
-        parameters = tool_schema(t.name) if t.name == kn.CHIMERA_TOOL else t.parameters
-        out.append({"type": "function", "function": {"name": t.name, "description": t.description,
+        if t.name == kn.CHIMERA_TOOL:
+            parameters = kn.chimera_model_schema(t.parameters, current_form().sing_form)
+            actions = ((parameters.get("properties") or {}).get("action") or {}).get("enum") or ()
+            description = kn.chimera_offer_description(actions)
+        else:
+            parameters, description = t.parameters, t.description
+        out.append({"type": "function", "function": {"name": t.name, "description": description,
                                                      "parameters": dict(parameters)}})
     return out
 

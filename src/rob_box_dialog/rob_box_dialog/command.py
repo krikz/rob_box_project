@@ -267,8 +267,10 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
 def tool_schema(name: str, form: Optional[Form] = None) -> Mapping[str, Any]:
     """Схема тула, которую ход показывает модели и которой судит ответ.
 
-    Каталог — как есть, кроме семьи ``chimera``: там действие — ``sing`` формы, не ``call`` поставки
-    (#5074, #5152). Одна функция и для схемы модели, и для :func:`validate`.
+    Каталог — как есть, кроме семьи ``chimera``: там действие — ``sing`` формы, не ``call`` поставки,
+    и поля чужих действий уходят (#5074, #5152). Одна функция и для схемы модели, и для :func:`validate`.
+    Показ модели сужает поля ещё и вне этой семьи (``knowledge.chimera_model_schema``): валидатор вне
+    хода каталог не режет, иначе ``sing`` стал бы «лишним полем», а не «не из enum».
     """
     form = form or current_form()
     schema = get_tool(name).parameters
