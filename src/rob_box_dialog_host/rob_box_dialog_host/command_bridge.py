@@ -96,8 +96,12 @@ def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
     """OpenAI-схемы тулов каталога (как их строит порт хода)."""
     from rob_box_core.tool_catalog import get_tool  # noqa: PLC0415
 
-    return [{"type": "function", "function": {"name": t.name, "description": t.description,
-                                              "parameters": dict(tool_schema(t.name))}} for t in map(get_tool, names)]
+    out = []
+    for t in map(get_tool, names):
+        parameters = tool_schema(t.name) if t.name == kn.CHIMERA_TOOL else t.parameters
+        out.append({"type": "function", "function": {"name": t.name, "description": t.description,
+                                                     "parameters": dict(parameters)}})
+    return out
 
 
 def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:

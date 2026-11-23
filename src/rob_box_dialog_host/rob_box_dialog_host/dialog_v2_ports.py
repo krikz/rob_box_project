@@ -150,10 +150,13 @@ def tool_schema(entry: Any) -> Mapping[str, Any]:
     """Запись каталога (``ToolCatalogEntry``) → OpenAI-схема тула для провайдера.
 
     Семья ``chimera`` сужает ``action`` до ``sing`` той же функцией, что валидатор (#5074, #5152).
-    Каталог поставки при этом остаётся ``call``.
+    Остальные тулы отдают параметры записи как есть: подмена каталогом ломала бы заглушку теста.
     """
+    parameters = entry.parameters
+    if entry.name == kn.CHIMERA_TOOL:
+        parameters = form_tool_schema(entry.name)
     return {"type": "function", "function": {"name": entry.name, "description": entry.description,
-                                             "parameters": dict(form_tool_schema(entry.name))}}
+                                             "parameters": dict(parameters)}}
 
 
 def follow_for(result: Result) -> Callable[[str], Sequence[Any]]:
