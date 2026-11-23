@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 
 from ..base import MCPTool, MCPToolParameter, MCPToolResult, ToolExecutionType
 from . import chimera_decide as decide
+from . import chimera_delivery as delivery
 
 ACTIONS = ("call", "speak", "sing", "play")  # литерал для каталога; профиль хоста сужает его на исполнении
 TIMBRES = ("male", "female", "child")
@@ -24,7 +25,8 @@ class ChimeraPerformTool(MCPTool):
         super().__init__(node)
         self._host = host if host is not None else node_host(node)
         self._library = library
-        self._profile = profile if profile is not None else decide.stub_profile()
+        # Поставка шага 1.1, если она стоит; иначе заглушка. Переданный профиль — для теста.
+        self._profile = profile if profile is not None else delivery.load_delivery()
 
     @property
     def name(self) -> str:
@@ -47,10 +49,22 @@ class ChimeraPerformTool(MCPTool):
                 type="string",
                 description="Что сделать Химерой",
                 required=True,
-                enum=["call", "speak", "sing", "play"],
+                enum=list(self._profile.actions),
             ),
-            MCPToolParameter(name="creature", type="string", description="Существо для action=call", required=False),
-            MCPToolParameter(name="call", type="string", description="Вызов существа для action=call", required=False),
+            MCPToolParameter(
+                name="creature",
+                type="string",
+                description="Существо для action=call",
+                required=False,
+                enum=list(self._profile.creatures) or None,
+            ),
+            MCPToolParameter(
+                name="call",
+                type="string",
+                description="Вызов существа для action=call",
+                required=False,
+                enum=list(delivery.call_names(self._profile)) or None,
+            ),
             MCPToolParameter(
                 name="phrase_id", type="string", description="Id подготовленной фразы для action=speak", required=False
             ),

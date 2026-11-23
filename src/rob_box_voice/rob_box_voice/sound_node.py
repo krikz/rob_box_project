@@ -118,6 +118,31 @@ def dispatch_sound_stop(node, data: str) -> None:
         abort_chimera(node, body)
 
 
+def load_chimera_clips(node, directory: str) -> int:
+    """WAV поставки Химеры — по имени файла. Каталога нет — ноль, это не ошибка пакета эффектов.
+
+    Имя файла и есть то, что публикует тул: ``select_sound`` найдёт его прямым совпадением.
+    Битый файл пропускается, как битый mp3, и в словарь не попадает.
+    """
+    if not os.path.isdir(directory):
+        return 0
+    loaded = 0
+    for filename in sorted(os.listdir(directory)):
+        if not filename.endswith(".wav"):
+            continue
+        path = os.path.join(directory, filename)
+        try:
+            audio = AudioSegment.from_wav(path)
+            node.sounds[filename] = audio + node.volume_db if node.volume_db else audio
+            loaded += 1
+            node.get_logger().info(f"  ✓ chimera {filename}: {len(audio)}ms, {audio.frame_rate}Hz")
+        except Exception as exc:  # noqa: BLE001 — битый клип не роняет ноду, его просто нет
+            node.get_logger().error(f"  ❌ клип Химеры {filename} не прочитан: {exc}")
+    if loaded:
+        node.get_logger().info(f"✅ Клипов Химеры: {loaded}")
+    return loaded
+
+
 class SoundNode(SoundRequestsMixin, Node):
     """Нода для воспроизведения звуковых эффектов."""
 
@@ -281,8 +306,10 @@ class SoundNode(SoundRequestsMixin, Node):
         else:
             self.get_logger().warn(f"⚠️ Файл catalog.json не найден: {catalog_path}")
 
-        # Загрузить все mp3 файлы
+        # Загрузить все mp3 файлы и WAV поставки Химеры (ADR-0175 шаг 1.1, #5152).
         loaded_count = 0
+        chimera_dir = os.path.join(self.sound_pack_dir, "chimera")
+        loaded_count += load_chimera_clips(self, chimera_dir)
         for filename in os.listdir(self.sound_pack_dir):
             if filename.endswith(".mp3"):
                 sound_name = filename.replace(".mp3", "")

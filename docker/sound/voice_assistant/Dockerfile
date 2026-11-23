@@ -295,6 +295,10 @@ ENV ALSA_CARD=ArrayUAC10
 
 # Пути к данным
 ENV SOUND_PACK_DIR=/ws/sound_pack
+# Поставка готовых клипов Химеры (ADR-0175 шаг 1.1, #5152). Каталог в образе, не в /data:
+# монтирование sound_pack перекрывает /ws/sound_pack, поэтому профиль читается отсюда.
+ENV CHIMERA_PACKAGE_DIR=/opt/rob_box/chimera
+
 ENV TTS_CACHE_DIR=/config/voice_assistant/tts_cache
 
 # Проверка доступности нод
@@ -303,6 +307,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 
 # Точка входа
 ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]
+
+# Готовые клипы Химеры (ADR-0175 шаг 1.1, #5152): профиль и WAV, сверенные по sha256.
+# Лежат в /opt, а не в /ws/sound_pack: тот каталог на роботе перекрыт томом.
+COPY sound_pack/chimera /opt/rob_box/chimera
 
 # По умолчанию запускаем через startup script
 CMD ["/scripts/start_voice_assistant.sh"]
