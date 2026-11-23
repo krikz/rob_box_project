@@ -150,10 +150,14 @@ jobs:
           # 20+ PRs). tools is here for tools/gen_tool_catalog.py, imported by
           # src/rob_box_harness/test/test_skill_catalog.py — without it those
           # tests silently SKIP (skipif(not _GENERATOR.exists())), masking a
-          # real contract regression as a green CI. Guard against the next
+          # real contract regression as a green CI.
+          # sound_pack is here for sound_pack/chimera (#5152): the voice
+          # test walks up to the package, and parents[N] inside test_ws
+          # misses the checkout. Without this copy: FileNotFoundError.
+          # Guard against the next
           # occurrence:
           #   python3 scripts/ci/validate_test_ws_dirs.py
-          for d in docker migrations docs .github scripts tools; do
+          for d in docker migrations docs .github scripts tools sound_pack; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
 
@@ -657,7 +661,7 @@ jobs:
           # (scripts/voice_bench/score.py, test_voice_bench_scoring.py).
           # tools is here for the same reason as in unit-tests above
           # (tools/gen_tool_catalog.py, test_skill_catalog.py).
-          for d in docker migrations docs .github scripts tools; do
+          for d in docker migrations docs .github scripts tools sound_pack; do
             [ -d "$d" ] && rsync -av "$d" ${{ github.workspace }}/test_ws/
           done
           cd ${{ github.workspace }}/test_ws

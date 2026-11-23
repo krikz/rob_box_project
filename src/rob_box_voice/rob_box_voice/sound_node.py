@@ -26,6 +26,8 @@ from std_msgs.msg import String
 
 from rob_box_dialog import expression
 from rob_box_dialog_msgs.msg import ExpressionEvent, ExpressionRequest, SessionState, SoundEvent
+from rob_box_mcp_tools.chimera_package import package_dir as chimera_package_dir
+from rob_box_mcp_tools.chimera_package import verified_clip
 
 from .audio_playback_manager import AudioPlaybackManager
 from .core.sound_answer import (
@@ -116,6 +118,31 @@ def dispatch_sound_stop(node, data: str) -> None:
         return
     if body.startswith("{"):
         abort_chimera(node, body)
+
+
+def load_chimera_clips(node, directory: str) -> int:
+    """WAV поставки Химеры — по имени файла. Каталога нет — ноль, это не ошибка пакета эффектов.
+
+    Имя файла и есть то, что публикует тул: ``select_sound`` найдёт его прямым совпадением.
+    Битый файл пропускается, как битый mp3, и в словарь не попадает.
+    """
+    if not os.path.isdir(directory):
+        return 0
+    loaded = 0
+    for filename in sorted(os.listdir(directory)):
+        if not filename.endswith(".wav") or not verified_clip(directory, filename):
+            continue
+        path = os.path.join(directory, filename)
+        try:
+            audio = AudioSegment.from_wav(path)
+            node.sounds[filename] = audio + node.volume_db if node.volume_db else audio
+            loaded += 1
+            node.get_logger().info(f"  ✓ chimera {filename}: {len(audio)}ms, {audio.frame_rate}Hz")
+        except Exception as exc:  # noqa: BLE001 — битый клип не роняет ноду, его просто нет
+            node.get_logger().error(f"  ❌ клип Химеры {filename} не прочитан: {exc}")
+    if loaded:
+        node.get_logger().info(f"✅ Клипов Химеры: {loaded}")
+    return loaded
 
 
 class SoundNode(SoundRequestsMixin, Node):
@@ -251,6 +278,7 @@ class SoundNode(SoundRequestsMixin, Node):
 
     def load_sounds(self):
         """Загрузка всех звуковых файлов из sound_pack/."""
+        load_chimera_clips(self, chimera_package_dir())
         if not os.path.exists(self.sound_pack_dir):
             self.get_logger().error(f"❌ Директория sound_pack не найдена: {self.sound_pack_dir}")
             self.publish_state("error_no_dir")
@@ -281,7 +309,7 @@ class SoundNode(SoundRequestsMixin, Node):
         else:
             self.get_logger().warn(f"⚠️ Файл catalog.json не найден: {catalog_path}")
 
-        # Загрузить все mp3 файлы
+        # mp3 эффектов. Клипы Химеры уже загружены из package_dir() в начале метода.
         loaded_count = 0
         for filename in os.listdir(self.sound_pack_dir):
             if filename.endswith(".mp3"):

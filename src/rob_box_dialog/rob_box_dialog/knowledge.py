@@ -3933,13 +3933,15 @@ SING_PERFORM_KINDS: Tuple[str, ...] = ("song", "rap")
 class SingForm:
     """Что форма хода делает по пути пения: ``closed_tools`` — тулы вне среза и вне команды (новая музыка мимо
     выступления), ``needs_perform`` — команда обязана петь (``perform``), ``needs_tool`` — команда обязана позвать тул,
-    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все)."""
+    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все),
+    ``tool_actions`` — действие тула, которое форма оставляет в схеме (пусто — enum каталога как есть)."""
 
     closed_tools: Tuple[str, ...] = ()
     needs_perform: bool = False
     needs_tool: str = ""
     kinds: Tuple[str, ...] = ()
     backings: Tuple[str, ...] = ()
+    tool_actions: Tuple[str, ...] = ()
 
 
 #: Стебель, которым реплика называет Химеру. Тот же, что в :data:`SOUND_STEMS` (группа ``sound``): нового списка нет,
@@ -3961,8 +3963,10 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     # правка играющего: заказ нового закрыт, правка обязательна; выступление форма не трогает (любой вид)
     "edit": SingForm(closed_tools=("generate_music", "request_music", "dj_set"), needs_tool=EDIT_TOOL,
                      kinds=PERFORM_KINDS),
-    # «спой химерой»: не живое пение — тул Химеры обязателен, perform не обязателен (#5074, ADR-0148)
-    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False),
+    # «спой химерой»: не живое пение — тул Химеры обязателен, действие sing (#5074, #5152, ADR-0148).
+    # Каталог поставки объявляет только call. Это не вторая таблица клипов: форма сужает action до sing,
+    # существо и вызов из схемы уходят — готовый WAV этим ходом не выбирается.
+    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False, tool_actions=("sing",)),
 })
 #: Голова id пути хода «правка играющего» (``edit:<вид>+…``): музыка играет, а реплика её правит («сделай бит
 #: потяжелее», «ускорь», «добавь баса»; кейс Шифу 27.10 посреди рэпа, марафон n504–n506). Решает хост до модели тем же
@@ -4092,6 +4096,49 @@ def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:
     if form.kinds:
         return form.kinds
     return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
+
+
+def chimera_tool_schema(schema: Mapping[str, Any], form: SingForm) -> Dict[str, Any]:
+    """Схема ``chimera_perform`` на форме семьи ``chimera``.
+
+    Каталог поставки честно объявляет только ``call`` (#5152). Этот ход — живой синтез-маршрут (#5074):
+    действие в схеме — ``tool_actions`` формы, не список файлов. Поля чужих действий уходят той же
+    функцией, что сужает показ модели (``chimera_offer.offered_schema``): существо и вызов клипа
+    при ``sing`` звали бы клип действием пения. Другие формы каталог не трогают.
+    """
+    if form.needs_tool != CHIMERA_TOOL or not form.tool_actions:
+        return dict(schema)
+    out = copy.deepcopy(dict(schema))
+    props = out.get("properties")
+    if not isinstance(props, dict) or "action" not in props:
+        return out
+    props["action"] = dict(props["action"])
+    props["action"]["enum"] = list(form.tool_actions)
+    from rob_box_dialog.chimera_offer import offered_schema
+
+    return offered_schema(out, form.tool_actions)
+
+
+def chimera_model_schema(schema: Mapping[str, Any], form: Optional["SingForm"] = None) -> Dict[str, Any]:
+    """Схема ``chimera_perform``, которую видит модель: enum формы, иначе enum каталога, поля только его.
+
+    Валидатор вне хода эту функцию не зовёт: он судит каталог как есть (#5152).
+    """
+    from rob_box_dialog.chimera_offer import offered_schema
+
+    narrowed = chimera_tool_schema(schema, form) if form is not None and form.tool_actions else dict(schema)
+    actions = ((narrowed.get("properties") or {}).get("action") or {}).get("enum") or ()
+    return offered_schema(narrowed, actions)
+
+
+def chimera_offer_description(actions: Sequence[str]) -> str:
+    """Описание ``chimera_perform`` из того же списка действий, что enum схемы.
+
+    Текст строит ``chimera_offer.perform_description``. Своей копии строк здесь нет (ADR-0148).
+    """
+    from rob_box_dialog.chimera_offer import perform_description
+
+    return perform_description(actions)
 
 
 def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False, text: str = "") -> Dict[str, Any]:

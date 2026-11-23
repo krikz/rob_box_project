@@ -32,9 +32,17 @@ PINNED_FILES = {
         f"{UPSTREAM}/nav2_behaviors/include/nav2_behaviors/behavior_server.hpp"
     ),
     "nav2_behaviors/src/behavior_server.cpp": f"{UPSTREAM}/nav2_behaviors/src/behavior_server.cpp",
+    "nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp": (
+        f"{UPSTREAM}/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp"
+    ),
+    "nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp": (
+        f"{UPSTREAM}/nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp"
+    ),
+    "nav2_behaviors/plugins/back_up.cpp": f"{UPSTREAM}/nav2_behaviors/plugins/back_up.cpp",
     "nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp": (
         f"{UPSTREAM}/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp"
     ),
+    "nav2_behaviors/plugins/drive_on_heading.cpp": f"{UPSTREAM}/nav2_behaviors/plugins/drive_on_heading.cpp",
 }
 
 
@@ -54,14 +62,12 @@ def _fetch(url: str) -> bytes:
 
 def test_stale_copy_skips_the_tick_instead_of_aborting():
     added = _added(PATCH.read_text(encoding="utf-8"))
-    # Устаревшая копия — не «Collision Ahead»: тик пропускается, статус RUNNING.
-    assert 'return "skip"' in added
-    assert "skipping DriveOnHeading tick" in added
-    assert "return Status::RUNNING;" in added
+    # Устаревшая копия — не «Collision Ahead»: общий цикл пропускает тик.
+    assert "Costmap copy stale - skipping collision tick" in added
+    assert "return nav2_behaviors::Status::RUNNING;" in added
     # За лимитом пропусков проверка закрывается отказом, а не едет вслепую.
-    assert 'return "fail"' in added
-    assert "Exiting DriveOnHeading" in added
-    assert "return Status::FAILED;" in added
+    assert "Costmap copy stale - failing" in added
+    assert "return nav2_behaviors::Status::FAILED;" in added
     assert "stopRobot();" in added
     # Существующая проверка столкновения патчем не подменяется.
     assert "Collision Ahead" not in added
@@ -87,10 +93,12 @@ def test_dockerfile_builds_behaviors_and_ships_the_patched_libs():
     assert df.index("behavior_costmap_freshness.patch") < df.index("libbehavior_server_core.so")
     select = df[df.index("--packages-select") : df.index("--cmake-args")]
     assert "nav2_behaviors" in select
-    # BackUp наследует DriveOnHeading, решение тика — в сервере: нужны обе либы.
+    # Решение тика — в сервере. Recovery BackUp — отдельный .so, его тоже везём.
     assert "libbehavior_server_core.so" in df
     assert "libnav2_drive_on_heading_behavior.so" in df
+    assert "libnav2_back_up_behavior.so" in df
     assert df.index("libbehavior_server_core.so") < df.index("rm -rf /tmp/nav2-fix")
+    assert df.index("libnav2_back_up_behavior.so") < df.index("rm -rf /tmp/nav2-fix")
 
 
 def test_patch_applies_on_pinned_behaviors(tmp_path: Path):
@@ -113,7 +121,11 @@ def test_patch_applies_on_pinned_behaviors(tmp_path: Path):
     # Параметр допуска объявлен ровно один раз (issue #976).
     assert server.count("declare_parameter(kCostmapFreshnessParam") == 1
     assert "declare_parameter(kCostmapFreshnessParam, rclcpp::ParameterValue(0.6));" in server
-    heading = (src / "nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp").read_text(encoding="utf-8")
-    skip = heading.index("skipping DriveOnHeading tick")
-    collision = heading.index("Collision Ahead - Exiting DriveOnHeading")
-    assert skip < collision
+    loop = (src / "nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp").read_text(encoding="utf-8")
+    skip = loop.index("Costmap copy stale - skipping collision tick")
+    cycle = loop.index("switch (onCycleUpdate())")
+    assert skip < cycle
+    backup = (src / "nav2_behaviors/plugins/back_up.cpp").read_text(encoding="utf-8")
+    heading = (src / "nav2_behaviors/plugins/drive_on_heading.cpp").read_text(encoding="utf-8")
+    assert "costmapTickStatusFor" in backup
+    assert "costmapTickStatusFor" in heading

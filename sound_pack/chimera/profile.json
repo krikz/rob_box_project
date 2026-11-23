@@ -1,0 +1,51 @@
+{
+  "package": "chimera-calls",
+  "version": "0.1.0",
+  "source_sha": "caf270abf893bdc63f6342059d4468f754edf5c6",
+  "source_issue": 5026,
+  "rate_hz": 16000,
+  "channels": 1,
+  "sample_width": 2,
+  "calls": [
+    {
+      "creature": "птица",
+      "call": "щебет",
+      "file": "bird_chirps_16k_notail.wav",
+      "sha256": "bc3dddb760272139646f0fb65153d1f06049b85dc1e0ea80d0a43e2f43e6bd0c",
+      "frames": 11280,
+      "duration_s": 0.705
+    },
+    {
+      "creature": "тюлень",
+      "call": "писк",
+      "file": "seal_zap_16k_notail.wav",
+      "sha256": "fac1baf26afa3134d2abc8eaddc2cb794c3218c110bac96ed78b918b7ae0c2c2",
+      "frames": 2720,
+      "duration_s": 0.17
+    },
+    {
+      "creature": "слон",
+      "call": "писк",
+      "file": "elephant_squeak_16k_notail.wav",
+      "sha256": "f6f1f89c2454acae3a584dcd598013f7ac7e1b9b95ef871c8417580afb93c640",
+      "frames": 8000,
+      "duration_s": 0.5
+    },
+    {
+      "creature": "аллигатор",
+      "call": "рык",
+      "file": "alligator_growl_16k_notail.wav",
+      "sha256": "f7d4bf50e4c33751662f52d187f7ada0b3584268672ffe2d36969812b1dae7b9",
+      "frames": 9600,
+      "duration_s": 0.6
+    },
+    {
+      "creature": "птица",
+      "call": "жужжание",
+      "file": "bird_buzz_16k_notail.wav",
+      "sha256": "64ad61f392f959d1ccbf12d0919c44d32ca7493fc74bdbd2170ff41436e71589",
+      "frames": 9680,
+      "duration_s": 0.605
+    }
+  ]
+}
