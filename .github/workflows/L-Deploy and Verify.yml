@@ -36,6 +36,14 @@ on:
         required: false
         default: false
         type: boolean
+      # Решение Шифу 23.11 (#5149): гейт nav2 по умолчанию не лечит, а валит.
+      # Рубильник ручной — для оператора/дежурного, не для каждого деплоя.
+      # true → NAV2_RESTART_ON_FAIL=1: один рестарт после подтверждённого провала.
+      nav2_restart_on_fail:
+        description: 'Ручной рестарт nav2 при подтверждённом провале гейта (по умолчанию выключен: гейт валит деплой, контейнер не трогает)'
+        required: false
+        default: false
+        type: boolean
       force_hil_unlock:
         description: 'Пропустить проверку HIL-замка (осторожно: снимает лишь проверку, замок на Pi НЕ удаляется)'
         required: false
@@ -1305,12 +1313,17 @@ jobs:
           # только пишет deploy_status ниже: Summary с if: always() зелёную
           # джобу не краснит. Скрипт печатает JSON и выходит 0, чтобы причина
           # успела попасть в лог шага.
+          # NAV2_RESTART_ON_FAIL — ручной флаг (вход nav2_restart_on_fail,
+          # решение Шифу 23.11, #5149). По умолчанию false/0: гейт не лечит
+          # контейнер, а честно валит деплой. true — один рестарт, и только
+          # после второй подтверждающей пробы при healthy zenoh-router.
           PI_HOST="${{ env.main_pi_ip }}" \
           PI_USER=ros2 \
           PI_PASSWORD=open \
           PI_COMPOSE_DIR='~/rob_box_project/docker/main' \
           PI_SSH_OPTS="$SSH_OPTS" \
           STATUS_JSON="$(cat /tmp/main_status.json)" \
+          NAV2_RESTART_ON_FAIL="${{ inputs.nav2_restart_on_fail == true && '1' || '0' }}" \
             bash scripts/ci/wait_nav2_active.sh > /tmp/nav2_gate.json
           echo "--- nav2 gate ---"
           cat /tmp/nav2_gate.json

@@ -850,6 +850,12 @@ adoption `previous=null`. Mutable `external_images`, compose override, ошиб�
 
 **dianjiang** (点将台) — будущая панель парка; до неё пульт — workflow `F: Update Robot`.
 
+**Гейт nav2** (`scripts/ci/wait_nav2_active.sh`) — проверка деплоя, что nav2 на Main Pi жив не по
+`docker compose ps`, а по ExitCode healthcheck (три узла active). По умолчанию не лечит контейнер,
+а валит шаг с причиной (решение Шифу 23.11, #5149). Ручной рубильник `NAV2_RESTART_ON_FAIL`
+(вход `nav2_restart_on_fail` у `L: Deploy and Verify`) — один рестарт после второй подтверждающей
+пробы, если zenoh-router уже healthy. _Avoid_: «гейт сам поднимет nav2».
+
 ---
 
 ## Историческое
