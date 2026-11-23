@@ -11,7 +11,10 @@
 #   * вне старт-окна читает последний Health.Log[].ExitCode и отдаёт ok=false
 #     при rc≠0 (и при отсутствии контейнера / отсутствии проб);
 #   * внутри окна (check_container_status.sh вернул pending_start с nav2)
-#     ждёт конца окна и мерит снова — не пишет «жив» раньше вердикта.
+#     ждёт конца окна и мерит снова — не пишет «жив» раньше вердикта;
+#   * лечение #5039: rc≠0 вне окна при уже healthy zenoh-router — ровно один
+#     `docker restart nav2`, повторное ожидание нового окна и решение по
+#     новому замеру. Второго перезапуска нет, роутер не трогается.
 #
 # docker/sshpass мокаются через PATH. stdout скрипта — одна JSON-строка
 # {ok, reason}; exit 0 всегда, шаг воркфлоу валит джобу по .ok.
@@ -34,10 +37,28 @@ command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 не найден �
 MOCK_BIN="$(mktemp -d)"
 trap 'rm -rf "$MOCK_BIN"' EXIT
 
-# Mock sshpass: каждый вызов отдаёт следующую фикстуру из $FIXTURE_DIR
-# (sample_1.txt, sample_2.txt, ...). Пустой файл = контейнера нет.
+# Mock sshpass. По удалённой команде выбирает фикстуру:
+#   * `docker restart nav2` — пишет метку в $FIXTURE_DIR/.restarts, ничего не печатает;
+#   * `zenoh-router`        — отдаёт router_N.txt (состояние healthcheck роутера);
+#   * всё остальное (nav2)  — отдаёт sample_N.txt (сырой docker inspect).
+# Счётчики раздельные: перезапуск не съедает замер, а проба роутера — нет.
 cat >"$MOCK_BIN/sshpass" <<'SSHPASS_EOF'
 #!/usr/bin/env bash
+case "$*" in
+    *"docker restart nav2"*)
+        printf 'restart\n' >> "$FIXTURE_DIR/.restarts"
+        exit 0
+        ;;
+    *zenoh-router*)
+        calls_file="$FIXTURE_DIR/.router_calls"
+        n="$( [ -f "$calls_file" ] && cat "$calls_file" || echo 0 )"
+        n=$((n + 1))
+        echo "$n" > "$calls_file"
+        f="$FIXTURE_DIR/router_${n}.txt"
+        [ -f "$f" ] && cat "$f"
+        exit 0
+        ;;
+esac
 calls_file="$FIXTURE_DIR/.calls"
 n="$( [ -f "$calls_file" ] && cat "$calls_file" || echo 0 )"
 n=$((n + 1))
@@ -92,6 +113,24 @@ inspect_nav2() {
         }'
 }
 
+assert_contains() {  # $1=haystack $2=needle $3=label
+    TOTAL=$((TOTAL + 1))
+    if printf '%s\n' "$1" | grep -qF -- "$2"; then
+        printf '  %s✓%s %s\n' "$GREEN" "$NC" "$3"
+    else
+        printf '  %s✗%s %s: не найдено %s\n' "$RED" "$NC" "$3" "$2" >&2
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+# Дополнительные фикстуры и env для следующего вызова run_case.
+#   ROUTER_FIXTURES — содержимое router_1, router_2, ... (состояние роутера);
+#   EXTRA_ENV       — пары VAR=VALUE поверх базового env (например, рубильник).
+ROUTER_FIXTURES=()
+EXTRA_ENV=()
+LAST_STDERR=""
+LAST_RESTARTS=0
+
 # run_case EXPECT_OK STATUS_JSON FIXTURES... -- LABEL
 #   FIXTURES — содержимое sample_1, sample_2, ... (по одному аргументу).
 #   "--" отделяет фикстуры от метки.
@@ -113,6 +152,12 @@ run_case() {
         printf '%s\n' "$fix" > "$fixture_dir/sample_${i}.txt"
         i=$((i + 1))
     done
+    i=1
+    for fix in "${ROUTER_FIXTURES[@]}"; do
+        printf '%s\n' "$fix" > "$fixture_dir/router_${i}.txt"
+        i=$((i + 1))
+    done
+    ROUTER_FIXTURES=()
 
     local env_block=(
         "PATH=$MOCK_BIN:$PATH"
@@ -127,10 +172,19 @@ run_case() {
         # а реальные 25s раздули бы прогон.
         "PROBE_SLACK_S=0"
         "MAX_WAIT_S=180"
+        "${EXTRA_ENV[@]}"
     )
+    EXTRA_ENV=()
 
+    local stderr_file="$fixture_dir/.stderr"
     local stdout
-    stdout="$(env -i "${env_block[@]}" bash "$SCRIPT_UNDER_TEST" 2>/dev/null || true)"
+    stdout="$(env -i "${env_block[@]}" bash "$SCRIPT_UNDER_TEST" 2>"$stderr_file" || true)"
+    LAST_STDERR="$(cat "$stderr_file" 2>/dev/null || true)"
+    if [ -f "$fixture_dir/.restarts" ]; then
+        LAST_RESTARTS="$(wc -l < "$fixture_dir/.restarts" | tr -d ' ')"
+    else
+        LAST_RESTARTS=0
+    fi
     rm -rf "$fixture_dir"
 
     local result
@@ -196,6 +250,81 @@ OTHER_PENDING='{"healthy":false,"failed_count":0,"pending_start":true,"pending":
 FIX="$(inspect_nav2 healthy 0 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
 run_case true "$OTHER_PENDING" "$FIX" -- \
     "G: pending is another container, nav2 ExitCode=0 → ok=true (gate is nav2-only)"
+
+# --- лечение #5039: один перезапуск nav2 при живом роутере --------------------
+# Замер, на котором основано лечение: вне окна rc=1 (узлы не active), а
+# zenoh-router уже healthy — один `docker restart nav2` поднимал nav2 2/2.
+
+# H: rc=1, роутер healthy → ровно один restart, новый замер rc=0 → ok=true.
+FIX1="$(inspect_nav2 starting 1 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
+FIX2="$(inspect_nav2 healthy 0 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
+ROUTER_FIXTURES=("healthy")
+run_case true "$NO_PENDING" "$FIX1" "$FIX2" -- \
+    "H: ExitCode=1 + healthy router → 1 restart, re-measure 0 → ok=true (#5039)"
+assert_eq "$LAST_RESTARTS" "1" "restart count (H)"
+assert_contains "$LAST_STDERR" "nav2 healthcheck ExitCode=1 — однократный restart nav2" \
+    "log line about the one-shot restart (H)"
+
+# I: rc=1, но роутер ещё не healthy → перезапуск не лечит причину: fail, 0 restart.
+ROUTER_FIXTURES=("starting")
+run_case false "$NO_PENDING" "$FIX1" -- \
+    "I: ExitCode=1 + router starting → no restart, ok=false (#5039)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (I)"
+
+# J: rc=1, роутер healthy, после перезапуска rc=1 → fail и БОЛЬШЕ НИ ОДНОГО
+# перезапуска (второго не бывает: повтор — это уже цикл, а не лечение).
+FIX3="$(inspect_nav2 unhealthy 1 "$OLD_STARTED" "$NAV2_START_PERIOD_NS")"
+ROUTER_FIXTURES=("healthy")
+run_case false "$NO_PENDING" "$FIX1" "$FIX3" -- \
+    "J: ExitCode=1 → 1 restart, re-measure 1 → ok=false, no second restart (#5039)"
+assert_eq "$LAST_RESTARTS" "1" "restart count (J)"
+
+# K: rc=-1 (healthcheck ни разу не отработал вне окна) — это не «упал после
+# старта», перезапуск такое не лечит: fail без restart даже при живом роутере.
+FIX_NOPROBE="$(inspect_nav2 starting 0 "$OLD_STARTED" "$NAV2_START_PERIOD_NS" 0)"
+ROUTER_FIXTURES=("healthy")
+run_case false "$NO_PENDING" "$FIX_NOPROBE" -- \
+    "K: ExitCode=-1 (no probes) + healthy router → no restart, ok=false (#5039)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (K)"
+
+# L: рубильник NAV2_RESTART_ON_FAIL=0 — лечение выключено, гейт ведёт себя
+# как до #5039: fail без restart.
+EXTRA_ENV=("NAV2_RESTART_ON_FAIL=0")
+ROUTER_FIXTURES=("healthy")
+run_case false "$NO_PENDING" "$FIX1" -- \
+    "L: NAV2_RESTART_ON_FAIL=0 → no restart, ok=false (#5039)"
+assert_eq "$LAST_RESTARTS" "0" "restart count (L)"
+
+# M: после перезапуска контейнер снова в start_period — гейт ждёт НОВОЕ окно
+# (короткое, 10s) и решает по третьему замеру, а не по старому.
+SHORT_PERIOD_NS=10000000000  # 10s
+# Свежая метка: к моменту этого кейса прогон уже потратил ~3 минуты на E/F,
+# и YOUNG_STARTED успел бы выйти из короткого окна.
+M_YOUNG="$(date -u -d "@$(( $(date +%s) - 2 ))" +%Y-%m-%dT%H:%M:%SZ)"
+FIX_NEW_WINDOW="$(inspect_nav2 starting 1 "$M_YOUNG" "$SHORT_PERIOD_NS")"
+FIX_REMEASURED="$(inspect_nav2 healthy 0 "$OLD_STARTED" "$SHORT_PERIOD_NS")"
+ROUTER_FIXTURES=("healthy")
+run_case true "$NO_PENDING" "$FIX1" "$FIX_NEW_WINDOW" "$FIX_REMEASURED" -- \
+    "M: after restart new start_period → wait and decide on the new measurement (#5039)"
+assert_eq "$LAST_RESTARTS" "1" "restart count (M)"
+
+# --- таблица решения: nav2_action без робота ---------------------------------
+# Чистая функция решения скармливается напрямую (source и вызов), без ssh.
+# shellcheck disable=SC1090
+source "$SCRIPT_UNDER_TEST"
+
+assert_eq "$(nav2_action 0 false unknown false)" "ok" "decision: rc=0 → ok"
+assert_eq "$(nav2_action 0 true unknown false)" "ok" "decision: rc=0 inside window → ok"
+assert_eq "$(nav2_action 1 true healthy false)" "wait" "decision: rc=1 inside window → wait"
+assert_eq "$(nav2_action 1 false healthy false)" "restart" "decision: rc=1 + healthy router → restart"
+assert_eq "$(nav2_action 1 false starting false)" "fail" "decision: rc=1 + router not healthy → fail"
+assert_eq "$(nav2_action 1 false unknown false)" "fail" "decision: rc=1 + router unknown → fail"
+assert_eq "$(nav2_action 1 false healthy true)" "fail" "decision: rc=1 after one restart → fail (never twice)"
+assert_eq "$(nav2_action -1 false healthy false)" "fail" "decision: no probes → fail, no restart"
+assert_eq "$(nav2_action 1 false healthy false)" "restart" "decision: restart is the default"
+# shellcheck disable=SC2034  # переменную читает nav2_action из source-скрипта
+assert_eq "$( (NAV2_RESTART_ON_FAIL=0; nav2_action 1 false healthy false) )" "fail" \
+    "decision: NAV2_RESTART_ON_FAIL=0 kills the cure"
 
 # --- контракт воркфлоу -------------------------------------------------------
 # Шаг Main Pi обязан звать wait_nav2_active.sh и валить джобу по .ok.
