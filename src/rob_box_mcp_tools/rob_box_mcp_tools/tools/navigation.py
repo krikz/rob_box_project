@@ -235,55 +235,6 @@ def _confirm_localization(result: MCPToolResult, track) -> MCPToolResult:
     return result
 
 
-class TfExtrapolationError(LookupError):
-    """#5160: штамп цели вне окна истории TF. Текст — как у tf2 в живом прогоне."""
-
-
-class TfHistory:
-    """Окно истории TF: кадр старше ``cache_time`` вытесняется, lookup на старый штамп падает.
-
-    Правило то же, что у ``tf2::BufferCore`` (живой лог 23.11: «Requested time …
-    but the earliest data is at time …, when looking up transform from frame
-    [base_footprint] to frame [map]»). ROS в unit-окружении нет — поэтому буфер
-    здесь, а не обёртка над tf2.
-    """
-
-    def __init__(self, cache_time_sec: float = 10.0) -> None:
-        self.cache_time_sec = cache_time_sec
-        self._frames: List[tuple] = []
-
-    def set_transform(self, stamp_sec: float, x: float, y: float, yaw: float) -> None:
-        self._frames.append((stamp_sec, (x, y, yaw)))
-        self._frames.sort(key=lambda frame: frame[0])
-        latest = self._frames[-1][0]
-        self._frames = [frame for frame in self._frames if frame[0] >= latest - self.cache_time_sec]
-
-    def lookup(self, stamp_sec: float) -> tuple:
-        if not self._frames:
-            raise TfExtrapolationError("Lookup would require extrapolation: buffer is empty")
-        earliest, latest = self._frames[0][0], self._frames[-1][0]
-        if stamp_sec < earliest or stamp_sec > latest:
-            raise TfExtrapolationError(
-                "Lookup would require extrapolation into the past. "
-                f"Requested time {stamp_sec} but the earliest data is at time {earliest}, "
-                "when looking up transform from frame [base_footprint] to frame [map]"
-            )
-        return min(self._frames, key=lambda frame: abs(frame[0] - stamp_sec))[1]
-
-
-def relative_goal_at_replan(
-    history: TfHistory, sent_stamp_sec: float, replan_stamp_sec: float, *, frame_id: str
-) -> tuple:
-    """Что видит планировщик на перепланировании.
-
-    Подвижный кадр ищется на штамп отправки: штамп старше окна —
-    ``TfExtrapolationError``, как в живом прогоне. Кадр ``map`` от штампа
-    не зависит: берётся трансформ на момент перепланирования.
-    """
-    stamp = replan_stamp_sec if frame_id == "map" else sent_stamp_sec
-    return history.lookup(stamp)
-
-
 def relative_goal_in_map(
     pose_source: Callable[[], MapPose], x: float, y: float, theta: float
 ):
@@ -365,6 +316,10 @@ def _drive_to_goal(
     goal = NavigateToPose.Goal()
     goal.pose.header.frame_id = frame_id
     goal.pose.header.stamp = node.get_clock().now().to_msg()
+    # #5160: кадр цели в лог — HIL-вердикт читает эту строку, не угадывает map.
+    node.get_logger().info(
+        f"[navigate_to_pose] цель: frame_id={frame_id} x={x:.3f} y={y:.3f} theta={theta:.3f}"
+    )
     goal.pose.pose.position.x = x
     goal.pose.pose.position.y = y
     goal.pose.pose.position.z = 0.0
