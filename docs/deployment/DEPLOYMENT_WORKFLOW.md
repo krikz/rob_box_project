@@ -113,6 +113,27 @@ gh workflow run "L-Deploy and Verify.yml" \
 - `local` - Для разработки и тестирования с локальной build machine
 - `skip` - Для быстрого рестарта без обновления образов
 
+#### Preflight пинов при `local` (issue #5110, #4653)
+
+Перед первым SSH-шагом workflow при `registry_source=local` и `dry_run=false`
+запускает `scripts/ci/verify_prod_local_tags.sh <IMAGE_TAG>`. Скрипт читает
+пины `docker/{main,vision,sound}/.image-versions.<IMAGE_TAG>` из того же
+checkout'а, разрешает каждый `*_TAG` в имя образа
+(`TELEOP_TAG=latest-b2e7144` → `teleop-humble-latest-b2e7144`) и проверяет
+манифест в `${ROBBOX_REGISTRY_HOST:-10.1.1.249:5000}/krikz/rob_box`.
+
+Fail-closed: отсутствующий в registry пин, плавающий пин (`latest`, `dev`,
+`test`, `local` вместо `latest-<sha>`), недоступный registry или отсутствие
+файла пинов для запрошенного тега — `::error` с именем образа и ненулевой код
+возврата **до** остановки контейнеров. На Pi в этом случае ничего не тронуто,
+работающий стек сохранён.
+
+Живой случай 23.11.2026: prod-пины `.image-versions.latest` = `latest-b2e7144`,
+а `teleop-humble-latest-b2e7144` и `quest-humble-latest-b2e7144` в registry нет
+(есть только плавающие `teleop-humble-latest` / `quest-humble-latest`) —
+preflight такой деплой останавливает. Образ `supercollider` не входит в
+проверку: у него нет пина `*_TAG`, compose берёт `${IMAGE_TAG}` напрямую.
+
 **Важно:** Этот workflow всегда выполняется на self-hosted runner, так как Raspberry Pi устройства находятся в локальной сети и недоступны из GitHub hosted runners.
 
 ### `dry_run` (optional)

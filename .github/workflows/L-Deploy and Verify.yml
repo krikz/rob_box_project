@@ -190,6 +190,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y sshpass
 
+      # Issue #5110 / #4653: локальный registry — единственный источник образов
+      # для registry_source=local, и пины .image-versions.<IMAGE_TAG> берутся из
+      # этого же checkout'а. Если пина нет в registry (замер 23.11.2026:
+      # prod-пины latest-b2e7144, а teleop/quest такого тега не имеют) или пин
+      # плавающий, деплой обязан упасть ЗДЕСЬ, до первого SSH: на Pi ничего не
+      # остановлено, работающий стек сохранён, в логе ::error с именем образа.
+      - name: "[Preflight] Verify pinned images exist in local registry (#5110)"
+        if: ${{ !inputs.dry_run && inputs.registry_source == 'local' }}
+        run: |
+          bash scripts/ci/verify_prod_local_tags.sh "${{ env.IMAGE_TAG }}"
+
       - name: Verify SSH Tools and Connectivity
         if: '!inputs.dry_run'
         run: |

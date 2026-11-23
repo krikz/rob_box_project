@@ -362,3 +362,24 @@ def test_guard_message_points_to_documented_combos():
     assert "environment=staging" in snippet
     assert "registry_source=github" in snippet
     assert "#4653" in snippet
+
+
+# ── Issue #5110: пины локального registry проверяются ДО SSH ────────────────
+
+
+def test_local_registry_deploy_verifies_pins_before_ssh():
+    """Гард #4653 закрыл недокументированную комбинацию, но не саму дыру:
+    при registry_source=local деплой всё равно уходил на Pi со stale-пинами
+    (замер 23.11.2026 в registry 10.1.1.249:5000: latest-b2e7144 нет для
+    teleop и quest). Теперь шаг preflight зовёт
+    scripts/ci/verify_prod_local_tags.sh со свежим IMAGE_TAG и стоит до
+    первого SSH-шага — на Pi ничего не останавливается."""
+    steps = _steps(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    names = [name for name, _ in steps]
+    idx = next(i for i, (_, body) in enumerate(steps) if "verify_prod_local_tags.sh" in body)
+    body = steps[idx][1]
+    assert "registry_source == 'local'" in body
+    assert "${{ env.IMAGE_TAG }}" in body
+    first_ssh = names.index("Verify SSH Tools and Connectivity")
+    assert idx < first_ssh
+    assert re.search(r"if:.*dry_run", body), "dry_run не должен упираться в registry"
