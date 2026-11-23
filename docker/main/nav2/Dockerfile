@@ -148,9 +148,13 @@ RUN mkdir -p /maps /config/nav2
 
 WORKDIR /workspace
 
-# Health check - проверка Nav2 lifecycle узлов
-HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=3 \
-    CMD ros2 node list | grep -q "bt_navigator\|controller_server\|planner_server" || exit 1
+# Health check. На роботе этот блок перекрыт healthcheck в docker-compose.yaml
+# (том ./scripts/nav2 → /scripts), поэтому доезжает только со сборкой образа.
+# Числа — healthcheck_budget.py (#5150): Timeout 10s не поднимаем (решение
+# Шифу 23.11), Interval 15s, StartPeriod 90s. Старый node-list зеленел при
+# мёртвом controller_server (#5043).
+HEALTHCHECK --interval=15s --timeout=10s --start-period=90s --retries=3 \
+    CMD bash /scripts/healthcheck.sh
 
 # Точка входа - ROS2 setup
 ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/${ROS_DISTRO}/setup.bash && exec \"$@\"", "--"]

@@ -1257,6 +1257,11 @@ jobs:
         # См. комментарий в "[Vision Pi] Check Container Status" — та же
         # логика (двухзамерная проверка через docker inspect, см. скрипт
         # scripts/ci/check_container_status.sh), но для Main Pi.
+        # #5150: пауза 15 с НЕ меняется. Решение Шифу 23.11 — docker Timeout
+        # nav2 на роботе не поднимать, поэтому новая проба обязана уложиться
+        # в текущие Timeout 10 с и Interval 15 с (числа — healthcheck_budget.py,
+        # дедлайн пробы 3 с < bond 4 с). Прежняя идея «пауза = StartPeriod +
+        # retries × Timeout + Interval» требовала поднять Timeout и отменена.
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "🔍 Checking Main Pi container status..."

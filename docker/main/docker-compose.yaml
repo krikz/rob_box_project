@@ -424,6 +424,10 @@ services:
     # #5043: pgrep bt_navigator зеленел при мёртвом controller_server (SIGILL, #5039)
     # и при зависшем configure. Скрипт спрашивает lifecycle трёх узлов; HEALTHCHECK
     # в nav2/Dockerfile перекрыт этим блоком и не исполняется.
+    # #5150: числа — docker/main/scripts/nav2/healthcheck_budget.py.
+    # Решение Шифу 23.11: docker Timeout на роботе НЕ поднимать. Проба обязана
+    # уложиться в текущие 10 с (дедлайн скрипта 3 с < bond 4 с, замер одного
+    # процесса 1.5 с). Interval 15 с > Timeout, проверки не накладываются.
     healthcheck:
       test: ["CMD-SHELL", "bash /scripts/healthcheck.sh"]
       interval: 15s
