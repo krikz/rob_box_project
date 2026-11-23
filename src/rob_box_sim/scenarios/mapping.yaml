@@ -11,7 +11,7 @@ defaults:
 
 worlds:
   # Сквозь все проёмы (0.9 → 1.1 м) до восточной стены и обратно к спавну.
-  polygon:
+  polygon: &polygon
     goals:
       - {name: gap_0.9, x: 3.0, y: 0.0, yaw: 0.0}
       - {name: gap_0.95, x: 5.0, y: 0.0, yaw: 0.0}
@@ -19,6 +19,9 @@ worlds:
       - {name: east, x: 9.5, y: 0.0, yaw: 3.1416}
       - {name: back_gap_0.95, x: 5.0, y: 0.0, yaw: 3.1416}
       - {name: home, x: 0.0, y: 0.0, yaw: 3.1416}
+
+  # Тот же полигон с тегами tag36h11 на стенах (rob_box_sim.apriltag_world, #4346).
+  polygon_tags: *polygon
 
   # Г-поворот: до конца ветки B и обратно.
   turn90:

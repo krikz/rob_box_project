@@ -1,0 +1,17 @@
+# ros_gz_bridge камеры OAK-D сима (#4346, вариант D): только при sim.launch.py camera:=true
+# (в compose — SIM_CAMERA=true; тот же флаг включает сенсор в rob_box.xacro).
+# Имена ROS — как у OAK-D робота (depthai, rs_compat): их ждёт apriltag_node
+# (docker/vision/config/oak-d/launch/oakd_with_apriltag.launch.py).
+# camera_info Gazebo Fortress публикует рядом с картинкой: <каталог топика>/camera_info.
+---
+- ros_topic_name: /camera/camera/color/image_raw
+  gz_topic_name: /camera/color/image_raw
+  ros_type_name: sensor_msgs/msg/Image
+  gz_type_name: ignition.msgs.Image
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /camera/camera/color/camera_info
+  gz_topic_name: /camera/color/camera_info
+  ros_type_name: sensor_msgs/msg/CameraInfo
+  gz_type_name: ignition.msgs.CameraInfo
+  direction: GZ_TO_ROS

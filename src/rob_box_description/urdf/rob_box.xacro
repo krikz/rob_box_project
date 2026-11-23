@@ -517,6 +517,42 @@
 			</imu>
 		</sensor>
 	</gazebo>
+	<!-- Сим: цветная камера OAK-D (#4346, вариант D — AprilTag в Gazebo). Только при       -->
+	<!-- sim_camera:=true (по умолчанию — переменная окружения SIM_CAMERA, иначе false):     -->
+	<!-- рендер камеры дорог, RTF без неё не трогаем. Камера Gazebo смотрит по +X звена      -->
+	<!-- camera_rgb_camera_frame, кадр сообщений — camera_color_optical_frame, как у робота. -->
+	<!-- HFOV 1.133 рад = 2·atan(640/1007.2) по K робота (1280×720, fx 1007.2). Разрешение   -->
+	<!-- и частота ниже боевых (1280×720, 5 Гц): программный рендер песочницы при 1280×720    -->
+	<!-- 10 Гц давал RTF 0.12 (docs/runbooks/hil-video.md §0). 640×360 при decimate 1        -->
+	<!-- детектору — то же, что 1280×720 при боевом decimate 2.                              -->
+	<!-- near 0.45 м: камера в меше корпуса (x −0.116, передний край меша x +0.31), без       -->
+	<!-- этого первым в кадре был бы собственный корпус.                                    -->
+	<!-- SIM_CAMERA_YAW_ERROR (рад) — поворот настоящей оси камеры относительно URDF: проверка -->
+	<!-- гипотезы «неточная калибровка камера↔лидар размазывает карту» (#4346).              -->
+	<xacro:arg name="sim_camera" default="$(optenv SIM_CAMERA false)"/>
+	<xacro:if value="${'$(arg sim_camera)'.lower() in ('true', '1')}">
+	<gazebo reference="camera_rgb_camera_frame">
+		<sensor name="oak_rgb_sensor" type="camera">
+			<always_on>1</always_on>
+			<update_rate>$(optenv SIM_CAMERA_HZ 5)</update_rate>
+			<pose>0 0 0 0 0 $(optenv SIM_CAMERA_YAW_ERROR 0)</pose>
+			<topic>camera/color/image_raw</topic>
+			<ignition_frame_id>camera_color_optical_frame</ignition_frame_id>
+			<camera>
+				<horizontal_fov>1.133</horizontal_fov>
+				<image>
+					<width>$(optenv SIM_CAMERA_WIDTH 640)</width>
+					<height>$(optenv SIM_CAMERA_HEIGHT 360)</height>
+					<format>R8G8B8</format>
+				</image>
+				<clip>
+					<near>0.45</near>
+					<far>15</far>
+				</clip>
+			</camera>
+		</sensor>
+	</gazebo>
+	</xacro:if>
 	<!-- Сим: истинная поза робота (для проверки, что робот реально едет:           -->
 	<!-- /odom у diff_drive_controller open_loop и считается из команд, а не из физики). -->
 	<gazebo>
