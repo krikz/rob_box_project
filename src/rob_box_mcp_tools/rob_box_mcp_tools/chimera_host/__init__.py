@@ -4,12 +4,6 @@
 Здесь только проверка пина и сборка команды. Текст песни сюда не приходит.
 """
 
-from rob_box_mcp_tools.chimera_host.invoke import (
-    DATA_DIR,
-    PINNED_SHA,
-    TIMBRES,
-    ChimeraHost,
-    host_dir,
-)
+from rob_box_mcp_tools.chimera_host.invoke import DATA_DIR, PINNED_SHA, TIMBRES, ChimeraHost, host_dir
 
 __all__ = ["DATA_DIR", "PINNED_SHA", "TIMBRES", "ChimeraHost", "host_dir"]

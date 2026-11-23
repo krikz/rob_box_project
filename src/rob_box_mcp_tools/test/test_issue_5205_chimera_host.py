@@ -65,10 +65,7 @@ def test_unknown_timbre_refuses(tmp_path):
 def test_sha256_of_present_file(tmp_path):
     path = tmp_path / "chimera"
     path.write_bytes(b"binary-bytes")
-    assert (
-        sha256_file(str(path))
-        == "71227a7f160afca3fb3c39f448735886dda7bd366252580c2222fb87d4bb4d85"
-    )
+    assert sha256_file(str(path)) == "71227a7f160afca3fb3c39f448735886dda7bd366252580c2222fb87d4bb4d85"
     rows = dict(pinned_inputs(str(tmp_path)))
     assert rows["chimera"] == sha256_file(str(path))
     assert rows[os.path.join("data", "cmudict.txt.gz")] == ""

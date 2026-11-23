@@ -14,9 +14,7 @@ from typing import Optional, Sequence, Tuple
 PINNED_SHA = "caf270abf893bdc63f6342059d4468f754edf5c6"  # jamesondh/chimera-vocal-synth, проба #5014
 TIMBRES: Tuple[str, ...] = ("male", "female", "child")
 BINARY_NAME = "chimera"
-DATA_DIR = (
-    "data"  # public/data закреплённого SHA: cmudict и лексикон, без них CLI не стартует
-)
+DATA_DIR = "data"  # public/data закреплённого SHA: cmudict и лексикон, без них CLI не стартует
 HOST_DIR = "/opt/chimera"  # дефолт образа; тест перекрывает переменной
 
 #: Куда CLI ищет словарь. Путь зашит при сборке от CARGO_MANIFEST_DIR, поэтому данные
@@ -55,9 +53,7 @@ class ChimeraHost:
             return "missing_data"
         return ""
 
-    def notes_command(
-        self, notes_json: str, out_stem: str, timbre: str = "male"
-    ) -> Tuple[str, ...]:
+    def notes_command(self, notes_json: str, out_stem: str, timbre: str = "male") -> Tuple[str, ...]:
         """Команда ``render notes``. Отказ — исключение с причиной, не команда в никуда."""
         why = self.refusal()
         if why:
