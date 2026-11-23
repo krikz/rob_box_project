@@ -1279,13 +1279,18 @@ def _fit_segments(cmd: Command) -> Command:
     пустым - ``bad_segments``, на повторе ролей не по числу сегментов - «Не понял, как это сделать»). Пустой сегмент
     (``""``, одни пробелы) убирается вместе со своим элементом в полях по сегменту (:data:`_PER_SEGMENT`); длина
     ``role_per_segment`` после этого - ровно по сегментам: недостающие роли - рассказчик (``""``), лишние отрезаются.
-    Поправки - в ``dropped`` (``perform.segments[10->9]``, ``perform.role_per_segment[8->9]``). Ничего не осталось или
-    сегментов вне пределов - по-прежнему ``bad_segments`` (:func:`_check_segments`). ``voice_per_segment`` решает код
-    (:func:`_voice_roles`): его длину не подгоняем - она нарушение, как прежде."""
+    Рэп и стих, у которых сегментов меньше ``SEGMENTS_MIN`` и строки куплета сложены в сегмент через перевод строки
+    (промпт велит строку с новой строки, #5080), режутся по строкам до проверки числа (:func:`_split_verse_lines`).
+    Уже валидное число сегментов не трогается. Поправки - в ``dropped``
+    (``perform.segments[10->9]``, ``perform.role_per_segment[8->9]``). Ничего не осталось или сегментов вне пределов -
+    по-прежнему ``bad_segments`` (:func:`_check_segments`). ``voice_per_segment`` решает код (:func:`_voice_roles`):
+    его длину не подгоняем - она нарушение, как прежде."""
     perf = cmd.perform
     if perf is None:
         return cmd
     notes: List[str] = []
+    perf, split = _split_verse_lines(perf)
+    notes.extend(split)
     keep = [i for i, segment in enumerate(perf.segments) if str(segment).strip()]
     if len(keep) != len(perf.segments):
         fields: Dict[str, Any] = {"segments": tuple(perf.segments[i] for i in keep)}
@@ -1301,6 +1306,32 @@ def _fit_segments(cmd: Command) -> Command:
         notes.append(f"perform.role_per_segment[{len(roles)}->{len(fitted)}]")
         perf = replace(perf, role_per_segment=fitted)
     return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes)) if notes else cmd
+
+
+def _split_verse_lines(perf: Performance) -> Tuple[Performance, List[str]]:
+    """Строки рэпа и стиха, сложенные моделью в один сегмент через перевод строки, становятся сегментами (n810 22.11,
+    #5080: один сегмент с ``\\n`` внутри ниже ``SEGMENTS_MIN`` — отказ целиком, хотя промпт велит строку с новой
+    строки). Режет только когда сегментов меньше ``SEGMENTS_MIN``: уже валидная команда (три сегмента по две строки,
+    семь по две) не меняет нарезку TTS и не упирается в ``SEGMENTS_MAX`` счётом строк. Рэп и стих: у них одна строка
+    промпта. Сказка и песня не трогаются (перевод строки там — внутри реплики, не граница сегмента). Роль и лицо
+    строки — у её сегмента; пустая строка уходит с сегментом дальше по :func:`_fit_segments`. Больше ``SEGMENTS_MAX``
+    строк судит :func:`_check_segments`."""
+    if perf.kind not in ("rap", "poem") or len(perf.segments) >= kn.SEGMENTS_MIN:
+        return perf, []
+    lines = [line.strip() for segment in perf.segments for line in str(segment).split("\n")]
+    if lines == [str(segment).strip() for segment in perf.segments]:
+        return perf, []
+    fields: Dict[str, Any] = {"segments": tuple(lines)}
+    for name in _PER_SEGMENT:
+        per = getattr(perf, name)
+        if per is None or len(per) != len(perf.segments):
+            continue
+        repeated = (per[i] for i, segment in enumerate(perf.segments) for _line in str(segment).split("\n"))
+        fields[name] = tuple(repeated)
+    note = f"perform.segments[{len(perf.segments)}->{len(lines)}:lines]"
+    return replace(perf, **fields), [note]
+
+
 
 
 def _fit_foreign_roles(cmd: Command) -> Command:
