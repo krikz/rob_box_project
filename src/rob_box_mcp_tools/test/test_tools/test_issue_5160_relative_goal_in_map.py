@@ -1,15 +1,19 @@
 """#5160: относительная цель move_direction превращается в точку map один раз, при отправке.
 
 Живой прогон 23.11: ``MoveDirectionTool`` слал ``NavigateToPose`` с ``frame_id="base_link"`` и
-штампом момента отправки. Nav2 при каждом перепланировании ищет ``base_link``→``map`` на время
-этого штампа; цель старше буфера TF (по умолчанию 10 с) падает с ``Extrapolation Error``
+штампом момента отправки. Nav2 при каждом перепланировании ищет ``base_footprint``→``map``
+(``BASE_FRAME`` в ``map_pose.py``, ``robot_base_frame`` в ``nav2_params.yaml``) на время
+этого штампа; цель старше истории TF падает с ``Extrapolation Error``
 (планировщик приступил через 18,4 с, две попытки упали, третья снята таймаутом тула 60 с).
+У робота ``tf_buffer_duration`` 30 с (``nav2_params.yaml``).
 
 Контракт варианта A:
   1. «вперёд на метр» при позе (1.80, 0.06, yaw≈0) → цель в ``map`` ≈ (2.80, 0.06),
      ``frame_id == "map"``;
   2. повторный расчёт при сдвинувшемся роботе отправленную цель не меняет;
-  3. нет трансформа — отказ тула с внятным текстом, цель не отправлена.
+  3. нет трансформа — отказ тула с внятным текстом, цель не отправлена;
+  4. «налево» при yaw 0 → курс цели +π/2: кватернион цели декодируется в yaw,
+     знак ``yaw + theta`` проверяется, а не только координаты.
 
 Модуль грузится через importlib, как в тесте #4390: ``tools/__init__.py`` тянет chimera,
 а ей нужен ``rob_box_music``, которого в unit-окружении нет.
@@ -123,6 +127,12 @@ def _goal_xy(goal):
     return goal.pose.pose.position.x, goal.pose.pose.position.y
 
 
+def _goal_yaw(goal):
+    """Yaw из кватерниона цели: код кладёт ``z = sin(θ/2)``, ``w = cos(θ/2)``."""
+    orientation = goal.pose.pose.orientation
+    return math.atan2(2.0 * orientation.w * orientation.z, 1.0 - 2.0 * orientation.z * orientation.z)
+
+
 # ---------------------------------------------------------------- вариант A
 
 
@@ -184,8 +194,28 @@ def test_yaw_rotates_the_relative_point(nav):
 
 
 @pytest.mark.unit
+def test_turn_left_keeps_the_sign_of_the_goal_heading(nav):
+    """«Налево» при yaw 0 → цель (1.80, 0.06) с курсом +π/2.
+
+    Координаты при повороте на месте не меняются, поэтому мутация
+    ``yaw + theta`` → ``yaw - theta`` (navigation.py) координатами не ловится.
+    Ловит знак yaw, прочитанный из кватерниона цели.
+    """
+    tool, source = _tool(nav, [_pose(1.80, 0.06, 0.0)])
+
+    result = tool.execute("налево", 1.0)
+
+    assert result.success is True
+    assert source.calls == 1
+    goal = tool.nav_client.goals[0]
+    assert goal.pose.header.frame_id == "map"
+    assert _goal_xy(goal) == pytest.approx((1.80, 0.06), abs=1e-9)
+    assert _goal_yaw(goal) == pytest.approx(math.pi / 2, abs=1e-9)
+
+
+@pytest.mark.unit
 def test_no_transform_is_a_tool_error_and_sends_nothing(nav):
-    """Нет base_link→map — внятный отказ, цель в base_link «как раньше» не уходит."""
+    """Нет base_footprint→map — внятный отказ, цель «как раньше» не уходит."""
     tool, source = _tool(nav, [_missing()])
 
     result = tool.execute("вперёд", 1.0)

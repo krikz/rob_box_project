@@ -238,15 +238,16 @@ def _confirm_localization(result: MCPToolResult, track) -> MCPToolResult:
 def relative_goal_in_map(
     pose_source: Callable[[], MapPose], x: float, y: float, theta: float
 ):
-    """#5160: относительная точка ``base_link`` → точка ``map`` ровно один раз.
+    """#5160: относительная точка ``base_footprint`` → точка ``map`` ровно один раз.
 
-    Nav2 ищет ``base_link``→``map`` на штамп цели при каждом перепланировании.
-    Цель в ``base_link`` старше буфера TF (по умолчанию 10 с) падает
+    Nav2 ищет ``base_footprint``→``map`` на штамп цели при каждом
+    перепланировании. Цель в ``base_footprint`` старше истории TF падает
     с ``Extrapolation Error`` (живой прогон 23.11: планировщик приступил
-    через 18,4 с). Точка мира от штампа не зависит.
+    через 18,4 с). У робота ``tf_buffer_duration`` 30 с
+    (``nav2_params.yaml``). Точка мира от штампа не зависит.
 
     Возвращает ``(x, y, theta, frame_id)`` в ``map`` или ``MCPToolResult`` отказа.
-    Трансформа нет — отказ; цель в ``base_link`` «как раньше» не шлётся
+    Трансформа нет — отказ; цель в ``base_footprint`` «как раньше» не шлётся
     (ADR-0148).
     """
     pose = pose_source()
@@ -628,7 +629,7 @@ class MoveDirectionTool(MCPTool):
         if direction in ["вперёд", "назад"]:
             coords["x"] *= distance
 
-        # #5160: один раз base_link → map в момент отправки. Дальше цель не
+        # #5160: один раз base_footprint → map в момент отправки. Дальше цель не
         # пересчитывается ни при одном перепланировании: штамп цели Nav2
         # больше не нужен.
         pose_source = self._pose_source
