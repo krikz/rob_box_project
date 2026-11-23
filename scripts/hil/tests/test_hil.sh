@@ -92,12 +92,34 @@ cat > "$WORK/bin/docker" <<'EOF'
 echo "docker $*" >> "$FAKE_DOCKER_LOG"
 S="$FAKE_STATE"
 st() { cat "$S/$1" 2>/dev/null || echo "${FAKE_DEFAULT_STATUS:-running}"; }
-last() { local a; for a; do :; done; printf '%s' "$a"; }
+last() { printf '%s' "${@: -1}"; }
 case "$1" in
     stop) echo exited > "$S/$(last "$@")" ;;
     rm) rm -f "$S/$(last "$@")" ;;
     inspect)
         name=$(last "$@")
+        # bare docker inspect (без -f): JSON для hil.sh off (#5170).
+        # Health — только файл $S/$name.health. Нет файла = нет HEALTHCHECK.
+        _fmt=0
+        for _a in "$@"; do [ "$_a" = -f ] && _fmt=1; done
+        if [ "$_fmt" = 0 ]; then
+            # FAKE_INSPECT_BLANK — inspect молчит (контейнер уже мёртв, #5138).
+            # Пустой ответ — не absent: absent только явный Status=absent.
+            if [ -n "${FAKE_INSPECT_BLANK:-}" ] && [ "$name" = "${SIM_PREFIX:-t-hil}-gazebo" ]; then echo; exit 1; fi
+            # Файла нет — контейнер ещё не создан фейком, не «absent».
+            # absent только явный Status=absent. Иначе on до compose up пишет ложный absent.
+            [ -f "$S/$name" ] || { printf '{"Name":"/%s","State":{"Status":"%s","StartedAt":"%s"}}\n' "$name" "$(st "$name")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; exit 0; }
+            _st=$(st "$name")
+            _started=$(cat "$S/$name.started" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+            if [ -f "$S/$name.health" ]; then
+                printf '{"Name":"/%s","State":{"Status":"%s","StartedAt":"%s","Health":%s}}\n' \
+                    "$name" "$_st" "$_started" "$(cat "$S/$name.health")"
+            else
+                printf '{"Name":"/%s","State":{"Status":"%s","StartedAt":"%s"}}\n' \
+                    "$name" "$_st" "$_started"
+            fi
+            exit 0
+        fi
         case "$*" in
             *"State.Status}} {{.State.ExitCode"*)
                 [ -f "$S/$name" ] || { [ -n "${FAKE_INSPECT_BLANK:-}" ] && echo; exit 1; }; echo "$(cat "$S/$name") 0" ;;
@@ -182,6 +204,7 @@ case "$1" in
         elif [ "$verb" = up ]; then
             for s in "${svcs[@]}"; do
                 if [ -f "$S/$s.broken" ]; then echo restarting > "$S/$s"; else echo running > "$S/$s"; fi
+                if [ ! -f "$S/$s.started" ]; then date -u +%Y-%m-%dT%H:%M:%SZ > "$S/$s.started"; fi
                 if [ "$hil" = 1 ]; then echo true > "$S/$s.simt"; else rm -f "$S/$s.simt"; fi
                 if [ "$snd" = 1 ]; then printf '%s\n' "${HIL_WAYPOINT_DB:?compose.hil.yaml Sound без HIL_WAYPOINT_DB}" > "$S/$s.wpdb"; else rm -f "$S/$s.wpdb"; fi
             done
@@ -539,7 +562,7 @@ reset_state
 broken_before followpath-watchdog
 run_hil on; rc=$?
 check "on со сломанным followpath-watchdog: выход 0 (rc=$rc), состояние «до» записано" \
-    '[ "$rc" -eq 0 ] && grep -qx "followpath-watchdog restarting" "$WORK/remote/pre_on_state.txt" && grep -qx "nav2 running" "$WORK/remote/pre_on_state.txt" && grep -qx "voice-assistant running" "$WORK/remote/pre_on_state.txt" && grep -qx "oak-d running" "$WORK/remote/pre_on_state.txt"'
+    '[ "$rc" -eq 0 ] && grep -qx "followpath-watchdog restarting:none" "$WORK/remote/pre_on_state.txt" && grep -qx "nav2 running:none" "$WORK/remote/pre_on_state.txt" && grep -qx "voice-assistant running:none" "$WORK/remote/pre_on_state.txt" && grep -qx "oak-d running:none" "$WORK/remote/pre_on_state.txt"'
 run_hil off; rc=$?
 check "off: сервис сломан и до on — предупреждение, выход 0 (rc=$rc), замок снят, реестр сверен" \
     '[ "$rc" -eq 0 ] && grep -q "followpath-watchdog restarting.*⚠️.*до on было: restarting" "$WORK/out.log" && grep -q "нерабочих и до on: 1" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "SELECT \* FROM maps) за HIL не изменился" "$WORK/out.log" && [ ! -e "$WORK/remote/pre_on_state.txt" ]'
@@ -565,6 +588,49 @@ run_hil on >/dev/null
 printf '%s\n' '1|aaaa-1111|мастерская|1793000000.0|0' > "$WORK/state/prod_maps"
 run_hil off; rc=$?
 check "off: предупреждение + изменённый maps → выход 3 (rc=$rc), замок снят" '[ "$rc" -eq 3 ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+
+# ── 9c. off судит возврат по свежему healthcheck, не по running (#5170) ──
+# $name.health — JSON-объект Health. Нет файла = нет HEALTHCHECK (none).
+# Свежая проба: Start = StartedAt, Output — текст, который обязан попасть в ❌.
+health_json() {  # health_json <status> <start> <output>
+    printf '{"Status":"%s","Log":[{"Start":"%s","Output":"%s"}]}' "$1" "$2" "$3"
+}
+# (1) до on healthy, после off свежий healthy — успех, «боевой режим», замок снят.
+reset_state
+run_hil on >/dev/null
+_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s\n' "$_started" > "$WORK/state/nav2.started"
+health_json healthy "$_started" "nav2 healthcheck ok" > "$WORK/state/nav2.health"
+sed -i 's/^nav2 running:none$/nav2 running:healthy/' "$WORK/remote/pre_on_state.txt"
+run_hil off; rc=$?
+check "off: свежий healthy после off — выход 0 (rc=$rc), боевой режим, замок снят" \
+    '[ "$rc" -eq 0 ] && grep -q "робот в боевом режиме" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "nav2 running USE_SIM_TIME=unset  ready=healthy" "$WORK/out.log"'
+# (2) до on healthy, после off running+unhealthy, окно 0 с (три минуты уже истекли).
+reset_state
+run_hil on >/dev/null
+_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s\n' "$_started" > "$WORK/state/nav2.started"
+health_json unhealthy "$_started" "controller_server SIGILL Configuring fails=13" > "$WORK/state/nav2.health"
+sed -i 's/^nav2 running:none$/nav2 running:healthy/' "$WORK/remote/pre_on_state.txt"
+run_hil off HIL_OFF_READY_S=0 HIL_OFF_READY_POLL_S=0; rc=$?
+check "off: running+unhealthy за 3 мин не healthy — выход не 0 (rc=$rc), замок, нет боевого режима" \
+    '[ "$rc" -ne 0 ] && [ -e "$WORK/tmp/hil.lock" ] && ! grep -q "робот в боевом режиме" "$WORK/out.log" && grep -q "controller_server SIGILL Configuring fails=13" "$WORK/out.log" && grep -q "nav2 running.*❌" "$WORK/out.log"'
+# (3) HEALTHCHECK нет, running — как раньше, успех.
+reset_state
+run_hil on >/dev/null
+run_hil off; rc=$?
+check "off: нет HEALTHCHECK и running — выход 0 (rc=$rc), боевой режим" \
+    '[ "$rc" -eq 0 ] && grep -q "робот в боевом режиме" "$WORK/out.log" && [ ! -e "$WORK/tmp/hil.lock" ]'
+# (4) проба прошлой жизни (Start раньше StartedAt) со статусом healthy — не PASS.
+reset_state
+run_hil on >/dev/null
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WORK/state/nav2.started"
+health_json healthy "2020-01-01T00:00:00Z" "healthy прошлой жизни" > "$WORK/state/nav2.health"
+sed -i 's/^nav2 running:none$/nav2 running:healthy/' "$WORK/remote/pre_on_state.txt"
+run_hil off HIL_OFF_READY_S=0 HIL_OFF_READY_POLL_S=0; rc=$?
+check "off: healthy прошлой жизни не считается — выход не 0 (rc=$rc), замок, нет боевого режима" \
+    '[ "$rc" -ne 0 ] && [ -e "$WORK/tmp/hil.lock" ] && ! grep -q "робот в боевом режиме" "$WORK/out.log" && grep -q "healthy прошлой жизни" "$WORK/out.log"'
+
 
 # ── 9b. restart: рестарт стека в работающем HIL (#4468) ──────────────────
 reset_state

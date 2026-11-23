@@ -27,6 +27,9 @@ from rob_box_dialog.words import has_form, name_tokens, strip_wake_word
 _LEAD = "запомни"
 #: «Запомни меня как Саша» — самопредставление (``self_intro``), не факт.
 _INTRO_MARK = "как"
+#: «Запомни меня» без хвоста-факта — просьба запомнить человека (``register_speaker``), не факт.
+#: Имя в этой реплике необязательно: его называет команда регистрации (#4184).
+_REMEMBER_SELF = "меня"
 #: «Запомни точку/место» — точка навигации (``save_waypoint``), не факт о человеке.
 _PLACE_WORDS = frozenset({"точка", "точку", "точки", "место", "места"})
 #: «Запомни, что я сказал» / «запомни это» — мета, «держи в уме»: сохранять нечего.
@@ -51,6 +54,8 @@ def _tail(tokens: Tuple[str, ...]) -> Optional[str]:
     """
     if not tokens or tokens[0] in _PLACE_WORDS or (len(tokens) >= 2 and tokens[1] == _INTRO_MARK):
         return None
+    if tokens == (_REMEMBER_SELF,):  # «запомни меня»: регистрация человека, факта нет (#4184)
+        return None
     for prefix in _PREFIXES:
         if tokens[: len(prefix)] != prefix:
             continue
@@ -69,7 +74,8 @@ def dictated_fact(text: str) -> Optional[str]:
 
     Ловит «запомни про меня: …», «запомни, что …», «запомни: …» и те же обороты без
     двоеточия: живой n206 пришёл без него. Не ловит вопрос («что ты про меня помнишь»),
-    самопредставление («запомни меня как …»), прошедшее («запомнил…») и мету
+    самопредставление («запомни меня как …»), просьбу запомнить человека без факта
+    («запомни меня»: имя скажет регистрация, #4184), прошедшее («запомнил…») и мету
     («запомни, что я сказал», «запомни это»).
     """
     heard = strip_wake_word(text or "", _WAKE)
@@ -107,12 +113,38 @@ def with_dictated(text: str, cmd: Command, acted: Sequence[ToolCall] = ()) -> Tu
     """Команда с записью продиктованного факта и имя добавленного тула.
 
     Пустая строка — добавлять нечего: диктовки нет, либо тул уже в ходе. Слова модели
-    не подменяются: ``memory_save`` тихий, речь рядом с ним звучит.
+    эта функция не подменяет: что звучит при успехе диктовки, решает :func:`saved`.
     """
     fact = owed(text, cmd.actions, acted)
     if fact is None:
         return cmd, ""
     return replace(cmd, actions=(*cmd.actions, save_call(fact))), kn.MEMORY_SAVE_TOOL
+
+
+def saved(text: str, results: Sequence[object]) -> Optional[object]:
+    """Успех диктовки, чью фразу говорит код, или ``None``.
+
+    Человек продиктовал факт и ``memory_save`` завершился простым успехом с фактом в
+    данных события — этот результат. Фраза строится из него (``memory.saved``), не из
+    слов модели: модель дописывает в подтверждение то, чего человек не говорил (#5166).
+    Не диктовка — ``None``: «Привет, Саша!» рядом с честным ``memory_save`` не
+    дублируется «Запомнил» (``QUIET_WITH_SPEECH_TOOLS``). Отказ и успех с причиной —
+    тоже ``None``: о них по-прежнему говорит код рядом со словами модели.
+    """
+    if dictated_fact(text) is None:
+        return None
+    return next((r for r in results if _plain_save(r)), None)
+
+
+def _plain_save(result: object) -> bool:
+    """Простой успех ``memory_save`` с фактом в данных события владельца."""
+    data = getattr(result, "data", None) or {}
+    return (
+        getattr(result, "tool", None) == kn.MEMORY_SAVE_TOOL
+        and getattr(result, "status", None) == "done"
+        and not getattr(result, "reason", None)
+        and bool(str(data.get("fact") or "").strip())
+    )
 
 
 def salvage_with_dictated(
