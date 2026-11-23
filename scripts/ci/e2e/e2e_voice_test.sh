@@ -485,9 +485,15 @@ delete_e2e_db_unless_series_active() {
     _series_log "🧹 серия не активна (маркер отсутствует, чужой серии или старше ${E2E_SERIES_TTL_S} с) — удаляю e2e-БД, чтобы следующий first стартовал с нуля (issue #5077)"
     # E2E_SPEAKERS_DB — офлайн-тест: файл на машине харнесса, робота нет.
     # Без него файл в контейнере voice-assistant, как у _e2e_speaker_profiles.
+    # Офлайн-ветка удаляет тот же набор, что и живая: обе e2e-БД и их -wal/-shm.
+    # Раньше memory и журналы оставались, и тест зеленел на удалении одного файла.
     if [ -n "${E2E_SPEAKERS_DB:-}" ]; then
+        local voice_db="${E2E_VOICE_MEMORY_DB:-}"
+        if [ -z "$voice_db" ]; then
+            voice_db="$(dirname "$E2E_SPEAKERS_DB")/voice_memory.e2e.db"
+        fi
         rm -f -- "$E2E_SPEAKERS_DB" "${E2E_SPEAKERS_DB}-wal" "${E2E_SPEAKERS_DB}-shm" \
-            "${E2E_VOICE_MEMORY_DB:-}" 2>/dev/null || true
+            "$voice_db" "${voice_db}-wal" "${voice_db}-shm" 2>/dev/null || true
     else
         # Имена файлов зашиты: боевые /data/speakers.db и /data/voice_memory.db
         # в команду не попадают. -wal/-shm — журнал sqlite, без него файл
