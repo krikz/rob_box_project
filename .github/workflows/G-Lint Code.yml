@@ -997,7 +997,8 @@ jobs:
           bash scripts/hil/tests/test_depot_pathcalc.sh
           bash scripts/hil/tests/test_pathcalc_snapshot.sh
           bash scripts/hil/tests/test_pathcalc_producer.sh
-          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/deploy/check_hil_lock.sh scripts/deploy/remove_dead_mapping_state.sh scripts/deploy/tests/test_remove_dead_mapping_state.sh scripts/deploy/docker_prune_safe.sh scripts/deploy/tests/test_docker_prune_safe.sh scripts/deploy/tests/fake_docker_prune_safe.sh docker/sim/hil_run.sh
+          bash scripts/hil/tests/test_goal_behind_wall.sh
+          shellcheck scripts/hil/hil.sh scripts/hil/remote_pi.sh scripts/hil/hil.conf scripts/hil/tests/test_hil.sh scripts/hil/diagnostics/run_depot_pathcalc.sh scripts/hil/diagnostics/build_nav2_pathcalc_snapshot.sh scripts/hil/tests/test_depot_pathcalc.sh scripts/hil/tests/test_pathcalc_snapshot.sh scripts/hil/tests/test_pathcalc_producer.sh scripts/hil/goal_behind_wall/goal_behind_wall.sh scripts/hil/tests/test_goal_behind_wall.sh scripts/deploy/check_hil_lock.sh scripts/deploy/remove_dead_mapping_state.sh scripts/deploy/tests/test_remove_dead_mapping_state.sh scripts/deploy/docker_prune_safe.sh scripts/deploy/tests/test_docker_prune_safe.sh scripts/deploy/tests/fake_docker_prune_safe.sh docker/sim/hil_run.sh
 
       # Issue #4492: ключ студии канала на хостах — только чтение через forced command.
       # Тест гоняет гейт с фейковыми docker/scp/git: разрешённое проходит, обходы

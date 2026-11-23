@@ -62,7 +62,7 @@
  
      last_valid_cmd_time_ = now();
      rclcpp::WallRate loop_rate(controller_frequency_);
-@@ -533,11 +537,160 @@
+@@ -533,11 +537,165 @@
    feedback->distance_to_goal =
      nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
    action_server_->publish_feedback(feedback);
@@ -93,16 +93,21 @@
 +bool ControllerServer::stuckAgainstCourseBlocked(
 +  double course_vx, double robot_x, double robot_y, double robot_yaw) const
 +{
-+  // Strip ahead of the body edge, out to the side stop gap, not the body
-+  // itself. The strip is in base_footprint. The local costmap lives in odom
-+  // (nav2_params.yaml global_frame), so a cell is on the course only after
-+  // its centre is turned back into the body frame. Reading the body metres
-+  // as map-cell coordinates looks near the map origin and misses the wall
-+  // in front of the robot (#5003, Gate 2 21.11: Running backup = 0).
++  // Strip ahead of the body edge, out to the guard corridor stop
++  // (proximity stop_m, 0.20 m), not the side-touch gap (0.08 m) and not
++  // the body itself. The guard holds a stop while a command still pushes
++  // into an obstacle inside 0.20 m, so an 0.08 m strip in front of the
++  // nose is empty and the failure stays silent (HIL 22.11). Only
++  // lethal/inscribed counts: inflation alone is not a wall. The strip is
++  // in base_footprint. The local costmap lives in odom (nav2_params.yaml
++  // global_frame), so a cell is on the course only after its centre is
++  // turned back into the body frame. Reading the body metres as map-cell
++  // coordinates looks near the map origin and misses the wall in front of
++  // the robot (#5003, Gate 2 21.11: Running backup = 0).
 +  // Course is the sign of the last non-zero vx. A zero course has no
 +  // direction, so the map cannot call this a block.
 +  constexpr double kCmdEps = 0.03;
-+  constexpr double kBlockGapM = 0.08;
++  constexpr double kBlockGapM = 0.20;
 +  constexpr double kXMax = 0.3064;
 +  constexpr double kXMin = -0.3036;
 +  constexpr double kYMax = 0.3025;
