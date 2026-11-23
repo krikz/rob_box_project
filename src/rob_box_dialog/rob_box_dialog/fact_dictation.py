@@ -107,12 +107,38 @@ def with_dictated(text: str, cmd: Command, acted: Sequence[ToolCall] = ()) -> Tu
     """Команда с записью продиктованного факта и имя добавленного тула.
 
     Пустая строка — добавлять нечего: диктовки нет, либо тул уже в ходе. Слова модели
-    не подменяются: ``memory_save`` тихий, речь рядом с ним звучит.
+    эта функция не подменяет: что звучит при успехе диктовки, решает :func:`saved`.
     """
     fact = owed(text, cmd.actions, acted)
     if fact is None:
         return cmd, ""
     return replace(cmd, actions=(*cmd.actions, save_call(fact))), kn.MEMORY_SAVE_TOOL
+
+
+def saved(text: str, results: Sequence[object]) -> Optional[object]:
+    """Успех диктовки, чью фразу говорит код, или ``None``.
+
+    Человек продиктовал факт и ``memory_save`` завершился простым успехом с фактом в
+    данных события — этот результат. Фраза строится из него (``memory.saved``), не из
+    слов модели: модель дописывает в подтверждение то, чего человек не говорил (#5166).
+    Не диктовка — ``None``: «Привет, Саша!» рядом с честным ``memory_save`` не
+    дублируется «Запомнил» (``QUIET_WITH_SPEECH_TOOLS``). Отказ и успех с причиной —
+    тоже ``None``: о них по-прежнему говорит код рядом со словами модели.
+    """
+    if dictated_fact(text) is None:
+        return None
+    return next((r for r in results if _plain_save(r)), None)
+
+
+def _plain_save(result: object) -> bool:
+    """Простой успех ``memory_save`` с фактом в данных события владельца."""
+    data = getattr(result, "data", None) or {}
+    return (
+        getattr(result, "tool", None) == kn.MEMORY_SAVE_TOOL
+        and getattr(result, "status", None) == "done"
+        and not getattr(result, "reason", None)
+        and bool(str(data.get("fact") or "").strip())
+    )
 
 
 def salvage_with_dictated(
