@@ -282,6 +282,9 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     state_dir.mkdir(parents=True)
     health = HealthResult("unhealthy", "check_container_status: vision-svc0 restarting")
 
+    # project_dir — чекаут (legacy_root/docker/role). Без releases_root откат шёл бы
+    # в чекаут/<релиз>/docker/role, а не в бандл. С releases_root — в бандл (#5202).
+    releases_root = tmp_path / "opt" / "rob_box" / "releases"
     result = execute_role(
         release,
         "vision",
@@ -291,6 +294,7 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
         previous=previous,
         health_after=health,
         previous_release=_release_fixture(previous),
+        releases_root=releases_root,
     )
 
     assert result["state"] == "rollback_planned", (result.get("reason"), result.get("detail"))
@@ -303,11 +307,13 @@ def test_execute_role_unhealthy_after_up_runs_rollback_not_success(tmp_path):
     assert len(result["plan"]) == 1
     assert result["plan"][0]["op"] == "rollback"
     assert result["plan"][0]["release"] == previous
-    # Откат поднимает прежний бандл по его digest, а не каталог нового релиза (#4917).
+    # Откат поднимает прежний бандл по его digest и из каталога бандла, не из чекаута (#5202).
+    bundle_compose = releases_root / previous / "vision" / "docker" / "vision"
     ups = [c for c in result["commands"] if c["action"] == "compose_up"]
     assert len(ups) == 2
     assert ups[1]["images"] != ups[0]["images"]
-    assert previous in ups[1]["dir"]
+    assert ups[1]["dir"] == str(bundle_compose)
+    assert str(project) not in ups[1]["dir"]
     assert all(s["op"] != "switch_role" for s in result["plan"])
     # switch attempt + rollback: compose_down/up twice
     downs = [c for c in docker.commands if c[0] == "compose_down"]
@@ -381,9 +387,7 @@ def test_execute_role_asks_real_docker_for_the_container_not_the_directory(tmp_p
     docker.compose_down = lambda project_dir: None
     docker.compose_up = lambda project_dir, images=None, image_tag=None: None
 
-    execute_role(
-        _release_fixture(), "vision", docker=docker, project_dir=project, state_dir=tmp_path / "state"
-    )
+    execute_role(_release_fixture(), "vision", docker=docker, project_dir=project, state_dir=tmp_path / "state")
 
     assert seen, "проверок не было"
     assert all(isinstance(arg, str) and arg != str(project) for _, arg in seen), seen
@@ -548,6 +552,95 @@ def test_execute_role_switch_current_advances_pointers(tmp_path):
     assert switch["release"] == "2026.11.10-1"
     assert switch["current"] == "2026.11.10-1"
     assert switch["previous"] == previous
+
+
+def test_rollback_compose_up_uses_bundle_dir_under_releases_root(tmp_path):
+    """Откат: docker.compose_up получает каталог бандла, не чекаут (#5202).
+
+    Раскладка: releases_root/<релиз>/<role>/docker/<role>. Точный путь пинится,
+    чтобы сдвиг parent.parent снова не прошёл незамеченным.
+    """
+    release = _release_fixture("2026.11.10-1")
+    previous = "2026.11.09-1"
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
+    # Чекаут, как ActivationMachine передаёт legacy_root/docker/<role>.
+    project = tmp_path / "home" / "ros2" / "rob_box_project" / "docker" / "vision"
+    project.mkdir(parents=True)
+    state_dir = tmp_path / "var" / "chuangong"
+    state_dir.mkdir(parents=True)
+    releases_root = tmp_path / "opt" / "rob_box" / "releases"
+
+    result = execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        state_dir=state_dir,
+        previous=previous,
+        health_after=HealthResult("unhealthy", "vision-svc0 restarting"),
+        previous_release=_release_fixture(previous),
+        releases_root=releases_root,
+    )
+
+    expected = "/opt/rob_box/releases/2026.11.09-1/vision/docker/vision"
+    # Путь относительно tmp, но хвост — ровно раскладка бандла, не чекаут.
+    assert str(releases_root / previous / "vision" / "docker" / "vision").endswith(expected)
+    ups = [c for c in docker.commands if c[0] == "compose_up"]
+    assert len(ups) == 2
+    assert ups[0][1] == str(project)
+    assert ups[1][1] == str(releases_root / previous / "vision" / "docker" / "vision")
+    assert "rob_box_project" not in ups[1][1]
+    assert result["state"] == "rollback_planned"
+    # main-роль: тот же закон, другой узел бандла.
+    main_docker = FakeDocker(topics=[])
+    execute_role(
+        release,
+        "main",
+        docker=main_docker,
+        project_dir=tmp_path / "checkout" / "docker" / "main",
+        state_dir=state_dir,
+        previous=previous,
+        health_after=HealthResult("unhealthy", "main restarting"),
+        previous_release=_release_fixture(previous),
+        releases_root=releases_root,
+    )
+    main_ups = [c for c in main_docker.commands if c[0] == "compose_up"]
+    assert main_ups[1][1] == str(releases_root / previous / "main" / "docker" / "main")
+
+
+def test_rollback_without_releases_root_keeps_legacy_project_dir_path(tmp_path):
+    """Без releases_root путь отката прежний: project_dir.parent.parent/<релиз>/docker/<role>.
+
+    Дефолт keyword не ломает текущий вызов. Это не каталог бандла — задокументировано
+    в docstring ``execute_role`` / ``_rollback_compose_dir``.
+    """
+    from chuangong.role_switch import execute_role as fn
+
+    assert "releases_root" in fn.__doc__
+    assert "None" in fn.__doc__
+    release = _release_fixture("2026.11.10-1")
+    previous = "2026.11.09-1"
+    docker = FakeDocker(topics=["/camera/camera/color/image_raw/compressed"])
+    project = tmp_path / "legacy" / "docker" / "vision"
+    project.mkdir(parents=True)
+    state_dir = tmp_path / "var"
+    state_dir.mkdir()
+
+    execute_role(
+        release,
+        "vision",
+        docker=docker,
+        project_dir=project,
+        state_dir=state_dir,
+        previous=previous,
+        health_after=HealthResult("unhealthy", "restarting"),
+        previous_release=_release_fixture(previous),
+    )
+
+    legacy = project.parent.parent / previous / "docker" / "vision"
+    ups = [c for c in docker.commands if c[0] == "compose_up"]
+    assert ups[1][1] == str(legacy)
+    assert ups[1][1] != str(tmp_path / "opt" / "rob_box" / "releases" / previous / "vision" / "docker" / "vision")
 
 
 def test_plan_role_does_not_advance_pointers(tmp_path):
