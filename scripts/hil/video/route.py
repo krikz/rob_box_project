@@ -45,8 +45,9 @@ YAW_GOAL_TOLERANCE = 0.22
 # YAW_GOAL_TOLERANCE выше, не эта планка.
 ACCEPT_XY_TOLERANCE = 0.32
 ACCEPT_YAW_TOLERANCE = 0.35
-# local_costmap.tf_buffer_duration (nav2_params.yaml): сколько costmap держит историю TF.
-# Тот же предел — ждать кадр odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели.
+# #5151: имя историческое. tf_buffer_duration в yaml узел не читает (пин a0970867,
+# costmap_2d_ros.cpp:181 — буфер без cache_time, дефолт tf2 10 с). 30 с — предел ожидания
+# кадра odom→base_footprint и active навигатора до первой цели, не TIMEOUT цели и не кэш TF.
 TF_BUFFER_S = 30.0
 NAV_NODE = "bt_navigator"
 ODOM_FRAME = "odom"  # local_costmap.global_frame: costmap ждёт global_frame ← robot_base_frame

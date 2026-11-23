@@ -473,6 +473,7 @@ jobs:
             tests/unit/scripts/test_hil_video_scripts.py \
             tests/unit/scripts/test_hil_world_check.py \
             tests/unit/scripts/test_issue_5170_hil_off_ready.py \
+            tests/unit/scripts/test_issue_5151_scan_drop_lag.py \
             tests/unit/scripts/test_lite_kit_dns_patch.py \
             tests/unit/scripts/test_log_watch.py \
             tests/unit/scripts/test_log_watch_cases.py \
