@@ -115,6 +115,19 @@ gh workflow run "L-Deploy and Verify.yml" \
 
 #### Preflight пинов при `local` (issue #5110, #4653)
 
+`environment=production` вместе с `registry_source=local` разрешён (решение
+Шифу 22.11.2026, #5110). Слепой бан этой комбинации снят: раньше workflow
+делал `exit 1` в Setup, до SSH, и предпроверка пинов для production была
+недостижима. На его месте — fail-closed предпроверка пинов. Она обязана
+быть reachable и стоять до шагов `Stop Containers`: при отсутствии тегов
+деплой падает до любых изменений контейнеров, работающий стек сохранён.
+
+Для production `IMAGE_TAG=latest`, и проверяются не плавающие
+`*-humble-latest`, а пины `*-latest-<sha>` из
+`docker/{main,vision,sound}/.image-versions.latest` того же checkout'а.
+Плавающего тега (`latest`, `dev`, `test`, `local` без суффикса sha) в этих
+файлах быть не должно: предпроверка такой пин отвергает.
+
 Перед первым SSH-шагом workflow при `registry_source=local` и `dry_run=false`
 запускает `scripts/ci/verify_prod_local_tags.sh <IMAGE_TAG>`. Скрипт читает
 пины `docker/{main,vision,sound}/.image-versions.<IMAGE_TAG>` из того же
@@ -124,15 +137,18 @@ checkout'а, разрешает каждый `*_TAG` в имя образа
 
 Fail-closed: отсутствующий в registry пин, плавающий пин (`latest`, `dev`,
 `test`, `local` вместо `latest-<sha>`), недоступный registry или отсутствие
-файла пинов для запрошенного тега — `::error` с именем образа и ненулевой код
-возврата **до** остановки контейнеров. На Pi в этом случае ничего не тронуто,
-работающий стек сохранён.
+файла пинов для запрошенного тега — `::error` с именем отсутствующего тега и
+ненулевой код возврата **до** `Stop Containers`. На Pi в этом случае ничего
+не тронуто, работающий стек сохранён.
 
-Живой случай 23.11.2026: prod-пины `.image-versions.latest` = `latest-b2e7144`,
-а `teleop-humble-latest-b2e7144` и `quest-humble-latest-b2e7144` в registry нет
-(есть только плавающие `teleop-humble-latest` / `quest-humble-latest`) —
-preflight такой деплой останавливает. Образ `supercollider` не входит в
-проверку: у него нет пина `*_TAG`, compose берёт `${IMAGE_TAG}` напрямую.
+Перепроверка 23.11.2026 (curl `tags/list` с Main Pi, только чтение):
+prod-пины `.image-versions.latest` = `latest-b2e7144`, 14 из 16 тегов в
+registry есть, `teleop-humble-latest-b2e7144` и
+`quest-humble-latest-b2e7144` отсутствуют (плавающие `teleop-humble-latest`
+и `quest-humble-latest` на месте, но деплой их не берёт). Такой
+production+local preflight останавливает до изменений. Образ
+`supercollider` не входит в проверку: у него нет пина `*_TAG`, compose берёт
+`${IMAGE_TAG}` напрямую.
 
 **Важно:** Этот workflow всегда выполняется на self-hosted runner, так как Raspberry Pi устройства находятся в локальной сети и недоступны из GitHub hosted runners.
 
