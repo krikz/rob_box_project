@@ -556,6 +556,70 @@ STOP_RAW = [
 ]
 
 
+# ── #5160: move_direction, цель тула, не пробы ──────────────────────────────────────────────
+
+
+def _move_voice(frame="map", success=True):
+    rows = [
+        dk(0.0, "[INFO] [1.0] [dialog_node]: 📤 Отправлен запрос a1b2c3d4: move_direction"),
+        dk(
+            0.2,
+            f"[INFO] [1.0] [mcp_server]: [navigate_to_pose] цель: frame_id={frame} x=2.800 y=0.060 theta=0.000",
+        ),
+    ]
+    if success:
+        rows.append(dk(12.0, "[INFO] [1.0] [mcp_server]: ✅ Инструмент move_direction выполнен успешно"))
+    else:
+        rows.append(
+            dk(12.0, "[WARN] [1.0] [mcp_server]: ❌ Инструмент move_direction завершился с ошибкой: Nav2 прервал")
+        )
+    return rows
+
+
+def _tracks(x0, y0, x1, y1):
+    return [
+        pr(0.0, "TRACK", x=f"{x0:.3f}", y=f"{y0:.3f}", yaw="0.0", v="+0.000", w="+0.000"),
+        pr(8.0, "TRACK", x=f"{x1:.3f}", y=f"{y1:.3f}", yaw="0.0", v="+0.000", w="+0.000"),
+    ]
+
+
+def test_move_ahead_pass():
+    voice = vd.parse_docker(_move_voice())
+    probe = vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06))
+    v = vd.v_move_ahead(voice, probe)
+    assert v.status == vd.PASS, v.line()
+    assert "frame_id=map" in v.line()
+    assert "1.000 м" in v.line()
+
+
+def test_move_ahead_not_triggered_when_tool_silent():
+    voice = vd.parse_docker([dk(0.0, "[INFO] [1.0] [dialog_node]: tier1 kind=stop_all")])
+    probe = vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06))
+    v = vd.v_move_ahead(voice, probe)
+    assert v.status == vd.NOT_TRIGGERED
+    assert "не вызвался" in v.line()
+
+
+def test_move_ahead_no_data_when_empty():
+    v = vd.v_move_ahead([], [])
+    assert v.status == vd.NO_DATA
+
+
+def test_move_ahead_fail_when_shift_short_or_frame_not_map():
+    short = vd.v_move_ahead(vd.parse_docker(_move_voice()), vd.parse_probe(_tracks(1.80, 0.06, 2.10, 0.06)))
+    assert short.status == vd.FAIL and "вне [0.75, 1.25]" in short.line()
+    wrong = vd.v_move_ahead(
+        vd.parse_docker(_move_voice(frame="base_footprint")), vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06))
+    )
+    assert wrong.status == vd.FAIL and "не в map" in wrong.line()
+
+
+def test_move_ahead_fail_when_probe_sent_its_own_goal():
+    probe = vd.parse_probe(_tracks(1.80, 0.06, 2.80, 0.06) + [pr(1.0, "NAV_SENT", x="2.80", y="0.06", yaw="0")])
+    v = vd.v_move_ahead(vd.parse_docker(_move_voice()), probe)
+    assert v.status == vd.FAIL and "NAV_SENT" in v.line()
+
+
 def test_stop_idle_lie_from_hil_2151_is_fail():
     """HIL 04.11 21:51:18: no_active_goal → «Приехал.» — ложь об успехе."""
     v = vd.v_stop(vd.parse_docker(STOP_RAW + [tts(0.05, "Приехал.")]), PHRASES, "motion.stop.idle", "stop_idle")

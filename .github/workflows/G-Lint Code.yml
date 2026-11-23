@@ -441,22 +441,153 @@ jobs:
       # #5077 (маркер серии решает, удалять ли e2e-БД) лежали в каталогах,
       # которые целиком не гоняет ни один workflow, и CI был зелёным
       # вхолостую. Каталоги tests/unit/scripts и tests/unit/e2e_scripts сюда
-      # НЕ подключаются: в них есть тесты робота и сети (комментарий у шага
-      # #2846). Гард ниже ловит следующий такой файл, пока он новый
-      # относительно origin/develop.
-      - name: "G: Scripts Tests (issue #5176)"
+      # НЕ подключаются целиком (комментарий у шага #2846).
+      # Issue #5179: исторический хвост 123 файла разобран поштучно.
+      # Файлы ниже — юниты скриптов на фикстурах (bash + python3, ssh и робот
+      # подменены), локальный прогон каждого < 30 с. В шаг не вошли (allowlist,
+      # причина на каждый): test_reinstall_vision_pi_systemd.py (shellcheck без
+      # skip, в этой job бинаря нет), test_issue_3989_recover.py и
+      # test_issue_4951_stt_inject_fallback.py (subprocess timeout 120-170 с,
+      # в пофайловом прогоне не уложились в 90 с), test_e2e_voice_test_gate1.py
+      # и test_harness_batch_11_wake_replay.py (зелёные, но ~71 с каждый —
+      # раздувают и без того самую долгую job), test_issue_4176_harness_marathon2.py
+      # (1 failed на этом SHA: json сценария не сходится с генератором).
+      - name: "G: Scripts Tests (issue #5176, tail #5179)"
         run: |
-          python -m pytest tests/unit/scripts/test_issue_5170_hil_off_ready.py \
+          python -m pytest \
+            tests/unit/scripts/test_archive_e2e_artifacts.py \
+            tests/unit/scripts/test_cleanup_registry_floating_tags.py \
+            tests/unit/scripts/test_eval_stall_verdict.py \
+            tests/unit/scripts/test_gh_config_dir.py \
+            tests/unit/scripts/test_hailo_device_smoke.py \
+            tests/unit/scripts/test_hailo_shm_reap.py \
+            tests/unit/scripts/test_hil_checks_verdicts.py \
+            tests/unit/scripts/test_hil_goal_check.py \
+            tests/unit/scripts/test_hil_loc_metrics.py \
+            tests/unit/scripts/test_hil_m1_repeat.py \
+            tests/unit/scripts/test_hil_mux_gate.py \
+            tests/unit/scripts/test_hil_runvideo_exit.py \
+            tests/unit/scripts/test_hil_speed_run_scene.py \
+            tests/unit/scripts/test_hil_speed_verdict.py \
+            tests/unit/scripts/test_hil_video_pip_placement.py \
+            tests/unit/scripts/test_hil_video_scripts.py \
+            tests/unit/scripts/test_hil_world_check.py \
+            tests/unit/scripts/test_issue_5170_hil_off_ready.py \
             tests/unit/scripts/test_issue_5151_scan_drop_lag.py \
+            tests/unit/scripts/test_lite_kit_dns_patch.py \
+            tests/unit/scripts/test_log_watch.py \
+            tests/unit/scripts/test_log_watch_cases.py \
+            tests/unit/scripts/test_nav2_loop_skips.py \
+            tests/unit/scripts/test_no_dialogue_node_in_runtime.py \
+            tests/unit/scripts/test_oak_frame_watchdog.py \
+            tests/unit/scripts/test_oscillation_eval_verdict.py \
+            tests/unit/scripts/test_push_image_versions.py \
+            tests/unit/scripts/test_remove_dead_mapping_state.py \
+            tests/unit/scripts/test_robbox_aliases_targets.py \
+            tests/unit/scripts/test_scsynth_block_bench.py \
+            tests/unit/scripts/test_setup_vision_pi_swap.py \
+            tests/unit/scripts/test_setup_vision_pi_systemd_unit.py \
+            tests/unit/scripts/test_shifu_decisions_tags.py \
+            tests/unit/scripts/test_start_ros2_control_urdf_path.py \
+            tests/unit/scripts/test_start_vision_hailo_yaml_loader.py \
+            tests/unit/scripts/test_tars_stats.py \
+            tests/unit/scripts/test_telegram_backfill_tags.py \
+            tests/unit/scripts/test_telegram_bg.py \
+            tests/unit/scripts/test_telegram_channel.py \
+            tests/unit/scripts/test_telegram_channel_internal.py \
+            tests/unit/scripts/test_telegram_infographic.py \
+            tests/unit/scripts/test_telegram_layout.py \
+            tests/unit/scripts/test_telegram_limits.py \
+            tests/unit/scripts/test_telegram_story.py \
+            tests/unit/scripts/test_telegram_studio.py \
+            tests/unit/scripts/test_telegram_studio_buttons.py \
+            tests/unit/scripts/test_telegram_studio_callbacks.py \
+            tests/unit/scripts/test_telegram_studio_daily_material.py \
+            tests/unit/scripts/test_telegram_studio_idempotency.py \
+            tests/unit/scripts/test_telegram_studio_motion.py \
+            tests/unit/scripts/test_telegram_studio_music.py \
+            tests/unit/scripts/test_telegram_studio_one_topic.py \
+            tests/unit/scripts/test_telegram_studio_request_memory.py \
+            tests/unit/scripts/test_telegram_studio_review2.py \
+            tests/unit/scripts/test_telegram_studio_review3.py \
+            tests/unit/scripts/test_telegram_studio_sync.py \
+            tests/unit/scripts/test_telegram_studio_text.py \
+            tests/unit/scripts/test_telegram_studio_topic_choice.py \
+            tests/unit/scripts/test_telegram_studio_video_delivery.py \
+            tests/unit/scripts/test_telegram_studio_video_own_run.py \
+            tests/unit/scripts/test_telegram_studio_video_reuse.py \
+            tests/unit/scripts/test_write_image_versions.py \
+            tests/unit/e2e_scripts/test_e2e_bare_wake_russian_voice.py \
+            tests/unit/e2e_scripts/test_e2e_keyword_scope.py \
+            tests/unit/e2e_scripts/test_e2e_quality_summary.py \
+            tests/unit/e2e_scripts/test_e2e_silence_not_feature.py \
+            tests/unit/e2e_scripts/test_e2e_tool_match.py \
+            tests/unit/e2e_scripts/test_e2e_voice_test_must_not_identify_as.py \
+            tests/unit/e2e_scripts/test_issue_1396_e2e_artifacts.py \
+            tests/unit/e2e_scripts/test_issue_1429_no_recording_wav_dupe.py \
+            tests/unit/e2e_scripts/test_issue_2406_discovery_step_enforcement.py \
+            tests/unit/e2e_scripts/test_issue_2763_speaker_db_isolation_anchor.py \
+            tests/unit/e2e_scripts/test_issue_2779_must_not_say.py \
+            tests/unit/e2e_scripts/test_issue_2781_voice_memory_isolation_anchor.py \
+            tests/unit/e2e_scripts/test_issue_2846_registration_verdict.py \
+            tests/unit/e2e_scripts/test_issue_2865_memory_search_after_reset.py \
+            tests/unit/e2e_scripts/test_issue_2890_act_isolation.py \
+            tests/unit/e2e_scripts/test_issue_2902_speech_and_retry.py \
+            tests/unit/e2e_scripts/test_issue_2933_false_no_accept.py \
+            tests/unit/e2e_scripts/test_issue_3248_step_patterns.py \
+            tests/unit/e2e_scripts/test_issue_3710_track_ref.py \
+            tests/unit/e2e_scripts/test_issue_3857_event_waits.py \
+            tests/unit/e2e_scripts/test_issue_3857_run_step.py \
+            tests/unit/e2e_scripts/test_issue_3871_music_precondition.py \
+            tests/unit/e2e_scripts/test_issue_3875_synth_retry_cache.py \
+            tests/unit/e2e_scripts/test_issue_3880_marathon_v2_expectations.py \
+            tests/unit/e2e_scripts/test_issue_3904_single_e2e_owner.py \
+            tests/unit/e2e_scripts/test_issue_3931_role_prosody.py \
+            tests/unit/e2e_scripts/test_issue_3954_single_judge.py \
+            tests/unit/e2e_scripts/test_issue_3971_harness_followups.py \
+            tests/unit/e2e_scripts/test_issue_3971_result_kind.py \
+            tests/unit/e2e_scripts/test_issue_3972_marathon_holds_e2e_mode.py \
+            tests/unit/e2e_scripts/test_issue_3992_acts_2b_2c_memory.py \
+            tests/unit/e2e_scripts/test_issue_3993_act2b_recognized_by_code.py \
+            tests/unit/e2e_scripts/test_issue_4077_marathon_scenario_queue1.py \
+            tests/unit/e2e_scripts/test_issue_4077_n802_min_count_end.py \
+            tests/unit/e2e_scripts/test_issue_4077_presynth_scenario_too_long.py \
+            tests/unit/e2e_scripts/test_issue_4077_requires_and_narrow.py \
+            tests/unit/e2e_scripts/test_issue_4086_cast_in_catalog.py \
+            tests/unit/e2e_scripts/test_issue_4157_five_facts_finale.py \
+            tests/unit/e2e_scripts/test_issue_4196_false_greens.py \
+            tests/unit/e2e_scripts/test_issue_4196_inject_after_stt_replay.py \
+            tests/unit/e2e_scripts/test_issue_4196_n807_n813.py \
+            tests/unit/e2e_scripts/test_issue_4236_m11_harness_keys.py \
+            tests/unit/e2e_scripts/test_issue_4478_4481_resume_and_acceptance.py \
+            tests/unit/e2e_scripts/test_issue_4512_marathon_turn_failures.py \
+            tests/unit/e2e_scripts/test_issue_4512_turn_db_artifact.py \
+            tests/unit/e2e_scripts/test_issue_4608_stand_play_failed.py \
+            tests/unit/e2e_scripts/test_issue_4693_whisper_eq_gain.py \
+            tests/unit/e2e_scripts/test_issue_4694_marathon_reds_matrix.py \
+            tests/unit/e2e_scripts/test_issue_4694_stt_garbage_retry.py \
+            tests/unit/e2e_scripts/test_issue_4741_stt_miss_retry.py \
+            tests/unit/e2e_scripts/test_issue_4955_replay_guard.py \
+            tests/unit/e2e_scripts/test_issue_4981_tts_echo_not_step_answer.py \
+            tests/unit/e2e_scripts/test_issue_4985_4986_count_window.py \
+            tests/unit/e2e_scripts/test_issue_4985_count_filler.py \
+            tests/unit/e2e_scripts/test_issue_5002_acceptance_step_window.py \
+            tests/unit/e2e_scripts/test_issue_5031_first_mode_mid_series.py \
             tests/unit/e2e_scripts/test_issue_5077_series_marker.py \
+            tests/unit/e2e_scripts/test_issue_5094_acceptance_window.py \
+            tests/unit/e2e_scripts/test_issue_5131_n1002_self_named.py \
+            tests/unit/e2e_scripts/test_marathon_foundation_decision.py \
+            tests/unit/e2e_scripts/test_scenarios_use_barge_in.py \
+            tests/unit/e2e_scripts/test_tts_provider_selection.py \
+            tests/unit/e2e_scripts/test_wake_gate_preflight.py \
             -v \
             -o addopts="" \
             -p no:cacheprovider
 
       # Issue #5176: новый test_*.py в этих двух каталогах обязан быть назван
-      # в каком-нибудь workflow или в allowlist с непустой причиной. Файлы,
-      # уже лежавшие на origin/develop, гард не трогает (их 123, разбор —
-      # отдельная карточка). Hard gate.
+      # в каком-нибудь workflow или в allowlist с непустой причиной. Хвост,
+      # лежавший на origin/develop (123 файла), разобран в #5179: 117 названы
+      # шагом выше, 6 — в allowlist с причиной. Hard gate.
       - name: Script-test wiring guard (issue #5176)
         run: |
           python scripts/lint/script_test_wiring.py --ref origin/develop

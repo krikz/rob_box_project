@@ -339,3 +339,55 @@ def test_n211_remembered_a_person_is_not_a_claim():
     """«запомнил человека» без слова о голосе или лице записи не утверждает: объекта-записи в окне нет."""
     assert done_claims("Запомнил человека.") == ()
     assert done_claims("Запомнил нового человека.") == ()
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# #5128: «Запомнил, Борис: …» без memory_save — утверждение о записи факта
+# ---------------------------------------------------------------------------------------------------------------
+
+#: Речь модели из n206 марафона №3 (22.11): actions=[], voice_facts пусто, год дописан моделью.
+N206_LIE = "Запомнил, Борис: ты болеешь за Спартак с девяносто восьмого года и по пятницам приносишь пиццу."
+
+
+@pytest.mark.parametrize("text", [
+    N206_LIE,
+    "Запомнил!",
+    "Запомнил про тебя: любишь чай.",
+    "Записала: Борис болеет за Спартак.",
+    "Сохранил, что ты приносишь пиццу.",
+    "Я запомнил это.",
+])
+def test_5128_a_fact_save_without_its_object_is_a_remember_fact_claim(text):
+    """Глагол записи факта без объекта «точка»/«голос»/«лицо» — вид ``remember_fact``, не чужой."""
+    assert done_claims(text) == ("remember_fact",)
+
+
+def test_5128_the_lie_without_a_tool_is_a_violation_and_memory_save_would_make_it_true():
+    result = validate(parse({"speech": N206_LIE, "actions": []}), TOOLS)
+    assert isinstance(result, Invalid) and result.reason == kn.VIOLATION_DONE_CLAIM
+    assert result.all[0].allowed == ("memory_save",)
+    assert "запомнил" in explain(result)
+
+
+def test_5128_memory_save_in_the_command_backs_the_claim():
+    cmd = Command(speech=N206_LIE, actions=(ToolCall("memory_save", {"fact": "болеет за Спартак"}),))
+    assert unkept_done_claims(cmd) == ()
+    assert isinstance(validate(cmd, TOOLS), Command)
+
+
+@pytest.mark.parametrize("text", [
+    "Запомнил, тебя зовут Саша.",
+    "Помню: ты болеешь за Спартак.",
+    "Ты болеешь за Спартак.",
+    "Запомнил?",
+    "Не запомнил: ты не сказал.",
+    "Я уже запомнил.",
+    "Запомнил человека.",
+    "Записала",
+    "Запомнил двоих.",
+    "Запомнил по голосу двоих.",
+    "Хорошо, Тамара, запомнил.",
+])
+def test_5128_these_are_not_a_fact_save_claim(text):
+    """Знакомство, вопрос, отказ, счёт, обращение по имени до глагола — не запись факта."""
+    assert "remember_fact" not in done_claims(text)

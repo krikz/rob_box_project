@@ -11,7 +11,7 @@ import asyncio
 from rob_box_dialog import fact_dictation
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.address import VOICE, Addressed
-from rob_box_dialog.command import Command, ToolCall
+from rob_box_dialog.command import Command, Invalid, ToolCall
 from rob_box_dialog.session import Session
 from rob_box_dialog.turn import Answer, TurnEngine
 
@@ -26,6 +26,7 @@ class Ports:
     def __init__(self, answers):
         self.answers = list(answers)
         self.executed = []
+        self.said = []
 
     async def ask(self, messages, tools, timeout_s):
         return self.answers.pop(0)
@@ -49,6 +50,7 @@ class Ports:
         ]
 
     def say(self, turn_id, epoch, text, voice=None, emotion=None):
+        self.said.append(text)
         return "sp"
 
     def stage(
@@ -172,6 +174,26 @@ def test_question_introduction_and_meta_add_no_call():
     """Не-диктовка до тула не доходит."""
     for text in ("что ты про меня помнишь?", "запомни меня как Саша", "запомни, что я сказал", "привет"):
         assert _saved(_run(text, ())) == []
+
+
+def _run_invalid(text, speech):
+    """Мост уже отверг команду (``done_claim``) и отдал ходу ``Invalid`` с пустым salvage."""
+    ports = Ports([Answer(Invalid(kn.VIOLATION_DONE_CLAIM, salvage=()), "deepseek")])
+    asyncio.run(TurnEngine(Session("personality"), ports, system_prompt="Ты робот.").run(Addressed(text, VOICE)))
+    return ports
+
+
+def test_a_bridge_rejection_of_the_dictation_still_saves_and_says_the_catalog():
+    """Мост отверг «Запомнил» без тула (``done_claim``) и salvage пуст: код всё равно пишет
+    продиктованный факт и говорит каталог, не «Этого я не сделал» и не выдумку модели."""
+    from rob_box_dialog import phrases
+
+    invented = "Запомнил, Борис: ты болеешь за Спартак с девяносто восьмого года."
+    ports = _run_invalid(N206, invented)
+    assert _saved(ports.executed) == [{"fact": N206_FACT, "category": "general"}]
+    assert ports.said == [phrases.text("memory.saved", fact=N206_FACT)]
+    assert "девяносто восьмого" not in " ".join(ports.said)
+    assert phrases.text(kn.DONE_CLAIM_PHRASE) not in ports.said
 
 
 def test_with_dictated_names_the_tool_and_salvage_still_saves():

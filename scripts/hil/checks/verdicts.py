@@ -620,6 +620,95 @@ def _said(spoken: Sequence[Tuple[float, str]]) -> str:
     return "; ".join(f"{hhmmss(t)} «{s}»" for t, s in spoken) or "робот молчал"
 
 
+def _track_shift(probe: Sequence[Event]) -> Optional[Tuple[float, Event, Event]]:
+    """Сдвиг правды Gazebo между первым и последним TRACK (м). Нет двух точек — None."""
+    tracks = kinds(probe, "TRACK")
+    if len(tracks) < 2:
+        return None
+    a, b = tracks[0], tracks[-1]
+    if math.isnan(a.num("x")) or math.isnan(b.num("x")) or math.isnan(a.num("y")) or math.isnan(b.num("y")):
+        return None
+    return math.hypot(b.num("x") - a.num("x"), b.num("y") - a.num("y")), a, b
+
+
+def _move_tool_calls(voice: Sequence[Event]) -> Tuple[List[Event], List[Event], List[Event], List[Event]]:
+    sent = grep(voice, r"Отправлен запрос \S+: move_direction")
+    done = grep(voice, r"Инструмент move_direction выполнен успешно")
+    failed = grep(voice, r"Инструмент move_direction завершился с ошибкой")
+    asked = grep(voice, r"Запрос выполнения: move_direction")
+    return sent, done, failed, asked
+
+
+def _move_goal_frame(voice: Sequence[Event]) -> Tuple[List[str], List[str]]:
+    """(плохо, факты) по строке ``[navigate_to_pose] цель: frame_id=``."""
+    frames = grep(voice, r"\[navigate_to_pose\] цель: frame_id=(\S+)")
+    if not frames:
+        return ["кадр цели в логе не назван"], []
+    found = re.search(r"frame_id=(\S+)", frames[-1].text)
+    name = found.group(1) if found else "?"
+    if name != "map":
+        return [f"цель не в map, а в {name}"], []
+    return [], ["цель frame_id=map"]
+
+
+def _move_shift_facts(probe: Sequence[Event], lo: float, hi: float) -> Tuple[List[str], List[str]]:
+    shift = _track_shift(probe)
+    if shift is None:
+        return ["TRACK Gazebo нет (нужны две точки)"], []
+    metres, a, b = shift
+    span = (
+        f"сдвиг TRACK {metres:.3f} м "
+        f"({a.num('x'):.3f},{a.num('y'):.3f})→({b.num('x'):.3f},{b.num('y'):.3f})"
+    )
+    if not lo <= metres <= hi:
+        return [f"сдвиг {metres:.3f} м вне [{lo:.2f}, {hi:.2f}]"], [span]
+    return [], [span]
+
+
+def _move_outcome(done: Sequence[Event], failed: Sequence[Event]) -> Tuple[List[str], List[str]]:
+    if failed and not done:
+        return ["тул завершился ошибкой: " + failed[-1].text.strip()], []
+    if not done:
+        return ["успеха тула нет (нет «выполнен успешно»)"], []
+    return [], ["move_direction выполнен успешно"]
+
+
+def _probe_own_goal(probe: Sequence[Event]) -> Tuple[List[str], List[str]]:
+    if kinds(probe, "NAV_SENT"):
+        return ["проба слала свою цель (NAV_SENT) — это не путь тула"], []
+    if probe:
+        return [], ["проба цель не слала"]
+    return [], []
+
+
+def v_move_ahead(voice: Sequence[Event], probe: Sequence[Event], expected_m: float = 1.0) -> Verdict:
+    """#5160: «вперёд на метр» через тул, не через цель пробы.
+
+    PASS: move_direction вызван и выполнен успешно; в логе тула цель в map
+    (строка ``[navigate_to_pose] цель: frame_id=map``); сдвиг TRACK Gazebo
+    в [0.75, 1.25] м. Тул не вызвался — NOT_TRIGGERED, не PASS. Нет логов — NO_DATA.
+    """
+    sc = ("#5160", "move_ahead")
+    if not voice and not probe:
+        return Verdict(*sc, NO_DATA, ("нет voice.log и probe.log",))
+    sent, done, failed, asked = _move_tool_calls(voice)
+    if not sent and not done and not failed and not asked:
+        return Verdict(*sc, NOT_TRIGGERED, ("тул move_direction не вызвался",))
+    if not sent and not done and not failed:
+        return Verdict(*sc, NOT_TRIGGERED, ("запрос move_direction есть, отправки тула нет",))
+    bad, facts = _move_outcome(done, failed)
+    for extra_bad, extra_ok in (
+        _move_goal_frame(voice),
+        _move_shift_facts(probe, expected_m * 0.75, expected_m * 1.25),
+        _probe_own_goal(probe),
+    ):
+        bad.extend(extra_bad)
+        facts.extend(extra_ok)
+    if bad:
+        return Verdict(*sc, FAIL, tuple(bad + facts))
+    return Verdict(*sc, PASS, tuple(facts))
+
+
 def v_nav_aborted(voice: Sequence[Event], phrases: Mapping[str, List[str]]) -> Verdict:
     """#3789: исход тула ABORTED → фраза «Не доехал…: навигация прервалась.» по данным, без «Приехал»."""
     sc = ("#3789", "nav_aborted")
@@ -905,6 +994,8 @@ def evaluate(scenario: str, d: Path, args) -> Verdict:
     if scenario == "doorway":
         return v_doorway(probe, parse_docker(_read(d, "guard.log")), (args.opening_lo, args.opening_hi))
     voice = parse_docker(_read(d, "voice.log"))
+    if scenario == "move_ahead":
+        return v_move_ahead(voice, probe)
     if scenario == "nav_aborted":
         return v_nav_aborted(voice, load_phrases())
     if scenario in ("stop_idle", "stop_active"):
