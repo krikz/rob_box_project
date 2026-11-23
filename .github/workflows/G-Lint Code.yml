@@ -437,6 +437,31 @@ jobs:
             -o addopts="" \
             -p no:cacheprovider
 
+      # Issue #5176: регрессии #5170 (hil.sh off судит по healthcheck) и
+      # #5077 (маркер серии решает, удалять ли e2e-БД) лежали в каталогах,
+      # которые целиком не гоняет ни один workflow, и CI был зелёным
+      # вхолостую. Каталоги tests/unit/scripts и tests/unit/e2e_scripts сюда
+      # НЕ подключаются: в них есть тесты робота и сети (комментарий у шага
+      # #2846). Гард ниже ловит следующий такой файл, пока он новый
+      # относительно origin/develop.
+      - name: "G: Scripts Tests (issue #5176)"
+        run: |
+          python -m pytest tests/unit/scripts/test_issue_5170_hil_off_ready.py \
+            tests/unit/e2e_scripts/test_issue_5077_series_marker.py \
+            -v \
+            --no-cov \
+            -o addopts="" \
+            -p no:cacheprovider
+
+      # Issue #5176: новый test_*.py в этих двух каталогах обязан быть назван
+      # в каком-нибудь workflow или в allowlist с непустой причиной. Файлы,
+      # уже лежавшие на origin/develop, гард не трогает (их 123, разбор —
+      # отдельная карточка). Hard gate.
+      - name: Script-test wiring guard (issue #5176)
+        run: |
+          python scripts/lint/script_test_wiring.py --ref origin/develop
+          python -m unittest scripts.lint.test_script_test_wiring -v
+
       # ADR-0057 («тест написан, но не в CI»), закрытие класса целиком для
       # tests/unit/: 34 из 57 файлов не гонял ни один workflow (pytest.ini
       # сужает testpaths до src/rob_box_harness/test, а шаги выше и
