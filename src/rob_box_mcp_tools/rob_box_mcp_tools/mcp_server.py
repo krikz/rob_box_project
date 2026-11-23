@@ -867,7 +867,7 @@ class MCPServer(Node):
         # Navigation tools (require waypoint_store and/or pose snapshot)
         self.registry.register(NavigateToWaypointTool(self, self.waypoint_store))
         self.registry.register(NavigateToCoordinatesTool(self))
-        self.registry.register(MoveDirectionTool(self))
+        self.registry.register(MoveDirectionTool(self, self.map_pose_source))
         self.registry.register(StopNavigationTool(self))
         self.registry.register(ListWaypointsTool(self, self.waypoint_store))
         self.registry.register(
