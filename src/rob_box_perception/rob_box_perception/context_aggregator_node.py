@@ -48,6 +48,10 @@ from rob_box_perception.apriltag_view import VisibleTags
 from rob_box_perception.core.robot_speech import SPEECH_REQUEST_TOPIC, robot_said
 from rob_box_perception.motion_state import MotionEstimator
 from rob_box_perception.rtabmap_mode import RtabmapModeProbe
+from rob_box_perception.rtabmap_pose_covariance import (
+    covariance_unavailable_reason,
+    health_line,
+)
 from rob_box_perception.utils.internet_monitor import (
     InternetConnectivityMonitor,
 )
@@ -120,6 +124,9 @@ class ContextAggregatorNode(Node):
         # (берётся из msg.pose.pose в on_robot_pose), чтобы PerceptionEvent.pose
         # оставался типом Pose.
         self.current_pose: Optional[Pose] = None
+        # #5161: вердикт ковариации последней позы. None - позы ещё не было,
+        # строка health не пишется (нет позы - не «ковариация недоступна»).
+        self._pose_covariance_reason: Optional[str] = None
         self.current_odom: Optional[Odometry] = None
         self.motion = MotionEstimator()
         self.current_sensors: Dict = {}
@@ -361,6 +368,11 @@ class ContextAggregatorNode(Node):
         (``geometry_msgs/Pose`` в rob_box_perception_msgs/msg/PerceptionEvent.msg).
         """
         self.current_pose = msg.pose.pose
+        # #5161: единица и 9999 - не измеренная дисперсия. Вердикт, не лог:
+        # лог на каждый колбэк повторил бы спам rtabmap (~1 Гц).
+        self._pose_covariance_reason = covariance_unavailable_reason(
+            msg.pose.covariance
+        )
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         self.get_logger().debug(f'📍 Pose: ({x:.2f}, {y:.2f})')
@@ -653,8 +665,8 @@ class ContextAggregatorNode(Node):
         issues = []
 
         # Проверка ошибок
-        recent_error_count = len(
-            [e for e in self.recent_errors if time.time() - e['time'] < 30]
+        recent_error_count = sum(
+            1 for e in self.recent_errors if time.time() - e['time'] < 30
         )
         if recent_error_count >= 5:
             issues.append(f'Много ошибок: {recent_error_count} за 30 сек')
@@ -681,6 +693,8 @@ class ContextAggregatorNode(Node):
             issues.append('Одометрия: нет данных, движение неизвестно')
         if self.apriltag_sub is None:
             issues.append('AprilTag: нет apriltag_msgs, метки не видны')
+        # #5161: None не добавляется. Ветки нет: CC check_system_health уже на пределе.
+        issues.extend(health_line(self._pose_covariance_reason))
 
         # Проверка интернета (добавлено)
         if not self.internet_monitor.get_status()['is_online']:

@@ -540,6 +540,30 @@ class TestContextAggregator(unittest.TestCase):
         self.assertEqual(pos_x, 1.0)
         self.assertEqual(pos_y, 2.0)
 
+    def test_unpublished_marginal_covariance_is_a_health_issue(self):
+        """#5161: единица в ковариации позы — не дисперсия, а непрочитанные маргиналы.
+
+        Строка одна и стоячая (health), не лог на каждый колбэк. Посчитанная
+        ковариация строки не даёт. Позы не было — строки нет (см. HEALTHY-тест).
+        """
+        pose_msg = PoseWithCovarianceStamped()
+        for index in (0, 7, 14, 21, 28, 35):
+            pose_msg.pose.covariance[index] = 1.0
+        self.node.on_robot_pose(pose_msg)
+        self.node.current_sensors = {'battery': 40.0}
+        self.node.recent_errors = []
+        self.node.motion.add(time.time(), 0.0, 0.0, 0.0)
+
+        _, issues = self.node.check_system_health()
+
+        self.assertTrue(any('ковариация позы недоступна' in i for i in issues))
+        self.assertEqual(sum('ковариация' in i for i in issues), 1)
+
+        pose_msg.pose.covariance[0] = 0.02
+        self.node.on_robot_pose(pose_msg)
+        _, issues = self.node.check_system_health()
+        self.assertFalse(any('ковариация' in i for i in issues))
+
     def test_pose_subscription_uses_pose_with_covariance_type(self):
         """Регрессия issue #2826.
 
@@ -911,7 +935,9 @@ class TestPublishEvent(unittest.TestCase):
         # check_system_health возвращает заглавные ключи
         # ('HEALTHY' / 'DEGRADED' / 'UNHEALTHY'). Проверяем что
         # полная батарея и пустой recent_errors дают HEALTHY.
+        # Позы не было: #5161 не пишет «ковариация недоступна» вхолостую.
         self.assertEqual(status, 'HEALTHY')
+        self.assertFalse(any('ковариация' in issue for issue in issues))
 
     def test_check_system_health_low_battery(self):
         """Тест: низкая батарея."""
