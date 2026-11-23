@@ -449,7 +449,6 @@ jobs:
           python -m pytest tests/unit/scripts/test_issue_5170_hil_off_ready.py \
             tests/unit/e2e_scripts/test_issue_5077_series_marker.py \
             -v \
-            --no-cov \
             -o addopts="" \
             -p no:cacheprovider
 

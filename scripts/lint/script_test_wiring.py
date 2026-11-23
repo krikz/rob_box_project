@@ -170,7 +170,9 @@ def check(ref: str, root: Path = REPO, allow_path: Path = ALLOW) -> tuple[int, s
             "не подключён ни к одному .github/workflows/*.yml и не назван в "
             f"scripts/lint/script_test_wiring_allow.json с причиной (issue #5176):\n{listed}\n"
             "Каталоги целиком не гоняются: там есть тесты робота и сети. "
-            "Подключи файл явным шагом или запиши причину, почему он гоняется вручную."
+            "Подключи файл явным шагом pytest (флаг --no-cov не ставь: в CI нет "
+            "pytest-cov, шаг падает на разборе аргументов) или запиши причину, "
+            "почему он гоняется вручную."
         )
     return 0, f"OK: новые test_*.py в {', '.join(DIRS)} либо в workflow, либо в allowlist ({ref})."
 
