@@ -81,7 +81,17 @@ diff -ruN a/nav2_behaviors/include/nav2_behaviors/plugins/back_up.hpp b/nav2_beh
 diff -ruN a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp b/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp
 --- a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp	2025-11-17 20:48:57.000000000 +0300
 +++ b/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp	2026-11-23 20:02:45.503250078 +0300
-@@ -92,6 +92,12 @@
+@@ -25,6 +25,9 @@
+ #include "nav2_msgs/action/drive_on_heading.hpp"
+ #include "nav2_msgs/action/back_up.hpp"
+ #include "nav2_util/node_utils.hpp"
++// #5003: the body after the class calls BehaviorServer::costmapTickStatusFor,
++// which needs the complete type. A forward declaration cannot carry the call.
++#include "nav2_behaviors/behavior_server.hpp"
+ 
+ namespace nav2_behaviors
+ {
+@@ -92,6 +95,12 @@
     * @brief Loop function to run behavior
     * @return Status of behavior
     */
@@ -94,6 +104,22 @@ diff -ruN a/nav2_behaviors/include/nav2_behaviors/plugins/drive_on_heading.hpp b
    Status onCycleUpdate() override
    {
      rclcpp::Duration time_remaining = end_time_ - this->clock_->now();
+@@ -271,6 +280,15 @@
+   double last_vel_ = std::numeric_limits<double>::max();
+ };
+ 
++// #5003: defined here, not in drive_on_heading.cpp. That file only instantiates
++// DriveOnHeading<nav2_msgs::action::DriveOnHeading>, so a body there leaves
++// DriveOnHeading<BackUp>::costmapTickStatus undefined and dlopen fails.
++template<typename ActionT>
++Status DriveOnHeading<ActionT>::costmapTickStatus() const
++{
++  return behavior_server::BehaviorServer::costmapTickStatusFor(this->node_.lock());
++}
++
+ }  // namespace nav2_behaviors
+ 
+ #endif  // NAV2_BEHAVIORS__PLUGINS__DRIVE_ON_HEADING_HPP_
 diff -ruN a/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp b/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp
 --- a/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp	2025-11-17 20:48:57.000000000 +0300
 +++ b/nav2_behaviors/include/nav2_behaviors/timed_behavior.hpp	2026-11-23 19:58:09.649233168 +0300
@@ -159,30 +185,6 @@ diff -ruN a/nav2_behaviors/plugins/back_up.cpp b/nav2_behaviors/plugins/back_up.
  Status BackUp::onRun(const std::shared_ptr<const BackUpAction::Goal> command)
  {
    if (command->target.y != 0.0 || command->target.z != 0.0) {
-diff -ruN a/nav2_behaviors/plugins/drive_on_heading.cpp b/nav2_behaviors/plugins/drive_on_heading.cpp
---- a/nav2_behaviors/plugins/drive_on_heading.cpp	2025-11-17 20:48:57.000000000 +0300
-+++ b/nav2_behaviors/plugins/drive_on_heading.cpp	2026-11-23 20:03:47.848873076 +0300
-@@ -16,5 +16,20 @@
- #include <memory>
- #include "nav2_behaviors/plugins/drive_on_heading.hpp"
- 
-+#include "nav2_behaviors/behavior_server.hpp"
-+
-+namespace nav2_behaviors
-+{
-+
-+// #5003: the default DriveOnHeading plugin. BackUp does not use this
-+// instantiation; it defines its own override in back_up.cpp.
-+template<typename ActionT>
-+Status DriveOnHeading<ActionT>::costmapTickStatus() const
-+{
-+  return behavior_server::BehaviorServer::costmapTickStatusFor(this->node_.lock());
-+}
-+
-+}  // namespace nav2_behaviors
-+
- #include "pluginlib/class_list_macros.hpp"
- PLUGINLIB_EXPORT_CLASS(nav2_behaviors::DriveOnHeading<>, nav2_core::Behavior)
 diff -ruN a/nav2_behaviors/src/behavior_server.cpp b/nav2_behaviors/src/behavior_server.cpp
 --- a/nav2_behaviors/src/behavior_server.cpp	2025-11-17 20:48:57.000000000 +0300
 +++ b/nav2_behaviors/src/behavior_server.cpp	2026-11-23 20:03:47.848873076 +0300
