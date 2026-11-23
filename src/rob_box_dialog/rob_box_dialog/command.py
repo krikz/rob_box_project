@@ -226,8 +226,18 @@ class Form:
 
     @property
     def sing_form(self) -> Optional[kn.SingForm]:
-        """Что форма хода закрывает и требует по пути пения; не пение — ``None``."""
-        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over, self.text))
+        """Что форма хода закрывает и требует по пути пения; не пение — ``None``.
+
+        Семья ``chimera`` берёт действие из реплики (:func:`knowledge.chimera_form_actions`): «спой» —
+        ``sing``, «скажи» — ``speak``, «сыграй» — ``play``. Строка :data:`knowledge.SING_FORMS` остаётся
+        действием пения; подмена на ходе не пишет в неё.
+        """
+        family = kn.sing_family(self.sing, self.sing_over, self.text)
+        form = kn.SING_FORMS.get(family)
+        if form is None or family != "chimera":
+            return form
+        actions = kn.chimera_form_actions(self.text, self.sing)
+        return form if form.tool_actions == actions else replace(form, tool_actions=actions)
 
     def closed_tools(self) -> Tuple[str, ...]:
         """Тулы, которых в этом ходе нет: путь пения и библиотечная просьба (вне среза и вне команды)."""
@@ -267,8 +277,9 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
 def tool_schema(name: str, form: Optional[Form] = None) -> Mapping[str, Any]:
     """Схема тула, которую ход показывает модели и которой судит ответ.
 
-    Каталог — как есть, кроме семьи ``chimera``: там действие — ``sing`` формы, не ``call`` поставки,
-    и поля чужих действий уходят (#5074, #5152). Одна функция и для схемы модели, и для :func:`validate`.
+    Каталог — как есть, кроме семьи ``chimera``: там действие — из реплики (``sing`` / ``speak`` / ``play``),
+    не ``call`` поставки, и поля чужих действий уходят (#5025, #5074, #5152). Одна функция и для схемы
+    модели, и для :func:`validate`.
     Показ модели сужает поля ещё и вне этой семьи (``knowledge.chimera_model_schema``): валидатор вне
     хода каталог не режет, иначе ``sing`` стал бы «лишним полем», а не «не из enum».
     """
