@@ -11,13 +11,16 @@ while music is off, #3780 C) > ``wakeup`` (start / voice is back / a face or a v
 > LLM face scene (``apply_face``, slots of
 ``rob_box_dialog.face_scene``; ``clear_face`` on failed/silenced) > talking (``SpeechEvent`` / envelope) >
 requested scene (``play_animation`` / ``ExpressionRequest``) > driving (turn signal / brake light by
-``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > silence (taped mouth, #3984) > music > idle. Rear lights outside the scenes
+``/cmd_vel``) > midnight of 31.12 > battery (charging / low) > silence (taped mouth, #3984) > music >
+vibe accessory (#3780 B, holds for the ball curve, not ``FACE_SCENE_MAX_S``) > idle. A palette vibe tints the
+scene already chosen; it does not replace it. Rear lights outside the scenes
 that draw their own: manual ``set_rear`` (for ``duration_s``) > ``rear_theme`` parameter > holiday calendar.
 """
 from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from typing import Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
@@ -25,7 +28,9 @@ import numpy as np
 from rob_box_core.speech_client import ANY_AGENT, SpeakingWatch, event_outcome
 from rob_box_dialog import expression as _expression
 from rob_box_dialog.knowledge import (FACE_SCENE_MAX_S, FACE_SHOW_DEFAULT_S, MUSIC_DEFAULT_BPM,
-                                      MUSIC_SCENE_MIN_S, SOCIAL_SLEEP_AFTER_S)
+                                      MUSIC_SCENE_BPM, MUSIC_SCENE_MIN_S, SOCIAL_SLEEP_AFTER_S,
+                                      VIBE_HINT_STRENGTH)
+from rob_box_dialog.vibe import NEUTRAL, VibeBall
 
 from led_matrix_effects import lamps as R
 
@@ -34,6 +39,7 @@ from .face.face import Frame, tint_of
 from .face.scene import FaceContext, Scene
 from .face.sides import sides_frame
 from .face.states import SCENES, resolve
+from .face_vibe import ACCESSORY, ASK, accessory_of, worn
 from .outside import BatteryWatch, DriveTracker, calendar_rear, calendar_scene
 
 #: A requested emotion while the robot speaks becomes the tone of the talking
@@ -175,6 +181,17 @@ def _num(v) -> Optional[float]:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+#: Стиль вайба по первым границам ``MUSIC_SCENE_BPM`` (последняя — ``inf``, не порог).
+_VIBE_STYLE = ('plasma', 'rainbow', 'fire')
+
+
+def _music_style(bpm: Optional[float]) -> str:
+    """Темп → стиль вайба. Пороги — первые границы MUSIC_SCENE_BPM, не свои числа. Темпа нет — середина."""
+    tempo = bpm if bpm and bpm > 0 else MUSIC_DEFAULT_BPM
+    limits = [limit for limit, _ in MUSIC_SCENE_BPM[:-1]]
+    return next((style for limit, style in zip(limits, _VIBE_STYLE) if tempo < limit), _VIBE_STYLE[-1])
+
+
 class GazeTrack:
     """Speaker direction: DOA counts only while VAD says someone speaks (TV noise has a DOA too)."""
 
@@ -226,6 +243,8 @@ class FaceDirector:
         # «говорит» — пока звучит реплика любого агента (SpeechEvent started ... finished|cancelled|rejected);
         # часы наблюдателя — время директора (epoch, как у огибающей), ими отсекается потерянный конец реплики
         self._now = now
+        self.vibe = VibeBall(clock=lambda: self._now)
+        self._vibe_facts: dict = {}
         self._speech = SpeakingWatch(ANY_AGENT, clock=lambda: self._now)
         self._speech_hang_until = -math.inf
         self._voice_seen = now          # grace: the voice owner has voice_timeout_s to show up
@@ -252,6 +271,7 @@ class FaceDirector:
     def note_someone(self, now: float) -> None:
         """A face in the frame or an utterance: the quiet count starts over. Wakes a social sleep."""
         self._someone_at = now
+        self._vibe_fact('present', 'boot', now)
 
     def note_frame(self, clear: bool, now: float) -> None:
         """One camera frame ran. ``clear`` — nobody in it (not «the camera is down»)."""
@@ -282,7 +302,12 @@ class FaceDirector:
         self.mouth.add(speech_id, t0, frame_ms, levels, vowels, now)
 
     def on_music_state(self, raw: str, now: float) -> bool:
-        return self.music.on_state(raw, now)
+        ok = self.music.on_state(raw, now)
+        if ok and self.music.playing:
+            self._vibe_fact('music', _music_style(self.music.bpm), now)
+        elif ok:
+            self._vibe_facts.pop('music', None)
+        return ok
 
     def on_cmd_vel(self, linear_x: float, angular_z: float, now: float) -> None:
         self.drive.on_cmd(linear_x, angular_z, now)
@@ -305,9 +330,18 @@ class FaceDirector:
         return calendar_rear(now, self.tz_offset_h) or 'default'
 
     def apply_face(self, slots: Mapping[str, str], seconds: float, now: float) -> None:
-        """LLM face scene (§5.5.9) over the reflex for ``seconds`` (≤ 30); its ``rear`` slot sets the rear theme too."""
+        """LLM face scene (§5.5.9) over the reflex for ``seconds`` (≤ 30); its ``rear`` slot sets the rear theme too.
+
+        An accessory ask («надень очки» → ``eyes=shades``, «сними» → ``eyes=open``) is a strong push of the vibe
+        ball, not a 30 s scene: the accessory then stays for the ball's curve (minutes), and a take-off drops it
+        at once. The overlay itself still expires by ``FACE_SCENE_MAX_S``.
+        """
         seconds = min(max(float(seconds), 0.0), FACE_SCENE_MAX_S)
-        self._overlay = (dict(slots), now + seconds)
+        asked = self._ask_accessory(slots, now)
+        # Аксессуар живёт на шаре. Сцена LLM с тем же слотом глаз перекрыла бы и «сними», и минуты после 30 с.
+        # Пустая сцена (нет слотов) — по-прежнему оверлей: её ждут тесты DSL как «сцену покоя».
+        shown = {k: v for k, v in slots.items() if not (asked and k == ACCESSORY)}
+        self._overlay = (shown, now + seconds) if shown or not slots else None
         self._replay = True                 # a new scene replays from its start (a wink, the sunglasses drop)
         if slots.get('rear'):
             self.set_rear(REAR_OF_SLOT[slots['rear']], seconds, now)
@@ -321,6 +355,14 @@ class FaceDirector:
     @property
     def silenced(self) -> bool:
         return self._silenced
+
+    def note_praise(self, now: float) -> None:
+        """Похвала — структурный факт, не разбор текста. Толчок разогрева, один раз за приход."""
+        self._vibe_fact('praise', 'fire', now)
+
+    def note_blame(self, now: float) -> None:
+        """Ругань — структурный факт. Толчок сбоя, один раз за приход."""
+        self._vibe_fact('blame', 'glitch', now)
 
     def set_silenced(self, silenced: bool) -> bool:
         """Silence scene is on the session stack (#3984): the face is the taped mouth until it ends; entering it takes
@@ -389,16 +431,64 @@ class FaceDirector:
             return outside, base
         if self._silenced:
             return _expression.silent_face(), FaceContext(gaze_deg=gaze, rear_theme=rear)
+        return self._below_silence(gaze, rear, now)
+
+    def _below_silence(self, gaze: Optional[float], rear: str, now: float) -> Tuple[str, FaceContext]:
+        """Музыка, аксессуар вайба, обычное лицо. Палитра вайба красится поверх, сцену не подменяет."""
         music = self.music.scene(now)
         if music:
             name, bpm, beats = music
-            return name, FaceContext(bpm=bpm, beat_phase=beats, rear_theme=rear)
-        return self._idle(now), FaceContext(gaze_deg=gaze, rear_theme=rear)
+            ctx = FaceContext(bpm=bpm, beat_phase=beats, rear_theme=rear)
+        else:
+            accessory = self._vibe_accessory(gaze, rear, now)
+            if accessory is not None:
+                return accessory
+            ctx = FaceContext(gaze_deg=gaze, rear_theme=rear)
+            name = self._idle(now)
+        return name, self._with_vibe(ctx, now)
+
+    def _vibe_accessory(self, gaze: Optional[float], rear: str, now: float) -> Optional[Tuple[str, FaceContext]]:
+        """Аксессуар шара — своя сцена DSL. Палитра и темп сцену не подменяют: их кладёт ``_with_vibe``."""
+        slots = worn(self.vibe.at(now))
+        if ACCESSORY not in slots:
+            return None
+        return DSL_KEY, self._dsl_context(slots, gaze, rear, now)
+
+    def _with_vibe(self, ctx: FaceContext, now: float) -> FaceContext:
+        """Оттенок вайба на уже выбранную сцену. Своего оттенка (оверлей, аксессуар) не трогаем."""
+        if ctx.tint is not None:
+            return ctx
+        tint = worn(self.vibe.at(now)).get('tint')
+        if not tint:
+            return ctx
+        return replace(ctx, tint=tint_of(tint, now), tint_slot=tint)
+
+    def _vibe_fact(self, kind: str, style: str, now: float) -> None:
+        """Один толчок на приход факта. Повтор того же факта шар не дёргает (кадр музыки — не новое событие)."""
+        self._now = now
+        if self._vibe_facts.get(kind) == style:
+            return
+        self._vibe_facts[kind] = style
+        self.vibe.push(style, VIBE_HINT_STRENGTH, now)
+
+    def _ask_accessory(self, slots: Mapping[str, str], now: float) -> bool:
+        """Явная просьба про аксессуар — сильный толчок. Снять — стиль домой, слот уходит сразу.
+
+        True — слот глаз был просьбой (надеть или снять), сцена LLM его не держит.
+        """
+        asked = accessory_of(slots, wearing=ACCESSORY in worn(self.vibe.at(now)))
+        if asked is None:
+            return False
+        self._now = now
+        self._vibe_facts['ask'] = asked
+        self.vibe.push(NEUTRAL if asked == NEUTRAL else asked, ASK, now)
+        return True
 
     def _dsl_context(self, slots: Mapping[str, str], gaze: Optional[float], rear: str, now: float) -> FaceContext:
         level, vowel = self.mouth.level(now) if self.speaking(now) else (None, 'A')
-        return FaceContext(gaze_deg=gaze, mouth_level=level, vowel=vowel, tint=tint_of(slots.get('tint'), now),
-                           rear_theme=rear, face=slots)
+        slot = slots.get('tint')
+        return FaceContext(gaze_deg=gaze, mouth_level=level, vowel=vowel, tint=tint_of(slot, now),
+                           tint_slot=slot, rear_theme=rear, face=slots)
 
     def _idle(self, now: float) -> str:
         if not self.key.startswith('idle_'):

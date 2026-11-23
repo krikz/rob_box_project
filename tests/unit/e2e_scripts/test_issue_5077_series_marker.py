@@ -30,6 +30,7 @@ Run:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -54,7 +55,8 @@ FAKE_ROBOT_SSH = Path(__file__).resolve().parent / "fake_robot_ssh.sh"
 TTL = 10800
 
 
-def decide(marker: Path | None, ttl: int = TTL, series_id: str = "night_20261122_010000"):
+def decide(marker: Path | None, ttl: int = TTL, series_id: str = "night_20261122_010000",
+           phase: str = ""):
     """Решение настоящей функции: 'delete' | 'keep'.
 
     ``series_id`` — id текущей серии (третий аргумент). По умолчанию совпадает
@@ -66,7 +68,7 @@ def decide(marker: Path | None, ttl: int = TTL, series_id: str = "night_20261122
         [
             "set -u",
             f'. "{MARKER_SH}"',
-            f'e2e_series_should_delete "{path}" "{ttl}" "{series_id}"',
+            f'e2e_series_should_delete "{path}" "{ttl}" "{series_id}" "{phase}"',
         ]
     )
     p = subprocess.run([BASH, "-s"], input=script.encode("utf-8"), capture_output=True, timeout=60)
@@ -237,6 +239,89 @@ class TestHarnessHonorsDecision:
         assert "GUARD_DONE" in proc.stdout, proc.stderr
         assert proc.returncode == 0, proc.stderr
 
+    def test_live_series_first_is_still_fatal(self, tmp_path):
+        """Живая серия не ломается (#5031): first при маркере с «opened» и
+        непустом касте — тот же E2E_FATAL exit 2, что и до #5077.
+
+        Маркер свежий и серия открыта, поэтому чистка хвоста даёт keep и до
+        файлов не доходит. Гард видит профиль и отказывает. База остаётся.
+        """
+        speakers = tmp_path / "speakers.e2e.db"
+        _seed(speakers, 1)
+        before = speakers.read_bytes()
+        marker = tmp_path / "series.id"
+        marker.write_text("night_live\nopened\n", encoding="utf-8")
+
+        proc = _run(
+            tmp_path, "--e2e-marathon-phase", "first",
+            env_extra={
+                "E2E_SPEAKERS_DB": str(speakers),
+                "E2E_SERIES_MARKER": str(marker),
+                "E2E_SERIES_ID": "night_live",
+            },
+        )
+
+        assert "E2E_SERIES keep" in proc.stdout, proc.stdout + proc.stderr
+        assert "E2E_FATAL" in proc.stderr, proc.stderr
+        assert "GUARD_DONE" not in proc.stdout, "гард пропустил first живой серии"
+        assert proc.returncode == 2, proc.stderr
+        assert speakers.read_bytes() == before, "first живой серии стёр каст"
+
+    def test_orphan_tail_without_marker_is_wiped_and_only_e2e_files(self, tmp_path):
+        """Осиротевший хвост: маркер есть, но живой серии нет (нет строки
+        «opened» — акт не дошёл до гарда). first чистит ТОЛЬКО e2e-файлы
+        (speakers.e2e.db, voice_memory.e2e.db и их -wal/-shm) и едет дальше.
+
+        Именно эту ветку ломает мутация «любой хвост — живая серия»: id совпал
+        и TTL свежий, а решения по «opened» больше нет, и тест обязан покраснеть.
+        Рядом лежат боевые speakers.db и voice_memory.db — их байты не меняются.
+        """
+        data = tmp_path / "data"
+        data.mkdir()
+        speakers = data / "speakers.e2e.db"
+        memory = data / "voice_memory.e2e.db"
+        _seed(speakers, 1)
+        _seed(memory, 1)
+        for name in (
+            "speakers.e2e.db-wal", "speakers.e2e.db-shm",
+            "voice_memory.e2e.db-wal", "voice_memory.e2e.db-shm",
+        ):
+            (data / name).write_bytes(b"journal")
+        combat_speakers = data / "speakers.db"
+        combat_memory = data / "voice_memory.db"
+        combat_speakers.write_bytes(b"combat-speakers")
+        combat_memory.write_bytes(b"combat-memory")
+        other = data / "notes.txt"
+        other.write_text("keep me", encoding="utf-8")
+        before = {p.name: p.read_bytes() for p in (combat_speakers, combat_memory, other)}
+
+        marker = tmp_path / "series.id"
+        marker.write_text("night_same\n", encoding="utf-8")
+        proc = _run(
+            tmp_path, "--e2e-marathon-phase", "first",
+            env_extra={
+                "E2E_SPEAKERS_DB": str(speakers),
+                "E2E_VOICE_MEMORY_DB": str(memory),
+                "E2E_SERIES_MARKER": str(marker),
+                "E2E_SERIES_ID": "night_same",
+            },
+        )
+
+        assert "E2E_SERIES delete" in proc.stdout, proc.stdout + proc.stderr
+        assert "GUARD_DONE" in proc.stdout, proc.stderr
+        assert proc.returncode == 0, proc.stderr
+        for name in (
+            "speakers.e2e.db", "speakers.e2e.db-wal", "speakers.e2e.db-shm",
+            "voice_memory.e2e.db", "voice_memory.e2e.db-wal", "voice_memory.e2e.db-shm",
+        ):
+            assert not (data / name).exists(), f"хвост оставил {name}"
+        for path, raw in ((combat_speakers, before["speakers.db"]),
+                          (combat_memory, before["voice_memory.db"]),
+                          (other, before["notes.txt"])):
+            assert path.read_bytes() == raw, f"вызов стёр не-e2e файл {path.name}"
+        removed = [p.name for p in data.iterdir() if p.name not in before]
+        assert removed == [], f"после чистки осталось лишнее: {removed}"
+
     def test_fresh_foreign_series_is_wiped_before_the_guard(self, tmp_path):
         """Повтор через 2 часа: маркер прошлой серии ещё свежий (TTL 3 ч), но id
         другой. first новой серии стирает чужой каст ДО гарда, а не падает на нём
@@ -271,7 +356,7 @@ class TestHarnessHonorsDecision:
         _seed(speakers, 2)
         before = speakers.read_bytes()
         marker = tmp_path / "series.id"
-        marker.write_text("night_live\n", encoding="utf-8")
+        marker.write_text("night_live\nopened\n", encoding="utf-8")
 
         proc = _run(
             tmp_path, "--e2e-marathon-phase", "first",
@@ -327,6 +412,40 @@ class TestHarnessHonorsDecision:
         assert not speakers.exists()
         assert not marker.exists(), "прогон без серии не должен писать маркер"
 
+    def test_same_series_rerun_after_aborted_first_wipes_before_the_guard(self, tmp_path):
+        """Повтор той же серии после оборванного first стирает хвост ДО гарда.
+
+        Инцидент 22.11, но без смены id: раннер берёт E2E_SERIES_ID один раз
+        на серию (run_night_marathon.sh), и повтор той же серии приносит тот же
+        id. Маркер пишет только marathon_e2e_mode, а до него оборванный first
+        не дошёл — mtime остался от прошлого прогона и свежий. Один TTL это не
+        ловит (повтор через 2 ч 04 мин < 10800 с), сравнение id тоже: id тот же.
+        Без решения «серия не дошла до first» следующий first получает keep и
+        падает на гарде, как run 44973642247.
+        """
+        speakers = tmp_path / "speakers.e2e.db"
+        _seed(speakers, 1)
+        marker = tmp_path / "series.id"
+        marker.write_text("night_same\n", encoding="utf-8")
+        # Прошлый прогон обновил маркер и умер на first, не дойдя до
+        # marathon_e2e_mode. 2 ч 04 мин — как между run 44963710006 и 44973642247.
+        stalled = time.time() - (2 * 3600 + 4 * 60)
+        os.utime(marker, (stalled, stalled))
+
+        proc = _run(
+            tmp_path, "--e2e-marathon-phase", "first",
+            env_extra={
+                "E2E_SPEAKERS_DB": str(speakers),
+                "E2E_SERIES_MARKER": str(marker),
+                "E2E_SERIES_ID": "night_same",
+            },
+        )
+
+        assert "E2E_SERIES delete" in proc.stdout, proc.stdout + proc.stderr
+        assert not speakers.exists(), "оборванный first той же серии оставил каст"
+        assert "GUARD_DONE" in proc.stdout, proc.stderr
+        assert proc.returncode == 0, proc.stderr
+
     def test_single_run_deletes_a_fresh_foreign_marker(self, tmp_path):
         """Одиночный прогон (E2E_SERIES_ID пуст) каст не держит: свежий маркер
         чужой серии не повод оставить e2e-БД. Удаление — на старте, до гарда."""
@@ -346,6 +465,37 @@ class TestHarnessHonorsDecision:
 
         assert "E2E_SERIES delete" in proc.stdout, proc.stderr
         assert not speakers.exists(), "одиночный прогон оставил чужой каст"
+
+
+def test_delete_function_names_only_e2e_files():
+    """Боевые /data/speakers.db и /data/voice_memory.db в удаление не попадают.
+
+    Гард читает тело delete_e2e_db_unless_series_active и падает, если среди
+    удаляемых путей есть файл без .e2e. Комментарии не считаются: в них боевые
+    пути названы именно как то, что трогать нельзя.
+    """
+    src = E2E_SCRIPT.read_text(encoding="utf-8")
+    start = src.index("delete_e2e_db_unless_series_active() {")
+    body = src[start:src.index("\nmaybe_delete_stale_series_before_guard()", start)]
+    code = "\n".join(
+        line for line in body.splitlines() if line.strip() and not line.strip().startswith("#")
+    )
+    named = re.findall(r"/data/\S+", code) + re.findall(r"[\w./-]*\.db\S*", code)
+    assert named, "функция удаления не называет ни одного файла — гарду нечего проверять"
+    offenders = [p for p in named if ".e2e" not in p]
+    assert offenders == [], f"удаление называет путь без .e2e: {offenders}"
+
+
+def test_opened_is_written_only_by_the_act_that_passed_the_guard():
+    """«opened» пишет marathon_e2e_mode, а не код до гарда.
+
+    Запись до гарда объявила бы живой серию, которая до гарда не дошла:
+    оборванный first освежил бы маркер и спрятал свой хвост от повтора.
+    """
+    src = E2E_SCRIPT.read_text(encoding="utf-8")
+    guard = src.index("\nrefuse_first_mid_series\n")
+    opened = src.index("e2e_series_marker_opened ")
+    assert guard < opened, "«opened» пишется до гарда — оборванный first объявит серию живой"
 
 
 def test_marker_file_is_deployed_with_the_harness():

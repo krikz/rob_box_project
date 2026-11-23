@@ -139,16 +139,25 @@ def test_names_unknown_answer_matches_the_spaced_form_and_act10_json_has_it():
     """C: «не знакомо» (пробел) и оборот «имя я говорю только» -- стемы n1002, и они в сгенерированном JSON."""
     said = "🔊 TTS: text='%s'" % ROBOT_SAID
     assert keyword_hit(said, gen.NAMES_UNKNOWN_ANSWER), gen.NAMES_UNKNOWN_ANSWER
-    for stem in ("не знаком", "не знакома", "не знакомо", "имя я говорю только"):
+    stems_5131 = ("сам назвал", "сами назвал", "назвался", "назвались")
+    for stem in ("не знаком", "не знакома", "не знакомо", "имя я говорю только", *stems_5131):
         assert stem in gen.NAMES_UNKNOWN_ANSWER.split("|"), stem
-    # голое «не знаю» по-прежнему не стем: оно засчитывало бы «не знаю, о ком ты»
+    # голое «не знаю» по-прежнему не стем: оно засчитывало бы «не знаю, о ком ты».
+    # «представил» не стем: слово «представился» есть в самом вопросе n1002 (#4105, #5131).
     assert "не знаю" not in gen.NAMES_UNKNOWN_ANSWER.split("|")
+    assert not any("представил" in stem for stem in gen.NAMES_UNKNOWN_ANSWER.split("|"))
     assert not keyword_hit("🔊 TTS: text='Не знаю, о ком ты.'", gen.NAMES_UNKNOWN_ANSWER)
+    # #5131 (run 45054525357): «только тех, кто сам назвался» -- честный ответ, стем его ловит.
+    named = "🔊 TTS: text='Нет, только тех, кто сам назвался. Остальных я узнаю по голосу.'"
+    assert keyword_hit(named, gen.NAMES_UNKNOWN_ANSWER)
 
     act10 = ROOT / ".github" / "e2e" / "scenarios" / "night" / "night_marathon_act10_finale_memory_v1.json"
     steps = {s["label"]: s for s in json.loads(act10.read_text(encoding="utf-8"))["steps"]}
     keywords = steps["n1002_unknown_still_unknown"]["acceptance"]["expected_keywords"]
     assert keywords == [gen.NAMES_UNKNOWN_ANSWER]
     joined = "|".join(keywords)
-    for stem in ("не знаком", "не знакома", "не знакомо", "имя я говорю только"):
+    for stem in ("не знаком", "не знакома", "не знакомо", "имя я говорю только", *stems_5131):
         assert stem in joined.split("|"), stem
+    question = steps["n1002_unknown_still_unknown"]["text"].lower()
+    for stem in joined.split("|"):
+        assert stem.strip() not in question, stem

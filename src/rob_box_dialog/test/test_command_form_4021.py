@@ -1,7 +1,8 @@
 """#4021 (марафон 23.10, разбор 26.10): форма команды хода — решает код, а не правило в промпте (ADR-0148 п.2).
 
-* n813 «Робот, тишина?» → DeepSeek ``{passed: not_addressed}`` → «Хм, я задумался…»: на адресованную реплику в схеме
-  нет ``passed`` (только подхват бэклога), прислала — нарушение моста и повтор;
+* n813 «Робот, тишина?» раньше уходил в LLM и та отвечала ``{passed: not_addressed}``: на адресованную реплику в схеме
+  нет ``passed`` (только подхват бэклога). С #5115 голая «тишина» — Tier-1, до формы и LLM ход не доходит; нарушение
+  ``passed`` на адресованной реплике проверяется на другой фразе;
 * n109 вопрос про звуки → DeepSeek сам добавил ``voice: female-shaonv``: голос реплики — только по просьбе о голосе;
 * n105 «Остально<U+FFFD×2> в порядке» ушло в TTS: U+FFFD вырезается разбором;
 * ревью #4041: одна ``expression`` с одним earcon на вопрос — тоже «ответ без слов»; фраза кода после повтора
@@ -185,9 +186,22 @@ def _turn(ports, addressed, voices=None):
     return asyncio.run(engine.run(addressed))
 
 
-def test_n813_addressed_turn_asks_the_model_without_passed_and_resets_the_form():
+def test_n813_silence_noun_is_tier1_and_does_not_reach_the_form():
+    """«тишина» после вейка — Tier-1 (#5115): LLM и форма хода не открываются, сцена Silence стоит, речи нет.
+    Старое ожидание ``ports.forms == [ADDRESSED_TURN]`` закрепляло обход: существительное уходило модели."""
     ports = _FormPorts([Answer(Command(speech="Тишина так тишина."), "deepseek")])
-    _turn(ports, Addressed(N813, VOICE))
+    engine = TurnEngine(Session("personality"), ports, system_prompt="Ты робот.")
+    agg = asyncio.run(engine.run(Addressed(N813, VOICE)))
+    assert ports.forms == [] and ports.asked == [] and agg.llm_calls == 0
+    assert ports.said == [] and engine.session.snapshot.top("Silence") is not None
+    assert cm.current_form() == Form(), "после хода форма не течёт в чужие вызовы"
+
+
+def test_addressed_turn_asks_the_model_without_passed_and_resets_the_form():
+    """Та же проверка формы, что раньше висела на n813: адресованная реплика без «тишины»
+    зовёт модель без ``passed``."""
+    ports = _FormPorts([Answer(Command(speech="Тишина так тишина."), "deepseek")])
+    _turn(ports, Addressed("какой сегодня день", VOICE))
     assert ports.forms == [ADDRESSED_TURN]
     assert cm.current_form() == Form(), "после хода форма не течёт в чужие вызовы"
 
@@ -256,12 +270,13 @@ def test_form_of_a_turn_is_a_pure_function_of_the_turn():
     assert command_form(turn, snap) == Form(passed=True, voice=False)
 
 
-def test_n813_passed_insisted_after_the_bridge_retry_is_the_mumble_as_before():
+def test_passed_insisted_after_the_bridge_retry_is_the_mumble_as_before():
     """Мост повторил с нарушением, модель снова «промолчать» — исход хода ``passed``: код мычит (решение Шифу 22.10:
-    не молчать), ход ``finished/passed`` как раньше, не грустно и не «не понял» невалидной команды."""
+    не молчать), ход ``finished/passed`` как раньше, не грустно и не «не понял» невалидной команды. Фраза — не «тишина»:
+    с #5115 та реплика до моста не доходит."""
     assert kn.PASSED_INSISTED in kn.PASSED
     ports = _FormPorts([Answer(Invalid(kn.VIOLATION_PASSED_ADDRESSED, "passed=not_addressed"), "deepseek", calls=2)])
-    agg = _turn(ports, Addressed(N813, VOICE))
+    agg = _turn(ports, Addressed("какой сегодня день", VOICE))
     assert len(ports.said) == 1 and ports.said[0][0] in phrases.catalog()[kn.PASSED_ADDRESSED_PHRASE]
     assert ports.said[0][2] is None
     assert ports.stages[-1] == ("done", "finished", "passed") and (agg.stage, agg.status) == ("done", "finished")

@@ -1,19 +1,20 @@
 #!/bin/bash
-# Healthcheck контейнера nav2 (#5043).
+# Healthcheck контейнера nav2 (#5043, #5150).
 #
 # pgrep -f bt_navigator зеленел, когда controller_server уже умер (SIGILL, #5039)
 # или завис на configure: bt_navigator запускается отдельной командой и переживает
-# контроллер. Здесь спрашиваем lifecycle трёх узлов, без которых навигации нет.
-# Любой не-active, нет ответа или зависший вызов — ненулевой код, docker уходит
-# в unhealthy и L: Deploy and Verify не красится зелёным.
+# контроллер. Спрашиваем lifecycle трёх узлов, без которых навигации нет.
 #
-# Каждый ros2 lifecycle get обёрнут своим timeout: зависший discovery не должен
-# съесть весь бюджет healthcheck и оставить docker без кода выхода.
+# #5150: три последовательных `ros2 lifecycle get` на Main Pi стоят 10.5–16.8 с
+# (замер 23.11: 16.76 с, замер Шифу 16.025 с) при docker Timeout 10 с — живые
+# active-узлы красились unhealthy. Измерено: такие CLI жгут ядра (100 % и
+# 72.7 % CPU на двух процессах сразу). Поэтому здесь ОДИН процесс rclpy
+# спрашивает три сервиса /get_state под общим дедлайном короче bond-ориентира
+# 4 с (числа — healthcheck_budget.py). Решение Шифу 23.11: Timeout не поднимать,
+# проба обязана уложиться в текущие 10 с. Любой не-active, нет ответа или
+# зависший вызов — ненулевой код и причина в stderr.
 
 set -u
-
-NODES=(/controller_server /planner_server /bt_navigator)
-PER_NODE_TIMEOUT_S=8
 
 # ROS_SETUP переопределяется только тестом. На роботе пусто → humble.
 ROS_SETUP="${ROS_SETUP:-/opt/ros/humble/setup.bash}"
@@ -21,6 +22,9 @@ if [ ! -f "$ROS_SETUP" ]; then
     echo "nav2 healthcheck: ${ROS_SETUP} not found" >&2
     exit 1
 fi
+
+# Каталог этого скрипта: probe и бюджет лежат рядом и монтируются тем же томом.
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 # set -u стоит выше. /opt/ros/humble/setup.bash (ament) читает
 # $AMENT_TRACE_SETUP_FILES без проверки на заданность; под set -u неинтерактивный
@@ -51,32 +55,8 @@ rm -f "$src_env"
 # nounset мог прийти из setup; нам он нужен для проверок ниже.
 set -u
 
-fail=0
-for node in "${NODES[@]}"; do
-    out=$(timeout "${PER_NODE_TIMEOUT_S}" ros2 lifecycle get "${node}" 2>&1)
-    rc=$?
-    if [ "$rc" -eq 124 ]; then
-        echo "nav2 healthcheck: ${node} no answer within ${PER_NODE_TIMEOUT_S}s" >&2
-        fail=1
-        continue
-    fi
-    if [ "$rc" -ne 0 ]; then
-        echo "nav2 healthcheck: ${node} ros2 lifecycle get exited ${rc}: ${out}" >&2
-        fail=1
-        continue
-    fi
-    # ros2 lifecycle get печатает строку вида "active [3]". Под rmw_zenoh
-    # перед ней в stdout приходит префикс рантайма ("Using ZID: ...", #5060):
-    # head -n 1 брал "Using" и красил живые active-узлы в unhealthy.
-    # Берём последнюю строку вида "<state> [<id>]", префикс игнорируем.
-    state=$(printf '%s\n' "$out" | awk '
-        $1 ~ /^[a-z_]+$/ && $2 ~ /^\[[0-9]+\]$/ { found = $1 }
-        END { print found }
-    ')
-    if [ "$state" != "active" ]; then
-        echo "nav2 healthcheck: ${node} is '${state:-<empty>}', want active" >&2
-        fail=1
-    fi
-done
+# PYTHONPATH теста указывает на подменный rclpy. Каталог скрипта добавляем
+# в конец, чтобы не заслонить подмену, но probe всё равно импортировался.
+export PYTHONPATH="${PYTHONPATH:+${PYTHONPATH}:}${SCRIPT_DIR}"
 
-exit "$fail"
+exec python3 -m lifecycle_probe

@@ -17,6 +17,12 @@
 #   5. on, если в графе два /controller_manager — сим гасится, выход 1;
 #   5b. on, если у /diff_drive_controller/cmd_vel_unstamped два подписчика (§5.1) —
 #      сим гасится, выход 1;
+#   5c. таймаут /controller_manager (#5138): три разные причины и сырьё в выводе —
+#      (а) контейнер перезапускался, (б) жив, но нет ни /clock, ни /sim/ground_truth/odom,
+#      (в) модель есть (/clock и ground_truth), а /diff_drive_controller/odom нет.
+#      Голого /odom в симе нет — фейк его не кормит, иначе тест проверяет фикстуру, не граф.
+#   5d. проба не ответила / контейнер не стартовал / compose завис на Creating —
+#      у каждой своя строка; после отказа гейта робот возвращён в бой, на успехе off не звался;
 #   6. off: сим гаснет ДО возврата ros2-control; замок снимается последним;
 #   7. scripts/deploy/check_hil_lock.sh: свободно / замок / нет ответа;
 #   8. реестр карт и точек (#4392): on снимает снапшот боевого maps и пересоздаёт
@@ -89,11 +95,18 @@ st() { cat "$S/$1" 2>/dev/null || echo "${FAKE_DEFAULT_STATUS:-running}"; }
 last() { local a; for a; do :; done; printf '%s' "$a"; }
 case "$1" in
     stop) echo exited > "$S/$(last "$@")" ;;
+    rm) rm -f "$S/$(last "$@")" ;;
     inspect)
         name=$(last "$@")
         case "$*" in
             *"State.Status}} {{.State.ExitCode"*)
                 [ -f "$S/$name" ] || { [ -n "${FAKE_INSPECT_BLANK:-}" ] && echo; exit 1; }; echo "$(cat "$S/$name") 0" ;;
+            *"RestartCount="*)
+                # #5138: сырьё гейта. FAKE_INSPECT_BLANK — inspect молчит (контейнер уже мёртв).
+                # FAKE_GZ_STATUS/EXIT/RESTART/STARTED перебивают файл состояния.
+                [ -n "${FAKE_INSPECT_BLANK:-}" ] && { echo; exit 1; }
+                [ -f "$S/$name" ] || { echo; exit 1; }
+                echo "Status=${FAKE_GZ_STATUS:-$(cat "$S/$name")} RestartCount=${FAKE_GZ_RESTART:-0} StartedAt=${FAKE_GZ_STARTED:-2026-11-22T19:36:19Z} ExitCode=${FAKE_GZ_EXIT:-0}" ;;
             *"State.Status"*) echo "$(st "$name")" ;;
             *"State.Running"*) [ "$(st "$name")" = running ] && echo true || echo false ;;
             *"Config.Env"*) [ -f "$S/$name.simt" ] && echo "USE_SIM_TIME=$(cat "$S/$name.simt")"
@@ -103,7 +116,7 @@ case "$1" in
             *".Image"*) [ -f "$S/$name.image" ] && cat "$S/$name.image" || echo sha256:fake ;;
         esac ;;
     image) exit 0 ;;
-    logs) echo "fake logs" ;;
+    logs) printf '%s\n' "${FAKE_GZ_LOGS:-fake gazebo log line}" ;;
     exec)
         case "$*" in
             *"python3 -c"*)  # maps-dump: боевой maps — файл $FAKE_STATE/prod_maps; нет файла — sqlite падает
@@ -119,12 +132,24 @@ case "$1" in
                 [ -n "$out" ] || exit 9
                 case "$out" in *True*) printf true ;; *) printf false ;; esac ;;
             *"cat "*) [ -f "${FAKE_GAZEBO_SDF:-}" ] && cat "$FAKE_GAZEBO_SDF" || true ;;
+            *"topic list"*)  # #5138: список топиков сима (FAKE_TOPICS, по строке; __NONE__ — пусто)
+                [ -n "${FAKE_TOPIC_HANG:-}" ] && sleep "$FAKE_TOPIC_HANG"
+                case "${FAKE_TOPICS-__DEFAULT__}" in
+                    # Реальный граф сима (#5138): /clock, мост /sim/ground_truth/odom,
+                    # контроллер /diff_drive_controller/odom. Голого /odom в симе нет.
+                    __DEFAULT__) printf '%s\n' /clock /sim/ground_truth/odom /diff_drive_controller/odom ;;
+                    __NONE__) ;;
+                    *) printf '%s\n' "$FAKE_TOPICS" ;;
+                esac ;;
             *"topic info"*)  # §5.1: Subscription count cmd_vel_unstamped (FAKE_CMD_VEL_SUBS, умолч. 1)
                 [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
                 echo "Type: geometry_msgs/msg/Twist"
                 echo "Publisher count: 1"
                 echo "Subscription count: ${FAKE_CMD_VEL_SUBS:-1}" ;;
-            *) [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"; echo "${FAKE_CM:-1}"; echo /controller_manager ;;
+            *)  # счёт /controller_manager. FAKE_CM_HANG — проба не отвечает (зависший exec, #5138).
+                [ -n "${FAKE_CM_HANG:-}" ] && sleep "$FAKE_CM_HANG"
+                [ -n "${FAKE_ZENOH_LOG:-}" ] && echo "INFO zenoh::net::runtime: Using ZID: 1a2b3c"
+                echo "${FAKE_CM:-1}"; echo /controller_manager ;;
         esac ;;
     ps)
         case "$*" in
@@ -145,7 +170,15 @@ case "$1" in
             esac
         done
         if [ "$sim" = 1 ]; then
-            if [ "$verb" = up ]; then echo running > "$S/${SIM_PREFIX}-gazebo"; else rm -f "$S/${SIM_PREFIX}-gazebo"; fi
+            if [ "$verb" = up ]; then
+                # FAKE_COMPOSE_CREATED: compose завис на Creating — контейнер создан, не запущен, up падает.
+                if [ -n "${FAKE_COMPOSE_CREATED:-}" ]; then echo created > "$S/${SIM_PREFIX}-gazebo"; exit 1; fi
+                # FAKE_COMPOSE_STAYS_CREATED: up «прошёл», но контейнер так и остался Created.
+                if [ -n "${FAKE_COMPOSE_STAYS_CREATED:-}" ]; then echo created > "$S/${SIM_PREFIX}-gazebo"; exit 0; fi
+                echo running > "$S/${SIM_PREFIX}-gazebo"
+            elif [ "$(cat "$S/${SIM_PREFIX}-gazebo" 2>/dev/null)" = created ]; then
+                : # down не снимает Created: контейнер, не дошедший до старта, остаётся (#5138)
+            else rm -f "$S/${SIM_PREFIX}-gazebo"; fi
         elif [ "$verb" = up ]; then
             for s in "${svcs[@]}"; do
                 if [ -f "$S/$s.broken" ]; then echo restarting > "$S/$s"; else echo running > "$S/$s"; fi
@@ -181,7 +214,7 @@ run_hil() {  # run_hil "<cmd> [аргументы]" [VAR=val ...]
         HIL_MAIN_DIR="$WORK/main" HIL_VISION_DIR="$WORK/vision" HIL_SOUND_DIR="$WORK/sound" HIL_SANDBOX_REPO="$WORK/sbx" \
         HIL_MAPS_SNAPSHOT="$WORK/sndstate/prod_maps.before.txt" \
         HIL_LOCK="$WORK/tmp/hil.lock" HIL_REMOTE_DIR="$WORK/remote" HIL_MAPS_DIR="$WORK/hilmaps" \
-        HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 \
+        HIL_SIM_PREFIX=t-hil HIL_WAIT_CM_S=5 HIL_PROBE_TIMEOUT_S=1 \
         "$@" bash "$HIL" "${cmd[@]}" > "$WORK/out.log" 2>&1
 }
 line_of() { grep -n -m1 -- "$1" "$2" | cut -d: -f1; }
@@ -273,6 +306,87 @@ reset_state
 run_hil on FAKE_ZENOH_LOG=1 FAKE_CMD_VEL_SUBS=2 >/dev/null; rc=$?
 check "on: два подписчика cmd_vel_unstamped ловятся и при zenoh-логе (rc=$rc)" \
     '[ "$rc" -eq 1 ] && grep -q "cmd_vel_unstamped подписчиков: 2" "$WORK/out.log"'
+
+# ── 5c. таймаут гейта контроллера называет причину и оставляет сырьё (#5138) ──
+# FAKE_CM=0: счётчик не становится 1, за HIL_WAIT_CM_S=5 гейт истекает.
+# (а) контейнер перезапускался — RestartCount>0, код выхода в строке die.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_RESTART=2 FAKE_GZ_EXIT=137 FAKE_GZ_STATUS=running \
+    FAKE_GZ_LOGS='gzserver: killed' FAKE_TOPICS='/clock'; rc=$?
+check "гейт (а): перезапуск — ExitCode=137 в причине, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "Gazebo перезапускался (RestartCount=2, ExitCode=137, Status=running)" "$WORK/out.log" && grep -q "compose.hil.yaml down" "$WORK/docker.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (а): сырьё inspect, лог и топики в выводе" \
+    'grep -q "сырьё gazebo inspect: Status=running RestartCount=2" "$WORK/out.log" && grep -q "gzserver: killed" "$WORK/out.log" && grep -q "сырьё sim: /clock есть, /sim/ground_truth/odom нет, /diff_drive_controller/odom нет, топиков 1; /odom здесь не проверяем: его в симе нет" "$WORK/out.log"'
+# (б) контейнер жив, нет ни /clock, ни /sim/ground_truth/odom — модель/плагин не поднялись.
+# Голый /odom в графе нарочно есть: старый код по нему соврал бы «мир идёт».
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/rosout
+/scan
+/odom'; rc=$?
+check "гейт (б): жив без /clock и ground_truth — причина про модель/плагин, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись (нет /sim/ground_truth/odom и /clock)" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (б): сырьё говорит, что /clock и ground_truth нет, и /odom не проверяем" \
+    'grep -q "сырьё gazebo inspect: Status=running RestartCount=0" "$WORK/out.log" && grep -q "сырьё sim: /clock нет, /sim/ground_truth/odom нет, /diff_drive_controller/odom нет, топиков 3; /odom здесь не проверяем: его в симе нет" "$WORK/out.log"'
+# (в) /clock и /sim/ground_truth/odom есть, /diff_drive_controller/odom нет —
+# модель поднята, контроллера нет. Голого /odom нет: это реальный граф сима.
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/clock
+/sim/ground_truth/odom
+/scan'; rc=$?
+check "гейт (в): /clock и ground_truth есть, diff_drive odom нет — причина про ros2_control, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "мир идёт, ros2_control не поднял контроллеры (нет /diff_drive_controller/odom)" "$WORK/out.log" && ! grep -q "модель/плагин не поднялись" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (в): сырьё говорит clock и ground_truth есть, diff_drive нет, /odom не проверяем" \
+    'grep -q "сырьё sim: /clock есть, /sim/ground_truth/odom есть, /diff_drive_controller/odom нет, топиков 3; /odom здесь не проверяем: его в симе нет" "$WORK/out.log" && grep -q "сырьё gazebo logs" "$WORK/out.log"'
+# (г) определить не удалось: inspect пуст, топиков нет — прежнее сообщение, сырьё честно пустое.
+reset_state
+run_hil on FAKE_CM=0 FAKE_INSPECT_BLANK=1 FAKE_TOPICS=__NONE__; rc=$?
+check "гейт (г): сырья нет — прежнее сообщение, rc=$rc, сим погашен" \
+    '[ "$rc" -eq 1 ] && grep -q "за 5 с контроллер Gazebo не появился" "$WORK/out.log" && ! grep -q "модель/плагин" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт (г): сырьё говорит, что inspect и topic list не ответили, и /odom не проверяем" \
+    'grep -q "сырьё gazebo inspect: inspect не ответил" "$WORK/out.log" && grep -q "ros2 topic list пуст или не ответил (/clock нет, /sim/ground_truth/odom нет, /diff_drive_controller/odom нет, топиков 0); /odom здесь не проверяем: его в симе нет" "$WORK/out.log"'
+# Успешный путь не задет: контроллер есть — причины таймаута в выводе нет,
+# и штатный off не звался (моторы остановлены, sim time стоит, замок держится).
+reset_state
+run_hil on; rc=$?
+check "гейт: успешный on не печатает причину таймаута (rc=$rc)" \
+    '[ "$rc" -eq 0 ] && ! grep -q "сырьё gazebo" "$WORK/out.log"'
+check "гейт: успешный on не возвращает робота в бой" \
+    '[ "$rc" -eq 0 ] && ! grep -q "возвращаю робота в бой" "$WORK/out.log" && ! grep -q "HIL выключен" "$WORK/out.log" && [ -f "$WORK/tmp/hil.lock" ] && [ "$(cat "$WORK/state/ros2-control")" = exited ] && [ "$(cat "$WORK/state/nav2.simt")" = true ]'
+
+# ── 5d. проба / старт / Creating — разные строки; отказ гейта возвращает робота (#5138) ──
+# Проба не ответила: контейнер жив, docker exec висит дольше срока пробы.
+reset_state
+run_hil on FAKE_CM_HANG=30; rc=$?
+check "гейт: проба не ответила — своя строка, rc=$rc, контейнера не осталось" \
+    '[ "$rc" -eq 1 ] && grep -q "контейнер gazebo жив, проба контроллера не ответила за 1 с" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт: проба не ответила — робот возвращён (sim time снят, моторы подняты, замок снят)" \
+    '[ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ "$(cat "$WORK/state/lslidar")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ] && grep -q "HIL выключен, робот в боевом режиме" "$WORK/out.log"'
+# Проба ответила 0 при живой модели — это не «не ответила» и не «модель не поднялась».
+reset_state
+run_hil on FAKE_CM=0 FAKE_GZ_STATUS=running FAKE_GZ_EXIT=0 FAKE_GZ_RESTART=0 \
+    FAKE_TOPICS='/clock
+/sim/ground_truth/odom
+/scan'; rc=$?
+check "гейт: проба ответила 0 — не путается с «проба не ответила» (rc=$rc)" \
+    '[ "$rc" -eq 1 ] && grep -q "мир идёт, ros2_control не поднял контроллеры (нет /diff_drive_controller/odom)" "$WORK/out.log" && ! grep -q "проба контроллера не ответила" "$WORK/out.log" && ! grep -q "модель/плагин не поднялись" "$WORK/out.log"'
+check "гейт: проба ответила 0 — робот тоже возвращён" \
+    '[ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+# Контейнер создан и не стартовал: пробы не было, строка своя.
+reset_state
+run_hil on FAKE_COMPOSE_STAYS_CREATED=1 FAKE_GZ_STATUS=created; rc=$?
+check "гейт: контейнер не стартовал — своя строка, rc=$rc, контейнера не осталось" \
+    '[ "$rc" -eq 1 ] && grep -q "контейнер gazebo не стартовал (created 0): пробы контроллера не было" "$WORK/out.log" && [ ! -f "$WORK/state/t-hil-gazebo" ]'
+check "гейт: контейнер не стартовал — робот возвращён" \
+    '[ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
+# compose завис на Creating: up падает, контейнер создан и не запущен, down его не снимает.
+reset_state
+run_hil on FAKE_COMPOSE_CREATED=1; rc=$?
+check "гейт: Creating — своя строка, не общее «compose up не прошёл» (rc=$rc)" \
+    '[ "$rc" -eq 1 ] && grep -q "gazebo создан и не стартовал (compose завис на Creating" "$WORK/out.log" && ! grep -q "compose up не прошёл" "$WORK/out.log"'
+check "гейт: Creating — контейнер снят, робот возвращён (sim time снят, моторы подняты, замок снят)" \
+    '[ ! -f "$WORK/state/t-hil-gazebo" ] && [ ! -f "$WORK/state/nav2.simt" ] && [ "$(cat "$WORK/state/ros2-control")" = running ] && [ ! -e "$WORK/tmp/hil.lock" ]'
 
 # ── 6. off ────────────────────────────────────────────────────────────────
 reset_state

@@ -32,7 +32,9 @@
   the robot moves autonomously — operator sees "поворот приходит сам".
 
 ## Fix
-1. twist_mux lock `joystick_lock` (topic /joystick_lock, std_msgs/Bool, timeout 0.5, priority 100):
+1. twist_mux lock `joystick_lock` (topic /joystick_lock, std_msgs/Bool, timeout 0.5, priority 100)
+   — предложение этого разбора (21.08.2026). В конфиге с #4694: timeout 0.0, priority 51
+   (`docker/main/config/twist_mux/twist_mux.yaml`). 100 глушил quest(90).
    - joystick node publishes True at 20 Hz while ARMED → blocks web/voice/nav2 (isMasked: priority < 100).
    - False while disarmed → lower sources work normally.
    - FAIL-SAFE: if joystick node stalls/crashes, lock EXPIRES → isLocked()=true (hasExpired()) →

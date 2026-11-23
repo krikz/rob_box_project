@@ -62,7 +62,29 @@ SIM_SERVICES=(zenoh-router gazebo)
 SOUND_SWITCH=(voice-assistant)
 
 log() { printf '[hil %s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
-die() { printf '❌ %s\n' "$*" >&2; exit 1; }
+# die после взятого замка сам возвращает робота в бой (#5138): подсказка «hil.sh off»
+# строкой не гасит USE_SIM_TIME и не поднимает моторы. До замка — только печать.
+# HIL_ABORTING не даёт die внутри cmd_off зайти в возврат второй раз.
+die() {
+    printf '❌ %s\n' "$*" >&2
+    if [ "${HIL_LOCK_HELD:-}" = 1 ] && [ "${HIL_ABORTING:-}" != 1 ]; then
+        HIL_ABORTING=1
+        hil_abort_restore || true
+    fi
+    exit 1
+}
+# Вернуть робота штатным off и не оставить контейнер, который compose down не снял.
+# Created-но-не-запущенный gazebo (compose завис на Creating) down не удаляет —
+# cmd_off тогда отказывает «робота не возвращаю» и бросает робота в полу-HIL.
+hil_abort_restore() {
+    log "гейт отказал: возвращаю робота в бой (штатный off)"
+    sim_down
+    local name
+    for name in "$HIL_SIM_PREFIX-gazebo" "$HIL_SIM_PREFIX-zenoh-router"; do
+        rsh "$HIL_SANDBOX_HOST" "docker rm -f $(q "$name")" >/dev/null 2>&1 || true
+    done
+    cmd_off
+}
 
 rsh() {  # rsh <host> <команда>
     local host="$1"; shift
@@ -283,15 +305,97 @@ sim_compose() {  # sim_compose <args compose>...
 sim_gazebo_state() {
     rsh "$HIL_SANDBOX_HOST" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo") 2>/dev/null | grep . || echo 'absent -'"
 }
-# Число /controller_manager в графе — глазами сторожа внутри gazebo; «-» — gazebo не работает.
+# Топики сима, по которым гейт судит мир (#5138). Голого /odom в симе нет:
+# его публикует rtabmap icp_odometry на роботе, в HIL-симе этого нет.
+# Модель/плагин подняты = мост Gazebo дал /sim/ground_truth/odom или идёт /clock.
+# Контроллер поднят = есть /diff_drive_controller/odom.
+SIM_TRUTH_ODOM="/sim/ground_truth/odom"
+SIM_DRIVE_ODOM="/diff_drive_controller/odom"
+# Сырьё гейта контроллера (#5138): снимается ДО гашения сима, пока контейнер ещё есть.
+# Строка inspect + хвост логов + три топика сима. Пустой ответ поля — «?», не выдумка.
+sim_gate_evidence() {
+    local gz="$HIL_SIM_PREFIX-gazebo" line topics
+    line=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$gz")" 2>/dev/null | grep . || true)
+    printf 'сырьё gazebo inspect: %s\n' "${line:-inspect не ответил}" >&2
+    printf 'сырьё gazebo logs (tail 30):\n' >&2
+    rsh "$HIL_SANDBOX_HOST" "docker logs --tail 30 $(q "$gz")" >&2 2>&1 || printf 'docker logs не ответил\n' >&2
+    topics=$(sim_exec_bounded "$gz" "/entrypoint.sh ros2 topic list 2>/dev/null" || true)
+    if [ -z "$topics" ]; then
+        printf 'сырьё sim: ros2 topic list пуст или не ответил (/clock нет, %s нет, %s нет, топиков 0); /odom здесь не проверяем: его в симе нет\n' \
+            "$SIM_TRUTH_ODOM" "$SIM_DRIVE_ODOM" >&2
+        return 0
+    fi
+    local n clock=нет truth=нет drive=нет
+    n=$(printf '%s\n' "$topics" | grep -c .)
+    if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=есть; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_TRUTH_ODOM"; then truth=есть; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_DRIVE_ODOM"; then drive=есть; fi
+    printf 'сырьё sim: /clock %s, %s %s, %s %s, топиков %s; /odom здесь не проверяем: его в симе нет\n' \
+        "$clock" "$SIM_TRUTH_ODOM" "$truth" "$SIM_DRIVE_ODOM" "$drive" "$n" >&2
+}
+# Причина таймаута гейта — из сырья, не общая фраза. Код печатает одну строку.
+# (а) контейнер перезапускался или вышел с кодом;
+# (б) жив, но нет ни /sim/ground_truth/odom, ни /clock — модель/плагин не поднялись;
+# (в) модель есть (/clock или ground_truth), а /diff_drive_controller/odom нет;
+# иначе — прежнее сообщение. Голый /odom не смотрим: в симе его нет.
+sim_cm_timeout_cause() {  # sim_cm_timeout_cause <inspect-строка> <topic-list>
+    local inspect="$1" topics="$2" status rc restart
+    status=$(printf '%s\n' "$inspect" | sed -n 's/.*Status=\([^ ]*\).*/\1/p' | head -n 1)
+    rc=$(printf '%s\n' "$inspect" | sed -n 's/.*ExitCode=\([^ ]*\).*/\1/p' | head -n 1)
+    restart=$(printf '%s\n' "$inspect" | sed -n 's/.*RestartCount=\([^ ]*\).*/\1/p' | head -n 1)
+    case "$restart" in
+        ''|*[!0-9]*) restart=0 ;;
+    esac
+    if [ "$restart" -gt 0 ] || { [ -n "$rc" ] && [ "$rc" != 0 ]; }; then
+        printf 'Gazebo перезапускался (RestartCount=%s, ExitCode=%s, Status=%s): смотри сырьё выше; hil.sh off' \
+            "${restart:-?}" "${rc:-?}" "${status:-?}"
+        return 0
+    fi
+    local clock=0 truth=0 drive=0
+    if printf '%s\n' "$topics" | grep -qx '/clock'; then clock=1; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_TRUTH_ODOM"; then truth=1; fi
+    if printf '%s\n' "$topics" | grep -qx "$SIM_DRIVE_ODOM"; then drive=1; fi
+    if [ "$status" = running ] && [ "$truth" = 0 ] && [ "$clock" = 0 ]; then
+        printf 'Gazebo жив, но кадр odom не публикуется: модель/плагин не поднялись (нет %s и /clock); hil.sh off' \
+            "$SIM_TRUTH_ODOM"
+        return 0
+    fi
+    if { [ "$clock" = 1 ] || [ "$truth" = 1 ]; } && [ "$drive" = 0 ]; then
+        printf 'мир идёт, ros2_control не поднял контроллеры (нет %s); hil.sh off' "$SIM_DRIVE_ODOM"
+        return 0
+    fi
+    printf 'за %s с контроллер Gazebo не появился; hil.sh off' "$HIL_WAIT_CM_S"
+}
+# docker exec внутри гейта ограничен по времени (#5138): живой заход 22.11 держал
+# `hil count --settle 3` 234 с, и цикл из 5 с за это время не проверял ничего.
+# «timeout» — проба не ответила; пусто — exec упал. Код вызывает сам решает.
+sim_exec_bounded() {  # sim_exec_bounded <контейнер> <команда внутри>
+    rsh "$HIL_SANDBOX_HOST" "timeout $(q "$HIL_PROBE_TIMEOUT_S") docker exec $(q "$1") $2"
+}
+# Число /controller_manager в графе — глазами сторожа внутри gazebo.
+# «-» — gazebo не работает или ответ не число; «timeout» — проба не ответила за срок.
 sim_cm_count() {
-    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -" || echo -
+    local out rc=0
+    out=$(sim_exec_bounded "$HIL_SIM_PREFIX-gazebo" \
+        "/entrypoint.sh python3 -m rob_box_sim.hil count --settle 3 2>/dev/null") || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo timeout
+        return 0
+    fi
+    printf '%s\n' "$out" | grep -E '^[0-9]+$' | tail -n 1 | grep . || echo -
 }
 # Подписчики /diff_drive_controller/cmd_vel_unstamped (§5.1): норма HIL — 1 (только Gazebo).
 # «-» — gazebo не работает или topic info не ответил.
 CMD_VEL_UNSTAMPED="/diff_drive_controller/cmd_vel_unstamped"
 sim_cmd_vel_subs() {
-    rsh "$HIL_SANDBOX_HOST" "docker exec $(q "$HIL_SIM_PREFIX-gazebo") /entrypoint.sh ros2 topic info $(q "$CMD_VEL_UNSTAMPED") 2>/dev/null | sed -n 's/^Subscription count: *//p' | tail -n 1 | grep -E '^[0-9]+$' || echo -" || echo -
+    local out rc=0
+    out=$(sim_exec_bounded "$HIL_SIM_PREFIX-gazebo" \
+        "/entrypoint.sh ros2 topic info $(q "$CMD_VEL_UNSTAMPED") 2>/dev/null") || rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo timeout
+        return 0
+    fi
+    printf '%s\n' "$out" | sed -n 's/^Subscription count: *//p' | tail -n 1 | grep -E '^[0-9]+$' || echo -
 }
 sim_down() {
     log "песочница: гашу zenoh-router и gazebo ($HIL_SIM_PROJECT)"
@@ -467,6 +571,8 @@ cmd_on() {
     fi
     who+=" maps=$HIL_MAPS_DIR"
     rpi "$HIL_MAIN_HOST" lock-take "$HIL_LOCK" "$who" || die "HIL уже включён или замок остался: scripts/hil/hil.sh status / off"
+    # Замок взят: дальше любой die возвращает робота штатным off, а не подсказкой (#5138).
+    HIL_LOCK_HELD=1
 
     log "состояние сервисов до on → $HIL_MAIN_HOST:$HIL_PRE_STATE"
     local pre
@@ -531,7 +637,17 @@ cmd_on() {
     rm -f "$_depot_compose"
 
     log "песочница: поднимаю ${SIM_SERVICES[*]} (мир $HIL_SIM_WORLD)"
-    sim_compose up -d --no-build "${SIM_SERVICES[@]}" || { sim_down; die "песочница: compose up не прошёл; робот без моторов, hil.sh off"; }
+    if ! sim_compose up -d --no-build "${SIM_SERVICES[@]}"; then
+        # #5138, второй заход: compose завис на Creating — контейнер создан и не стартовал.
+        # Это не «compose up не прошёл»: причина своя, контейнер down не снимает.
+        _up_gz=$(sim_gazebo_state)
+        case "$_up_gz" in
+            created* | Created*)
+                die "песочница: gazebo создан и не стартовал (compose завис на Creating, состояние $_up_gz); робот без моторов" ;;
+            *)
+                die "песочница: compose up не прошёл (gazebo: $_up_gz); робот без моторов" ;;
+        esac
+    fi
 
     log "жду ровно один /controller_manager и одного подписчика $CMD_VEL_UNSTAMPED (§5.1), до $HIL_WAIT_CM_S с"
     local deadline=$(( $(date +%s) + HIL_WAIT_CM_S )) cm gz subs
@@ -539,12 +655,18 @@ cmd_on() {
         gz=$(sim_gazebo_state)
         case "$gz" in
             running*) ;;
+            created* | Created*)
+                die "контейнер gazebo не стартовал ($gz): пробы контроллера не было" ;;
             *)
                 rsh "$HIL_SANDBOX_HOST" "docker logs --tail 30 $(q "$HIL_SIM_PREFIX-gazebo")" || true
-                sim_down
-                die "gazebo не работает ($gz): сторож отказал или Gazebo упал — см. лог выше; hil.sh off" ;;
+                die "gazebo не работает ($gz): сторож отказал или Gazebo упал — см. лог выше" ;;
         esac
         cm=$(sim_cm_count)
+        if [ "$cm" = timeout ]; then
+            # #5138: контейнер жив, единственная проба не ответила. Цикл не ждёт её до конца.
+            sim_gate_evidence
+            die "контейнер gazebo жив, проба контроллера не ответила за ${HIL_PROBE_TIMEOUT_S} с"
+        fi
         st=$(rpi "$HIL_MAIN_HOST" state ros2-control)
         case "$st" in
             *" running "*) sim_down; die "ros2-control робота работает ($st) — Gazebo погашен; hil.sh off" ;;
@@ -556,20 +678,26 @@ cmd_on() {
                 log "✅ /controller_manager ровно один, $CMD_VEL_UNSTAMPED подписчиков: 1, ros2-control робота: ${st#ros2-control }"
                 break
             fi
+            if [ "$subs" = timeout ]; then
+                sim_gate_evidence
+                die "контейнер gazebo жив, проба подписчиков $CMD_VEL_UNSTAMPED не ответила за ${HIL_PROBE_TIMEOUT_S} с"
+            fi
             if [ "$subs" != 0 ] && [ "$subs" != - ]; then
-                sim_down
-                die "$CMD_VEL_UNSTAMPED подписчиков: $subs (ждали 1) — Gazebo погашен; hil.sh off"
+                die "$CMD_VEL_UNSTAMPED подписчиков: $subs (ждали 1)"
             fi
         elif [ "$cm" != 0 ] && [ "$cm" != - ]; then
-            sim_down
-            die "/controller_manager в графе: $cm (ждали 1) — Gazebo погашен; hil.sh off"
+            die "/controller_manager в графе: $cm (ждали 1)"
         fi
         if [ "$(date +%s)" -ge "$deadline" ]; then
-            sim_down
             if [ "$cm" = 1 ]; then
-                die "за $HIL_WAIT_CM_S с у $CMD_VEL_UNSTAMPED не ровно 1 подписчик (сейчас ${subs:--}); hil.sh off"
+                sim_gate_evidence
+                die "за $HIL_WAIT_CM_S с у $CMD_VEL_UNSTAMPED не ровно 1 подписчик (сейчас ${subs:--})"
             fi
-            die "за $HIL_WAIT_CM_S с контроллер Gazebo не появился; hil.sh off"
+            # #5138: сырьё и причина — пока контейнер жив. sim_down после, иначе логи уже не снять.
+            _cm_inspect=$(rsh "$HIL_SANDBOX_HOST" "docker inspect -f 'Status={{.State.Status}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} ExitCode={{.State.ExitCode}}' $(q "$HIL_SIM_PREFIX-gazebo")" 2>/dev/null | grep . || true)
+            _cm_topics=$(sim_exec_bounded "$HIL_SIM_PREFIX-gazebo" "/entrypoint.sh ros2 topic list 2>/dev/null" || true)
+            sim_gate_evidence
+            die "$(sim_cm_timeout_cause "${_cm_inspect:-}" "${_cm_topics:-}")"
         fi
         sleep 5
     done

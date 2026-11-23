@@ -28,14 +28,31 @@ DEFAULTS = {
 
 def _setup_step():
     data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    found = [s for job in data["jobs"].values() for s in job.get("steps", []) if s.get("id") == "setup"]
+    found = [
+        s
+        for job in data["jobs"].values()
+        for s in job.get("steps", [])
+        if s.get("id") == "setup"
+    ]
     assert len(found) == 1
     return found[0]["run"]
 
 
+def _setup_until_outputs():
+    """Кусок шага setup, который только пишет GITHUB_ENV. Дальше идут
+    github.ref_name / sudo apt-get — их этот тест не исполняет. Раньше граница
+    была маркером бана #4653; бан снят (#5110), граница — первая запись
+    GITHUB_OUTPUT."""
+    text = _setup_step()
+    marker = 'echo "branch='
+    assert marker in text, "граница прогона setup (echo branch) не найдена"
+    return text.split(marker)[0]
+
+
 def _run(environment, registry_source, hosts):
-    """Прогон шага setup до гарда #4653: он делает exit 1 на local+production."""
-    text = _setup_step().split("# Issue #4653")[0]
+    """Прогон шага setup до записи outputs. Слепой бан #4653 снят (#5110):
+    local+production больше не делает exit 1 в Setup."""
+    text = _setup_until_outputs()
     text = text.replace("${{ inputs.environment }}", environment)
     text = text.replace("${{ inputs.registry_source }}", registry_source)
     env = dict(os.environ)
@@ -59,7 +76,12 @@ def _run(environment, registry_source, hosts):
 @pytest.fixture(autouse=True)
 def _clean_env(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    for name in ("ROBBOX_MAIN_HOST", "ROBBOX_VISION_HOST", "ROBBOX_SOUND_HOST", "ROBBOX_REGISTRY_HOST"):
+    for name in (
+        "ROBBOX_MAIN_HOST",
+        "ROBBOX_VISION_HOST",
+        "ROBBOX_SOUND_HOST",
+        "ROBBOX_REGISTRY_HOST",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -98,12 +120,14 @@ def test_github_registry_ignores_the_registry_override():
 
 def test_chrony_uses_the_same_main_host_default():
     """setup_chrony.sh берёт сервер из ROBBOX_MAIN_HOST, без неё — 10.1.1.10."""
-    text = (ROOT / "scripts" / "maintenance" / "setup_chrony.sh").read_text(encoding="utf-8")
+    text = (ROOT / "scripts" / "maintenance" / "setup_chrony.sh").read_text(
+        encoding="utf-8"
+    )
     assert 'DEFAULT_SERVER="${ROBBOX_MAIN_HOST:-10.1.1.10}"' in text
 
 
 def test_workflow_has_no_bare_host_literal_in_the_setup_step():
     """Адрес в шаге встречается только как дефолт переменной, не голым литералом."""
-    step = _setup_step().split("# Issue #4653")[0]
+    step = _setup_until_outputs()
     bare = re.findall(r"(?<![:-])\b10\.1\.1\.(?:10|11|12|249)\b", step)
     assert bare == [], bare

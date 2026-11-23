@@ -226,11 +226,16 @@ def test_coordinates_use_the_same_phrases(nav, monkeypatch):
 
 @pytest.mark.unit
 def test_move_direction_failure_names_the_reason(nav):
-    """Общий путь ``_send_nav_goal``: у ``move_direction`` точки нет, но причина отказа - по исходу Nav2."""
+    """Общий путь ``_send_nav_goal``: причина отказа - по исходу Nav2.
+
+    #5160: без позы на карте цель не уходит вовсе, поэтому здесь поза есть —
+    отказ должен прийти от Nav2 (ABORTED), а не от преобразования кадра.
+    """
     tool = nav.MoveDirectionTool.__new__(nav.MoveDirectionTool)
     tool.node = MagicMock()
     tool.nav_client = _NavClient(ao.GOAL_STATUS_ABORTED)
     tool.controller_halt = _no_orphan_halt
+    tool._pose_source = lambda: nav.MapPose("ok", "map", x=0.0, y=0.0, theta=0.0)
     res = tool.execute("вперёд", 1.0)
     assert _spoken("move_direction", {"direction": "вперёд"}, res) == "Не доехал: навигация прервалась."
 

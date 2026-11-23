@@ -19,10 +19,20 @@ _spec.loader.exec_module(MODULE)
 
 
 class FakePi:
-    def __init__(self, containers: dict[str, str], ps_rc: int = 0, log_rc: int = 0):
+    def __init__(
+        self,
+        containers: dict[str, str],
+        ps_rc: int = 0,
+        log_rc: int = 0,
+        inspect: dict[str, str] | None = None,
+        inspect_rc: int = 0,
+    ):
         self.containers = containers
         self.ps_rc = ps_rc
         self.log_rc = log_rc
+        # None — граница текущего запуска не задана: inspect «не сработал».
+        self.inspect = inspect
+        self.inspect_rc = inspect_rc
         self.commands: list[str] = []
 
     def __call__(self, command: str) -> tuple[int, str]:
@@ -30,6 +40,13 @@ class FakePi:
         if "docker compose ps" in command:
             # compose v2 печатает JSON-lines
             return self.ps_rc, "\n".join(json.dumps({"Name": n, "State": "running"}) for n in self.containers)
+        if "docker inspect" in command:
+            if self.inspect is None or self.inspect_rc != 0:
+                return self.inspect_rc or 1, "inspect failed"
+            for name, answer in self.inspect.items():
+                if command.endswith(f" {name}"):
+                    return 0, answer
+            return 1, "no such container"
         for name, logs in self.containers.items():
             if f" {name} " in command + " ":
                 return self.log_rc, logs
@@ -114,10 +131,75 @@ def test_real_error_next_to_cadvisor_noise_is_still_critical():
 
 
 def test_logs_are_fetched_head_and_tail_per_container():
+    # inspect не сработал → прежнее поведение: полный лог, по два вызова на контейнер.
     pi, _ = run({"a": "ok", "b": "ok"})
     logs_cmds = [c for c in pi.commands if "docker logs" in c]
     assert sum("--tail 10000" in c and "head -50" in c for c in logs_cmds) == 2
     assert sum("--tail 150" in c for c in logs_cmds) == 2
+    assert all("--since" not in c for c in logs_cmds)
+
+
+STARTED_AT = "2026-11-22T19:25:10.042849631Z"
+OLD_ERROR = "[ERROR] oak_frame_watchdog: кадр старше порога — выходим, контейнер перезапустится"
+NEW_ERROR = "[ERROR] scsynth crashed: segfault in audio thread"
+
+
+def test_error_before_start_is_recovered_not_critical(capsys):
+    """(а) Ошибка только до StartedAt, RestartCount=1 → не красит, но видна в сводке."""
+    full = f"{OLD_ERROR}\n[INFO] контейнер перезапустился"
+    pi = FakePi(
+        {"oak-d": full},
+        inspect={"oak-d": f"{STARTED_AT} 1"},
+    )
+
+    def runner(command: str) -> tuple[int, str]:
+        if "docker logs" in command and "--since" in command:
+            pi.commands.append(command)
+            return 0, "[INFO] контейнер перезапустился"
+        return pi(command)
+
+    result = MODULE.check_logs(runner, scope="vision", environment="staging", compose_dir="x")
+    report = "\n".join(result["report"])
+
+    assert result["critical"] == 0 and result["warning"] == 0 and result["findings"] == []
+    assert f"=== oak-d RECOVERED BEFORE START (RestartCount=1, StartedAt={STARTED_AT}) ===" in report
+    assert OLD_ERROR in report
+    assert any(f"--since {STARTED_AT}" in c for c in pi.commands)
+    assert "CRITICAL errors found" not in capsys.readouterr().out
+
+
+def test_error_after_start_stays_critical():
+    """(б) Ошибка после StartedAt — critical, как раньше."""
+    pi = FakePi({"oak-d": NEW_ERROR}, inspect={"oak-d": f"{STARTED_AT} 1"})
+    result = MODULE.check_logs(pi, scope="vision", environment="staging", compose_dir="x")
+
+    assert result["critical"] == 1
+    assert result["findings"][0]["raw_text"] == NEW_ERROR
+    assert "RECOVERED BEFORE START" not in "\n".join(result["report"])
+    assert any(f"--since {STARTED_AT}" in c for c in pi.commands)
+
+
+def test_inspect_failure_warns_and_keeps_old_behavior(capsys):
+    """(в) docker inspect вернул код != 0 → предупреждение и находка считается."""
+    pi = FakePi({"oak-d": OLD_ERROR}, inspect_rc=1)
+    result = MODULE.check_logs(pi, scope="vision", environment="staging", compose_dir="x")
+    out = capsys.readouterr().out
+
+    assert "::warning title=Logs window unavailable::oak-d:" in out
+    assert result["critical"] == 1
+    assert result["findings"][0]["raw_text"] == OLD_ERROR
+    assert all("--since" not in c for c in pi.commands if "docker logs" in c)
+
+
+def test_no_restart_keeps_previous_behavior():
+    """(г) Без рестарта и без старых строк поведение не меняется: окно есть, счётчики те же."""
+    pi = FakePi({"voice-assistant": "[INFO] stt_node ready"}, inspect={"voice-assistant": f"{STARTED_AT} 0"})
+    result = MODULE.check_logs(pi, scope="sound", environment="staging", compose_dir="x")
+
+    assert result["critical"] == 0 and result["warning"] == 0
+    assert result["findings"] == [] and result["report"] == []
+    assert any(f"--since {STARTED_AT}" in c for c in pi.commands)
+    assert not any("docker logs" in c and "--since" not in c for c in pi.commands)
 
 
 def test_failed_ps_does_not_crash_and_is_not_silent(capsys):
@@ -141,9 +223,16 @@ def test_main_writes_outputs_findings_and_report(tmp_path, monkeypatch):
     fake = FakePi({"voice-assistant": "[ERROR] tts_node crashed: segfault"})
     monkeypatch.setattr(MODULE, "make_ssh_runner", lambda *a, **k: fake)
     for key, value in {
-        "SCOPE": "sound", "PI_HOST": "10.1.1.12", "PI_USER": "ros2", "PI_PASSWORD": "open", "PI_SSH_OPTS": "-o X=y",
-        "PI_COMPOSE_DIR": "~/rob_box_project/docker/sound", "ENVIRONMENT": "staging",
-        "FINDINGS_FILE": str(findings), "LOGS_FILE": str(logs), "GITHUB_OUTPUT": str(out),
+        "SCOPE": "sound",
+        "PI_HOST": "10.1.1.12",
+        "PI_USER": "ros2",
+        "PI_PASSWORD": "open",
+        "PI_SSH_OPTS": "-o X=y",
+        "PI_COMPOSE_DIR": "~/rob_box_project/docker/sound",
+        "ENVIRONMENT": "staging",
+        "FINDINGS_FILE": str(findings),
+        "LOGS_FILE": str(logs),
+        "GITHUB_OUTPUT": str(out),
     }.items():
         monkeypatch.setenv(key, value)
 
@@ -161,8 +250,14 @@ def test_main_clean_run_has_empty_report_and_has_issues_false(tmp_path, monkeypa
     logs = tmp_path / "vision_logs.txt"
     monkeypatch.setattr(MODULE, "make_ssh_runner", lambda *a, **k: FakePi({"oak-d": "all fine"}))
     for key, value in {
-        "SCOPE": "vision", "PI_HOST": "h", "PI_USER": "u", "PI_PASSWORD": "p", "PI_SSH_OPTS": "",
-        "PI_COMPOSE_DIR": "d", "LOGS_FILE": str(logs), "GITHUB_OUTPUT": str(out),
+        "SCOPE": "vision",
+        "PI_HOST": "h",
+        "PI_USER": "u",
+        "PI_PASSWORD": "p",
+        "PI_SSH_OPTS": "",
+        "PI_COMPOSE_DIR": "d",
+        "LOGS_FILE": str(logs),
+        "GITHUB_OUTPUT": str(out),
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("FINDINGS_FILE", raising=False)
@@ -186,8 +281,16 @@ def test_ssh_runner_builds_sshpass_argv_and_maps_timeout(monkeypatch):
     run_remote = MODULE.make_ssh_runner("10.1.1.12", "ros2", "open", "-o StrictHostKeyChecking=no -o ConnectTimeout=10")
     assert run_remote("uptime") == (0, "out")
     assert seen["argv"] == [
-        "sshpass", "-p", "open", "ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
-        "ros2@10.1.1.12", "uptime",
+        "sshpass",
+        "-p",
+        "open",
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ConnectTimeout=10",
+        "ros2@10.1.1.12",
+        "uptime",
     ]
     assert seen["kwargs"]["timeout"] == MODULE.SSH_CALL_TIMEOUT_SEC
 
@@ -196,3 +299,32 @@ def test_ssh_runner_builds_sshpass_argv_and_maps_timeout(monkeypatch):
 
     monkeypatch.setattr(MODULE.subprocess, "run", boom)
     assert run_remote("uptime") == (124, "")
+
+
+def test_giant_initial_conf_line_is_clipped_in_the_report_only():
+    """Issue #5124: «Initial conf: {...» zenohd — десятки КБ в одну строку.
+
+    В комментарий карточки деплоя уезжает INITIALIZATION CONTEXT. Строку режем
+    в отчёте; сырой текст finding и сам лог не трогаем.
+    """
+    conf = "Initial conf: {" + "x" * 4000 + "}"
+    logs = conf + "\n[ERROR] scsynth crashed: segfault in audio thread\nshort tail"
+    _, result = run({"zenoh-router-sound": logs})
+
+    assert result["critical"] == 1
+    assert result["findings"][0]["raw_text"] == "[ERROR] scsynth crashed: segfault in audio thread"
+    report = "\n".join(result["report"])
+    assert conf not in report
+    clipped = [line for line in result["report"] if line.startswith("Initial conf:")]
+    assert len(clipped) == 1
+    assert len(clipped[0]) <= MODULE.REPORT_LINE_LIMIT
+    assert "обрезано" in clipped[0]
+    assert str(len(conf)) in clipped[0]
+
+
+def test_short_report_lines_are_not_clipped():
+    logs = "boot line\n[ERROR] scsynth crashed: segfault in audio thread\nlast line"
+    _, result = run({"supercollider": logs})
+    report = "\n".join(result["report"])
+    assert "boot line" in report and "last line" in report
+    assert "обрезано" not in report

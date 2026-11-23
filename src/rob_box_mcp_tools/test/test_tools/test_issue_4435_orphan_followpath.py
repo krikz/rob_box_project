@@ -240,6 +240,9 @@ def test_tool_built_by_constructor_halts_on_abort(nav, tool_name):
     """Проводка в ``__init__``: настоящий ControllerHalt тула гасит контроллер при ABORTED."""
     tool = getattr(nav, tool_name)(MagicMock())
     tool.nav_client = _status_client(ao.GOAL_STATUS_ABORTED)
+    if tool_name == "MoveDirectionTool":
+        # #5160: цель уходит только с позой на карте; иначе тул отказывает до Nav2.
+        tool._pose_source = lambda: nav.MapPose("ok", "map", x=0.0, y=0.0, theta=0.0)
     cancel = _CancelClient([_cancel_resp(ao.CANCEL_ERROR_NONE, [object()]), _cancel_resp(ao.CANCEL_ERROR_NONE)])
     tool.controller_halt._cancel_client = cancel
     res = tool.execute(1.0, 2.0) if tool_name == "NavigateToCoordinatesTool" else tool.execute("вперёд", 1.0)

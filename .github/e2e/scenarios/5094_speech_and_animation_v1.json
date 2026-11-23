@@ -1,0 +1,34 @@
+{
+  "name": "5094_speech_and_animation_v1",
+  "stability": "new-unproven",
+  "issue": 5094,
+  "title": "Окно приёмки #5094: слова и анимация в одной фразе",
+  "description": "Одна синтетическая фраза просит и слова, и анимацию. Окно НЕ доказывает привод: перед запуском на роботе координатор гоняет scripts/e2e/check_drive_locked.py и прикладывает его сырьё. Сценарий сам скорость не публикует и целей навигации не шлёт. Живая проверка этим файлом не заявляется.",
+  "generated_by": "hand, issue #5094 acceptance window",
+  "cast": [],
+  "inherits_previous_act": false,
+  "_drive_precheck": "scripts/e2e/check_drive_locked.py",
+  "_drive_precheck_note": "Заморозка железа 23.11.2026 (docs/shifu-decisions.md d-20261123-hardware-runs-frozen): окно на физическом роботе только после отдельного разрешения Шифу и только с PASS этой предпроверки.",
+  "steps": [
+    {
+      "label": "n5094_anekdot_anim",
+      "voice": "anton",
+      "text": "Робот, расскажи анекдот и покажи анимацию.",
+      "expect": "cycle",
+      "patterns": [
+        "SpeechEvent started speech_id",
+        "🎭 \\[turn-v2\\] лицо команды на done: emotion=(happy|victory)\\b|\\[play_animation\\] Принято \\{'animation': '(happy|victory)'"
+      ],
+      "acceptance": {
+        "expected_tool_calls": [],
+        "must_not_call": [
+          "stage=done status=done"
+        ],
+        "must_not_say": [
+          "Данные получил, а ответ у меня не сложился. Спроси ещё раз?|Не понял, как это сделать. Скажи ещё раз?|Ответ вышел слишком длинным — спроси покороче, пожалуйста.|Не вышло.|Хм… не знаю, что сказать.|Не расслышал, повтори?|Эээ… даже не знаю, что ответить.|Хм, я задумался и ничего не придумал. Повтори?|Что-то я долго думаю — повтори, пожалуйста.|так и не ответил — я перестал ждать. Повтори, пожалуйста.|не ответил — повтори, пожалуйста."
+        ],
+        "_comment": "#5094: просьба со словами не закрывается одной мигалкой. Речь — SpeechEvent started (speech_owner). Анимация — лицо команды на done (dialog_v2_ports) или play_animation, принявший happy|victory (tools/animation.py: «Принято … показывает диалог по ExpressionRequest», топик /voice/expression/request, кадры /panel_image). Топика /led в этом пути нет. silent_ok нет: ход без речи — FAIL."
+      }
+    }
+  ]
+}

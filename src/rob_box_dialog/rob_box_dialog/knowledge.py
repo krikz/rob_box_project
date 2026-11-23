@@ -862,10 +862,11 @@ FACE_SHOW_WHAT_STEMS: Tuple[str, ...] = (
 SILENT_ASK_FORMS: Tuple[str, ...] = (
     "молча", "молчком", "без слов", "без слова", "не говори", "не говоря", "ничего не говори", "беззвучно")
 SILENT_SHOW_FORMS: Tuple[str, ...] = ("тихо", "тихонько", "тихонечко")
-#: Просьба о тишине существительным (#5105): Tier-1 тишины знает только основы ``SILENCE_WORDS`` («помолч», «замолч»),
-#: «тишина» туда не входит и уходила в LLM, а ``words_owed`` заставлял модель говорить. Формы - целым словом
-#: (``words.name_tokens``): «расскажи стих про тишину» и «не молчи» сюда не попадают. Просьба - фраза после вейка,
-#: где кроме этих форм только служебные :data:`SILENCE_NOUN_FILLER` («тишина, пожалуйста», «полная тишина»).
+#: Просьба о тишине существительным (#5105, #5115): основы ``SILENCE_WORDS`` («помолч», «замолч») и точные формы
+#: ``SILENCE_EXACT_FORMS`` («молчи») этого слова не знают. Tier-1 читает эти формы тем же предикатом, что и долг слов
+#: (``words.silence_noun_asked``): фраза после вейка, где кроме этих форм только служебные
+#: :data:`SILENCE_NOUN_FILLER` («тишина, пожалуйста», «полная тишина»). «Расскажи стих про тишину» и «не молчи» сюда
+#: не попадают — там есть другие слова. При играющей музыке та же фраза — стоп музыки, не сцена Silence.
 SILENCE_NOUN_FORMS: Tuple[str, ...] = ("тишина", "тишину", "тишины", "тишине")
 SILENCE_NOUN_FILLER: Tuple[str, ...] = ("пожалуйста", "ну", "давай", "все", "всё", "просто", "режим",
                                         "полная", "полный")
@@ -1247,6 +1248,9 @@ SINGLE_ACTION_CLASSES: Tuple[str, ...] = ("action.media", "action.motion")
 #: (запомнить «никому» нельзя: раньше такой факт становился общим для всех). Имя не нужно: у ``person_ref``
 #: может быть лишь кличка.
 PERSON_SCOPED_TOOLS: Tuple[str, ...] = ("memory_save", "memory_search", "memory_context")
+#: Тул записи факта (#5128): диктовку кладёт в команду код, исполняет тот же тул, что зовёт модель.
+#: Хардкодить строку во втором месте нельзя.
+MEMORY_SAVE_TOOL = PERSON_SCOPED_TOOLS[0]
 #: Раздел снимка ``speaker_memory``: факты собеседника - не больше стольких (столько же брал v1,
 #: ``format_speaker_context``), каждый обрезан до ``SPEAKER_FACT_MAX_CHARS`` знаков; свежие первыми.
 SPEAKER_FACTS_MAX = 20
@@ -2322,7 +2326,8 @@ INVALID_COMMAND_PHRASES: Mapping[str, str] = MappingProxyType({"too_long": "comm
                                                                VIOLATION_SPEECH_TOO_LONG: "command.too_long",
                                                                VIOLATION_SILENT_ANSWER: SILENT_ANSWER_PHRASE,
                                                                VIOLATION_REMOTE_OWED: REMOTE_OWED_PHRASE,
-                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE})
+                                                               VIOLATION_DONE_CLAIM: DONE_CLAIM_PHRASE,
+                                                               "speech_asked": "command.speech_asked"})
 #: Нарушения, после которых фраза кода звучит без грусти: модель ответила, только не словами (лицом, анимацией, одним
 #: earcon) - ничего не провалилось («Угу, я тут.» звучало с ``sad``). Провал исполненного действия
 #: грустит по-прежнему: эмоцию фразы решает его исход.
@@ -4028,6 +4033,9 @@ SPEECH_ASK_NEGATION: Tuple[str, ...] = ("не", "без")
 #: Нарушение формы просьбы говорить: ход закрыт только тем, чего не слышно (``SILENT_DONE_TOOLS``,
 #: ``INAUDIBLE_TOOLS``, одно лицо). Мост по ``tool_not_available`` срез расширяет — это нарушение своё.
 VIOLATION_SPEECH_ASKED = "speech_asked"
+#: Просьба говорить, а после повторов за словами ответа всё нет (#5094, n906): код не выдумывает анекдот
+#: и не мычит «Угу, я тут.» — честно говорит, что рассказать не вышло. Анимация просьбы при этом исполнена.
+SPEECH_ASKED_PHRASE = "command.speech_asked"
 #: Ответ без слов, повтор за которым даёт ход, а не мост (:func:`command.words_only`): последняя итерация после
 #: запроса и просьба говорить. Мост по ним срез не расширяет и свой повтор не тратит — вызовы считает ход.
 WORDS_ONLY_VIOLATIONS: Tuple[str, ...] = (VIOLATION_SPEECH_REQUIRED, VIOLATION_SPEECH_ASKED)
@@ -4036,6 +4044,26 @@ SPEECH_ASKED_HINT = (
     "(анимацию положи в actions рядом) или скажи выступлением в perform; play_animation и expression "
     "без речи эту просьбу не закрывают"
 )
+#: Повтор за словами на уже поднятое ``speech_asked`` не смотрит, был ли запрос и просили ли лицо
+#: (:func:`speech_push_owed`): «покажи» рядом с «расскажи» просьбу говорить не отменяет.
+#: Голый earcon на «ответь» — свой повтор ``silent_answer``, не этот толчок (#4021).
+#: Повторы кончились — фраза кода :data:`SPEECH_ASKED_PHRASE`, не молчание и не выдуманный анекдот.
+
+
+def speech_push_owed(needs_speech: bool, queried: bool, show: bool, singing: bool, speech_asked: bool = False) -> bool:
+    """Ход ещё раз зовёт модель за словами (ADR-0148: решает код по форме, не промпт).
+
+    Уже поднятое ``speech_asked`` (мост закрыл ход одной мигалкой на «расскажи») — даже без запроса
+    и даже если рядом просили лицо: «расскажи и покажи» не закрывается одной мигалкой (#5094).
+    Само ``needs_speech`` толчок не открывает: голый earcon на «ответь коротко» уже вернулся модели
+    нарушением ``silent_answer``, третий вызов — не этот договор (#4021). Последняя итерация после
+    запроса — как раньше, если лицо словами не просили. Путь пения (``singing``) не трогаем.
+    """
+    if singing:
+        return False
+    if speech_asked and needs_speech:
+        return True
+    return bool(queried) and not show
 
 
 def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:
@@ -4170,9 +4198,9 @@ def with_tool_enum(schema: Mapping[str, Any], offered: Iterable[str]) -> Dict[st
 
 def with_voices(schema: Mapping[str, Any], voices: Iterable[str]) -> Dict[str, Any]:
     """Схема команды, в которой голос реплики ``voice`` - голоса звучащего провайдера TTS (ADR-0148: голос вне
-    каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог один - реестр голосов владельца речи, сюда
-    он приходит через ``Busy.voices``. Голосов сегментов выступления в схеме нет: их даёт код по ролям. Пусто -
-    схема без изменений."""
+    каталога невозможен по структуре; ``""`` - текущий голос робота). Каталог один - реестр голосов владельца речи;
+    мост передаёт ``Busy.line_voices`` (каталог провайдера, не роли). Голосов сегментов выступления в схеме нет:
+    их даёт код по ролям. Пусто - схема без изменений."""
     names = sorted({v for v in voices if v})
     out = copy.deepcopy(dict(schema))
     if names and "voice" in out["properties"]:

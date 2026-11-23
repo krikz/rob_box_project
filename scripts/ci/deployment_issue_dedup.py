@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -16,7 +17,10 @@ WHITESPACE_RE = re.compile(r"\s+")
 SIGNATURE_MARKER_RE = re.compile(r"<!--\s*deploy-signature:\s*(.*?)\s*-->")
 
 CRITICAL_MATCH_RE = re.compile(
-    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped",
+    # illegal instruction / sigill — glibc печатает «Illegal instruction» на
+    # SIGILL (issue #5114, run 45019034598: controller_server умер
+    # `[ros2run]: Illegal instruction`, а сканер логов это не считал critical).
+    r"\b(critical|fatal|error|exception|traceback|failure)\b|failed to|segmentation fault|core dumped|illegal instruction|sigill",
     re.IGNORECASE,
 )
 WARNING_MATCH_RE = re.compile(r"\b(warn|warning)\b", re.IGNORECASE)
@@ -72,6 +76,50 @@ HEALTH_MONITOR_PROXIMITY_ECHO_RE = re.compile(
     r"\[(?:ERROR|FATAL|WARN)\] proximity_guard \(\d+s ago\): .*нет свежих скана или одометрии",
     re.IGNORECASE,
 )
+
+# Окно старта zenoh-роутера (issue #5124, run 45040975024): роутер в первые секунды
+# пишет ERROR «Error propagating <kind> @<zid>/router/**: cannot get index ...» —
+# gossip успел объявить лицо и потерять его, пока сеть ещё пуста. Одна такая строка
+# в пределах ~10 с после строки старта того же процесса — warning. Вне окна и без
+# строки старта в дампе класс остаётся critical: шторм переподключений посреди
+# работы (16.11, 18.11 — сотни строк) должен по-прежнему красить деплой.
+# Узко: только модуль zenoh::net::routing::hat::router и только propagation на
+# /router/**. Другие контейнеры и другие сообщения zenoh правило не касается.
+# zenohd красит вывод: тусклая метка времени, цвет уровня, тусклые имя модуля и
+# двоеточие после него (\x1b[2mzenohd\x1b[0m\x1b[2m:\x1b[0m). docker logs без -t
+# эти коды не снимает, и в дамп деплоя они доезжают как есть (run 45040975024).
+_ANSI = r"(?:\x1b\[[0-9;]*m)*"
+ZENOH_ROUTER_START_RE = re.compile(rf"zenohd{_ANSI} v|Zenoh can be reached at:")
+# После «@» слэш НЕОБЯЗАТЕЛЕН: боевой лог пишет «@/<zid>/router/**» (run 45040975024,
+# строка 3091), первый вариант шаблона ждал «@<hex>» и реальную строку не ловил.
+# ZID не привязан к hex — требуется только «@/?<что-то>/router/**».
+ZENOH_ROUTER_PROPAGATION_RE = re.compile(
+    rf"zenoh::net::routing::hat::router::{_ANSI}\w+{_ANSI}:{_ANSI}\s+"
+    rf"Error propagating \w+ @/?\S+?/router/\*\*"
+)
+ZENOH_ROUTER_STARTUP_WINDOW_SEC = 10.0
+# Имена контейнеров zenoh-роутера в репо: compose-сервис ``zenoh-router``
+# (docker/main, docker/sim), container_name ``zenoh-router-vision`` /
+# ``zenoh-router-sound``, сим ``${SIM_PREFIX}-zenoh-router``, диагностика
+# ``zenoh-router-local``. Образ — ``eclipse/zenoh`` (zenohd внутри).
+# Правило окна применяется только к ним: та же строка propagation из
+# voice-assistant / nav2 — не транзиент роутера и остаётся critical.
+ZENOH_ROUTER_CONTAINER_MARKERS = ("zenoh-router", "zenohd", "eclipse/zenoh")
+# Пометка в summary finding: понижение не молчит, в сводке видно, что это
+# стартовый транзиент, а не глухая ошибка.
+ZENOH_ROUTER_STARTUP_SUMMARY = "Стартовый транзиент zenoh-роутера (окно старта, не отказ)"
+
+
+def is_zenoh_router_container(container: str) -> bool:
+    """Контейнер — zenoh-роутер по имени, как их зовут compose и диагностика.
+
+    Маркеры те же, что в репо: ``zenoh-router`` (main/vision/sound/sim),
+    ``zenohd``, образ ``eclipse/zenoh``. Пустое имя — не роутер: без имени
+    контейнера окно не открывается (issue #5124, правило узкое).
+    """
+    name = container.lower()
+    return any(marker in name for marker in ZENOH_ROUTER_CONTAINER_MARKERS)
+
 
 CRITICAL_EXCLUDE_COMMON = [
     r"without error",
@@ -1097,6 +1145,68 @@ def _classify_error_like_line(
     return "critical"
 
 
+def _zenoh_router_startup_transient(line: str, log_text: str, container: str) -> bool:
+    """True, если строка — propagation роутера в окне ~10 с после его же старта.
+
+    Решает дамп и имя контейнера, а не текст ошибки (ADR-0148). Три условия,
+    все обязательны: контейнер — zenoh-роутер (``is_zenoh_router_container``),
+    в дампе есть строка старта того же процесса (``zenohd v`` /
+    ``Zenoh can be reached at:``), ошибка идёт не позже
+    ZENOH_ROUTER_STARTUP_WINDOW_SEC после неё. Чужой контейнер, ошибка раньше
+    строки старта, позже окна или дамп без строки старта — не транзиент,
+    остаётся critical. Метка времени — ISO-8601 с Z; строки без неё окно
+    не двигают и не закрывают.
+    """
+    if not is_zenoh_router_container(container):
+        return False
+    if not ZENOH_ROUTER_PROPAGATION_RE.search(line):
+        return False
+    start_before_error, error_at = _zenoh_router_start_and_error(line, log_text)
+    if start_before_error is None or error_at is None:
+        return False
+    delta = (error_at - start_before_error).total_seconds()
+    return 0.0 <= delta <= ZENOH_ROUTER_STARTUP_WINDOW_SEC
+
+
+def _zenoh_router_start_and_error(line: str, log_text: str):
+    """(старт раньше ошибки, метка ошибки) или (None, None).
+
+    Старт привязан к ошибке, а не к дампу целиком: последний ``zenohd v`` /
+    ``Zenoh can be reached at:`` РАНЬШЕ этой строки. Старт после ошибки окно
+    не открывает, повторный старт позже в дампе — тоже. Строки без метки
+    ISO-8601 Z окно не двигают.
+    """
+    start_before_error = None
+    target = _strip_ansi(line).strip()
+    for row in log_text.splitlines():
+        stamp = _iso_z_timestamp(row)
+        if stamp is None:
+            continue
+        plain = _strip_ansi(row)
+        if plain.strip() == target and ZENOH_ROUTER_PROPAGATION_RE.search(plain):
+            return start_before_error, stamp
+        if ZENOH_ROUTER_START_RE.search(plain):
+            start_before_error = stamp
+    return None, None
+
+
+def _strip_ansi(text: str) -> str:
+    """Снять ANSI-коды цвета. zenohd красит метку времени, уровень и имя модуля."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def _iso_z_timestamp(line: str):
+    """Метка ISO-8601 с суффиксом Z из строки лога или None.
+
+    Метка ищется и в сырой строке, и без ANSI: zenohd оборачивает её в
+    ``\x1b[2m...\x1b[0m``, и ``\b`` перед цифрой года на таком стыке не срабатывает.
+    """
+    match = TIMESTAMP_RE.search(line) or TIMESTAMP_RE.search(_strip_ansi(line))
+    if match is None:
+        return None
+    return datetime.fromisoformat(match.group(0).replace("Z", "+00:00").replace("z", "+00:00"))
+
+
 def _classify_with_dump_windows(
     line: str,
     exclude_patterns: Iterable[str],
@@ -1104,8 +1214,9 @@ def _classify_with_dump_windows(
     *,
     own_blind_present: bool,
     log_text: str,
+    container: str = "",
 ) -> str | None:
-    """Классификация с окнами дампа: эхо proximity_guard и стартовый fail-fast.
+    """Классификация с окнами дампа: эхо proximity_guard, fail-fast и старт роутера.
 
     Эхо — не самостоятельный пункт, только когда в дампе уже есть собственная
     строка слепоты ноды (её и так классифицирует окно возврата). Без собственной
@@ -1114,16 +1225,23 @@ def _classify_with_dump_windows(
     Fail-fast снимается, только если тот же дамп показывает «жив после»: процесс
     умер и после этого стартовал без новой смерти. Знакомая строка без этого
     свидетельства остаётся critical.
+
+    Стартовый транзиент zenoh-роутера понижается до warning, только если контейнер
+    — роутер, тот же дамп несёт строку старта процесса и ошибка идёт в пределах
+    ~10 с после неё. Чужой контейнер, окно снаружи и дамп без строки старта
+    оставляют класс critical.
     """
     severity = _classify_error_like_line(line, exclude_patterns, demoted_patterns)
     if severity == "critical" and own_blind_present and _is_health_monitor_proximity_echo(line):
         return None
     if severity == "critical" and _is_recovered_failfast_line(line, log_text):
         return None
+    if severity == "critical" and _zenoh_router_startup_transient(line, log_text, container):
+        return "warning"
     return severity
 
 
-def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> str | None:
+def extract_relevant_log_line(log_text: str, *, scope: str, severity: str, container: str = "") -> str | None:
     if severity not in {"critical", "warning"}:
         raise ValueError(f"Unsupported severity: {severity}")
 
@@ -1137,7 +1255,12 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         for line in lines:
             if (
                 _classify_with_dump_windows(
-                    line, critical_patterns, demoted, own_blind_present=own_blind, log_text=log_text
+                    line,
+                    critical_patterns,
+                    demoted,
+                    own_blind_present=own_blind,
+                    log_text=log_text,
+                    container=container,
                 )
                 == "critical"
             ):
@@ -1150,7 +1273,12 @@ def extract_relevant_log_line(log_text: str, *, scope: str, severity: str) -> st
         # critical (см. _classify_error_like_line): без второго условия понижённые
         # строки пропали бы из отчёта совсем, а не стали предупреждением.
         classified = _classify_with_dump_windows(
-            line, critical_patterns, demoted, own_blind_present=own_blind, log_text=log_text
+            line,
+            critical_patterns,
+            demoted,
+            own_blind_present=own_blind,
+            log_text=log_text,
+            container=container,
         )
         if not (WARNING_MATCH_RE.search(line) or classified == "warning"):
             continue
@@ -1363,7 +1491,7 @@ def _cmd_filter(args: argparse.Namespace) -> int:
 
 def _cmd_extract_log(args: argparse.Namespace) -> int:
     log_text = sys.stdin.read()
-    line = extract_relevant_log_line(log_text, scope=args.scope, severity=args.severity)
+    line = extract_relevant_log_line(log_text, scope=args.scope, severity=args.severity, container=args.container)
     if line:
         sys.stdout.write(line + "\n")
     return 0
@@ -1393,6 +1521,9 @@ def build_parser() -> argparse.ArgumentParser:
     extract_parser = subparsers.add_parser("extract-log", help="Extract the first relevant log line for a scope and severity.")
     extract_parser.add_argument("--scope", required=True, choices=["main", "vision", "sound"])
     extract_parser.add_argument("--severity", required=True, choices=["critical", "warning"])
+    # Имя контейнера нужно окну старта zenoh-роутера (issue #5124). Старые
+    # вызовы без него валидны: окно просто не откроется, строка останется critical.
+    extract_parser.add_argument("--container", default="")
     extract_parser.set_defaults(func=_cmd_extract_log)
 
     return parser

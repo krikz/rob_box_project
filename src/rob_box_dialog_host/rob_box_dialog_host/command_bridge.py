@@ -326,10 +326,11 @@ class CommandModeLLM(LLMProvider):
               settings: LLMSettings | None) -> Tuple[List[LLMMessage], List[Mapping[str, Any]], LLMSettings]:
         """Запрос в режиме адаптера: тул/формат от ``FieldChannel``, свои тулы без тула речи, добавка к промпту. Схема —
         в форме команды хода (``command.form_schema``, #4021: на адресованную реплику нет ``passed``, без просьбы о
-        голосе нет ``voice``)."""
+        голосе нет ``voice``). Голос реплики в enum — каталог провайдера (``Busy.line_voices``), не каталог ролей:
+        иначе модель не видит голос, который валидатор принимает (#5103)."""
         tools = list(tools)
         offered = kn.with_tool_enum(kn.command_schema("json"), (_tool_name(t) for t in tools))
-        schema = form_schema(kn.with_voices(offered, self._busy().voices))
+        schema = form_schema(kn.with_voices(offered, self._busy().line_voices()))
         request = FieldChannel(schema).build_request(self.mode)
         native = [t for t in tools if _tool_name(t) not in kn.SPEECH_CHANNEL_TOOLS]
         base = settings or LLMSettings()
