@@ -58,7 +58,8 @@ services:
       - ./scripts/twist_mux:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_twist_mux.sh"]
     depends_on:
-      - zenoh-router
+      zenoh-router:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f twist_mux || exit 1"]
@@ -92,7 +93,8 @@ services:
       - ../../src/rob_box_description:/workspace/src/rob_box_description:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_robot_state_publisher.sh"]
     depends_on:
-      - zenoh-router
+      zenoh-router:
+        condition: service_healthy
     restart: unless-stopped
     labels:
       logging: "promtail"
@@ -195,7 +197,8 @@ services:
       # Для навигации 30cm вокселей достаточно — nav2 использует 2D costmap, не 3D облако.
       - cloud_output_voxels:=0.3
     depends_on:
-      - zenoh-router
+      zenoh-router:
+        condition: service_healthy
     restart: unless-stopped
     labels:
       logging: "promtail"
@@ -229,7 +232,8 @@ services:
       - ./scripts/rtabmap:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_imu_filter.sh"]
     depends_on:
-      - zenoh-router
+      zenoh-router:
+        condition: service_healthy
     restart: unless-stopped
     labels:
       logging: "promtail"
@@ -266,9 +270,12 @@ services:
       - /dev:/dev  # Доступ к CAN устройствам
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_ros2_control.sh"]
     depends_on:
-      - zenoh-router
-      - robot-state-publisher
-      - twist-mux
+      zenoh-router:
+        condition: service_healthy
+      robot-state-publisher:
+        condition: service_started
+      twist-mux:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f ros2_control_node || exit 1"]
@@ -305,7 +312,8 @@ services:
       - /dev/shm:/dev/shm
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_lslidar.sh"]
     depends_on:
-      - zenoh-router
+      zenoh-router:
+        condition: service_healthy
     restart: unless-stopped
     labels:
       logging: "promtail"
@@ -355,7 +363,8 @@ services:
     # memswap_limit: 768m
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_perception.sh"]
     depends_on:
-      - zenoh-router
+      zenoh-router:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       # W11 (Phase 6 v2): reflection_node removed in W10; check the sensor bridge instead
@@ -399,12 +408,18 @@ services:
       - ../../src/rob_box_teleop/rob_box_teleop:/opt/rob_box/teleop/rob_box_teleop:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_nav2_direct.sh"]
     depends_on:
-      - zenoh-router
-      - robot-state-publisher
-      - rtabmap
-      - ros2-control
-      - twist-mux
-      - lslidar
+      zenoh-router:
+        condition: service_healthy
+      robot-state-publisher:
+        condition: service_started
+      rtabmap:
+        condition: service_started
+      ros2-control:
+        condition: service_started
+      twist-mux:
+        condition: service_started
+      lslidar:
+        condition: service_started
     restart: unless-stopped
     # #5043: pgrep bt_navigator зеленел при мёртвом controller_server (SIGILL, #5039)
     # и при зависшем configure. Скрипт спрашивает lifecycle трёх узлов; HEALTHCHECK
@@ -475,8 +490,10 @@ services:
     # privileged: true + /dev монтировано = автоматический доступ ко всем serial портам
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_teleop.sh"]
     depends_on:
-      - zenoh-router
-      - twist-mux
+      zenoh-router:
+        condition: service_healthy
+      twist-mux:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f joystick_control_node || exit 1"]
@@ -517,9 +534,12 @@ services:
       - ./scripts/teleop:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_proximity_guard.sh"]
     depends_on:
-      - zenoh-router
-      - twist-mux
-      - lslidar
+      zenoh-router:
+        condition: service_healthy
+      twist-mux:
+        condition: service_started
+      lslidar:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f proximity_guard_node || exit 1"]
@@ -555,8 +575,10 @@ services:
       - ./scripts/teleop:/scripts:ro
     command: ["/ros_scripts/ros_with_namespace.sh", "/scripts/start_followpath_watchdog.sh"]
     depends_on:
-      - zenoh-router
-      - nav2
+      zenoh-router:
+        condition: service_healthy
+      nav2:
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f followpath_watchdog_node || exit 1"]
