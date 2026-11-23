@@ -10,6 +10,10 @@ pytest монорепо кладёт ``src/<пакет>`` в ``sys.path`` ран
 тегом скрипт падает, а не пропускается: штатные unit-джобы этот каталог не собирают (он вне
 ``src/*/test`` и вне ``tests/unit``), а джоб ``G: Dialog Core Pin Guard`` ставит тег в
 изолированный venv и передаёт ``ROB_BOX_DIALOG_CORE_PREFIX``.
+
+Тот же прогон сверяет жёсткие чтения ``REASON_WORDS["ключ"]`` в ``src/`` с картой
+установленного ``rob_box_music.source`` (#5210). Ключа в пине нет — падение с именем
+ключа и тегом, а не skip: образ собрал бы ``KeyError`` на живом отказе.
 """
 
 from __future__ import annotations
@@ -51,9 +55,7 @@ def pin_from_dockerfile(repo: Path = _REPO) -> str:
     pin = pin_in(voice)
     other = pin_in(telegram)
     if other != pin:
-        raise SystemExit(
-            f"пины ядра разошлись: voice-assistant {pin}, telegram_bot {other}"
-        )
+        raise SystemExit(f"пины ядра разошлись: voice-assistant {pin}, telegram_bot {other}")
     return pin
 
 
@@ -61,9 +63,7 @@ def src_dirs(repo: Path = _REPO) -> list[Path]:
     return [repo / "src" / name for name in _CORE_TOPS]
 
 
-def probe(
-    python: str, pin: str, planted: list[Path] | None = None
-) -> subprocess.CompletedProcess[str]:
+def probe(python: str, pin: str, planted: list[Path] | None = None) -> subprocess.CompletedProcess[str]:
     """Чистый интерпретатор: ни cwd, ни PYTHONPATH. Подмену передаём аргументом.
 
     Флаг ``-P`` на 3.10 нет, ``-I`` выкидывает PYTHONPATH — поэтому путь явный.
@@ -110,11 +110,7 @@ def run_probe() -> None:
     if "site-packages" not in origin.parts:
         raise SystemExit(f"импорт не из site-packages: {origin}")
     planted_resolved = {Path(entry).resolve() for entry in planted}
-    ahead = [
-        entry
-        for entry in sys.path
-        if entry and Path(entry).resolve() in planted_resolved
-    ]
+    ahead = [entry for entry in sys.path if entry and Path(entry).resolve() in planted_resolved]
     if ahead:
         raise SystemExit("подмена: src на sys.path раньше пакета: " + ", ".join(ahead))
     # Версия в metadata тега может не совпасть с именем тега. Сверяем direct_url: pip пишет туда тег.
@@ -140,10 +136,40 @@ def require_prefix() -> Path:
     return python
 
 
+def _missing_key_control(python: str, pin: str) -> int:
+    """Синтетический ключ, которого в пине нет, обязан покраснеть. Успех контроля — rc 0."""
+    from reason_words import SYNTHETIC_KEY, reason_words_missing
+
+    _reads, missing = reason_words_missing(python, pin, extra={SYNTHETIC_KEY})
+    caught = [line for line in missing if SYNTHETIC_KEY in line and f"пине {pin}" in line]
+    if not caught:
+        print("отрицательный контроль не поймал отсутствующий ключ", file=sys.stderr)
+        return 1
+    for line in caught:
+        print(line)
+    print(f"MISSING_KEY detected {SYNTHETIC_KEY}")
+    return 0
+
+
+def _reason_words_status(python: str, pin: str) -> int:
+    """Жёсткие чтения монорепо против карты установленного пина. 0 — все ключи есть."""
+    from reason_words import reason_words_missing
+
+    reads, missing = reason_words_missing(python, pin)
+    for line in missing:
+        print(line, file=sys.stderr)
+    if missing:
+        return 1
+    print(f"REASON_WORDS_OK {pin} keys={len(reads)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """``--substitution`` — отрицательный контроль; иначе проверка установленного пина."""
     args = list(sys.argv[1:] if argv is None else argv)
     pin = pin_from_dockerfile()
+    if "--missing-key" in args:
+        return _missing_key_control(str(require_prefix()), pin)
     if "--substitution" in args:
         got = probe(sys.executable, "local-src", planted=src_dirs())
         sys.stdout.write(got.stdout)
@@ -153,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("SUBSTITUTION detected")
         return 0
-    got = probe(str(require_prefix()), pin)
+    python = str(require_prefix())
+    got = probe(python, pin)
     sys.stdout.write(got.stdout)
     sys.stderr.write(got.stderr)
     if got.returncode != 0:
@@ -162,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         print("пин не доказан: нет site-packages или есть подмена", file=sys.stderr)
         return 1
     print(f"PIN_OK {pin}")
-    return 0
+    return _reason_words_status(python, pin)
 
 
 if __name__ == "__main__":
