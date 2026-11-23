@@ -477,6 +477,7 @@ jobs:
             tests/unit/scripts/test_log_watch.py \
             tests/unit/scripts/test_log_watch_cases.py \
             tests/unit/scripts/test_nav2_loop_skips.py \
+            tests/unit/scripts/test_nav2_sigill_locate.py \
             tests/unit/scripts/test_no_dialogue_node_in_runtime.py \
             tests/unit/scripts/test_oak_frame_watchdog.py \
             tests/unit/scripts/test_oscillation_eval_verdict.py \
