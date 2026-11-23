@@ -1,0 +1,10 @@
+# Ступень B стенда #5180: боевой arm64 nav2 в изолированной сети сима.
+# Образ — не плавающий тег, а переменная NAV2_IMAGE (тег из .image-versions.dev
+# плюс digest, проверенный до up). build снят: иначе compose пересоберёт amd64.
+# LD_LIBRARY_PATH — aarch64 путь боевого compose, не x86_64 из x-sim-env.
+services:
+  nav2:
+    image: ${NAV2_IMAGE:?NAV2_IMAGE is required (battle tag@digest)}
+    build: !reset null
+    environment:
+      LD_LIBRARY_PATH: /opt/ros/humble/opt/zenoh_cpp_vendor/lib:/opt/ros/humble/lib/aarch64-linux-gnu:/opt/ros/humble/lib
