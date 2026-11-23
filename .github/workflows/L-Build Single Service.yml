@@ -55,6 +55,7 @@ on:
           - rtabmap
           - twist-mux
           - ros2-control
+          - teleop
           - nav2
           - lslidar
           - perception
@@ -85,6 +86,22 @@ on:
         required: false
         default: true
         type: boolean
+
+      # ВРЕМЕННО (ветка ci/oneoff-pinned-build, карточка #5110): собрать из
+      # явного ref (SHA/тег/ветка) и повесить явный суффикс тега. Нужно, чтобы
+      # дополнить пин-набор .image-versions.latest = latest-b2e7144: штатный
+      # тег берётся от GITHUB_SHA запуска и b2e7144 воспроизвести не может.
+      explicit_ref:
+        description: 'One-off: checkout this ref instead of branch (empty = branch)'
+        required: false
+        default: ''
+        type: string
+
+      explicit_tag:
+        description: 'One-off: push extra tag <image>-humble-<explicit_tag> (empty = off)'
+        required: false
+        default: ''
+        type: string
 
       create_issue_on_failure:
         description: 'Create GitHub issue if build fails'
@@ -127,7 +144,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ inputs.explicit_ref || inputs.branch }}
           submodules: recursive
           clean: true
 
@@ -189,6 +206,17 @@ jobs:
                   IMAGE_NAME="nav2"
                   DOCKERFILE="docker/main/nav2/Dockerfile"
                   BUILD_CONTEXT="docker/main/nav2"
+                  BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
+                  ;;
+                # ВРЕМЕННО (ветка ci/oneoff-pinned-build, #5110): teleop в
+                # списке не было вовсе, поэтому latest-тег для него нельзя
+                # было выпустить одиночной сборкой. Ветка одноразовая, в
+                # develop не едет.
+                "teleop")
+                  SERVICE_NAME="teleop"
+                  IMAGE_NAME="teleop"
+                  DOCKERFILE="docker/main/teleop/Dockerfile"
+                  BUILD_CONTEXT="."
                   BASE_IMAGE="localhost:5000/krikz/rob_box_base:ros2-zenoh-${ROS_DISTRO}"
                   ;;
                 "lslidar")
@@ -422,7 +450,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ inputs.explicit_ref || inputs.branch }}
           submodules: recursive
           clean: true
           fetch-depth: 0
@@ -554,6 +582,21 @@ jobs:
           # же режим "buildx --load + docker push ТОЛЬКО localhost:5000", что
           # уже использует L-Build Pi Services — GHCR не пушится (issue #1503).
           load: ${{ !inputs.push_to_registry }}
+
+      # ВРЕМЕННО (ветка ci/oneoff-pinned-build, #5110): довесить явный
+      # пин-тег на собранный образ. Нужен доп. пуш в локальный registry,
+      # поэтому запускать с push_to_registry=false (load=true оставляет
+      # образ в daemon) — иначе шаг ниже уже пушит тег от GITHUB_SHA.
+      - name: "One-off: push explicit pinned tag"
+        if: inputs.explicit_tag != ''
+        run: |
+          set -euo pipefail
+          LOCAL_TAG="${{ needs.prepare.outputs.local_tag }}"
+          PINNED="${LOCAL_TAG}-${{ inputs.explicit_tag }}"
+          docker tag "${LOCAL_TAG}" "${PINNED}"
+          docker push "${PINNED}"
+          echo "✅ Pinned tag pushed: ${PINNED}"
+          docker image inspect "${PINNED}" --format '{{.Id}}' || true
 
       - name: Tag with SHA and update .image-versions
         if: inputs.push_to_registry == 'true' && needs.prepare.outputs.docker_tag != 'local'
