@@ -14,8 +14,19 @@ import sys
 from pathlib import Path
 
 import pytest
+from reason_words import hard_key_reads, missing_in_pin
 
 _GUARD = Path(__file__).resolve().parent / "guard.py"
+
+
+def test_hard_reads_are_literals_not_get() -> None:
+    """Обход собирает ``REASON_WORDS['ключ']`` и не принимает ``.get`` за жёсткое чтение."""
+    reads = hard_key_reads()
+    assert "no_lyrics_path" in reads
+    joined = " ".join(site for sites in reads.values() for site in sites)
+    assert "instrumental_order.py" in joined
+    assert missing_in_pin({"no_lyrics_path"}, set()) == ["no_lyrics_path"]
+    assert missing_in_pin({"no_lyrics_path"}, {"no_lyrics_path"}) == []
 
 
 def test_missing_prefix_fails_loud(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -47,6 +58,30 @@ def test_src_on_pythonpath_is_detected_as_substitution() -> None:
     assert "подмена" in (got.stdout + got.stderr)
 
 
+def test_missing_reason_word_is_caught() -> None:
+    """Синтетический ключ, которого в пине нет, красится и называет ключ с тегом.
+
+    Без префикса тот же флаг падает с явной причиной, а не зеленеет: контроль
+    не считается пройденным, пока пин не поставлен.
+    """
+    got = subprocess.run(
+        [sys.executable, str(_GUARD), "--missing-key"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    blob = got.stdout + got.stderr
+    if not os.environ.get("ROB_BOX_DIALOG_CORE_PREFIX"):
+        assert got.returncode != 0, blob
+        assert "нет ROB_BOX_DIALOG_CORE_PREFIX" in blob
+        return
+    assert got.returncode == 0, blob
+    assert "MISSING_KEY detected" in got.stdout
+    assert "монорепо читает ключ" in got.stdout
+    assert "в пине" in got.stdout
+
+
 def test_installed_pin_import_is_not_shadowed_by_src() -> None:
     """Чистый префикс с тегом из Dockerfile импортирует ядро из site-packages.
 
@@ -60,6 +95,8 @@ def test_installed_pin_import_is_not_shadowed_by_src() -> None:
         timeout=60,
         check=False,
     )
-    assert got.returncode == 0, got.stdout + got.stderr
+    blob = got.stdout + got.stderr
+    assert got.returncode == 0, blob
     assert "PIN_OK" in got.stdout
     assert "site-packages" in got.stdout
+    assert "REASON_WORDS_OK" in got.stdout

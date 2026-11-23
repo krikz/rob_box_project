@@ -4,6 +4,7 @@ name: "G: Dialog Core Pin Guard"
 # локального src/ (#4932, #4891). Штатный Unit Tests (ROS2 Humble) такого venv
 # не имеет: pytest.skip там был бы вечным зелёным пропуском. Этот джоб ставит
 # тег в изолированный venv и гоняет пробу. Без префикса скрипт падает.
+# Тот же прогон сверяет жёсткие чтения REASON_WORDS монорепо с картой пина (#5210).
 #
 # Каталог tests/ci/dialog_core_pin/ не собирают ни G-Run Tests (src/*/test),
 # ни Offline Unit Tests (tests/unit). Молчаливого skip нет.
