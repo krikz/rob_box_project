@@ -88,4 +88,40 @@ def perform_description(actions: Sequence[str]) -> str:
     )
 
 
-__all__ = ["ACTIONS", "fields_for", "offered_schema", "perform_description"]
+#: Точные формы глагола, которым реплика просит Химеру. Не основы и не вся таблица ``SPEECH_ASK_VERBS``:
+#: «расскажи анекдот химерой» — речь робота, не подготовленная фраза. «сыграй» — те же четыре формы, что
+#: ``rob_box_music.knowledge.SING_PLAY_VERBS``; диалог музыку не импортирует, копия живёт здесь, сверку держит тест.
+#: «спой» здесь нет: пение решает живой маршрут хоста (``sing_family``, голова ``live``).
+SAY_FORMS: Tuple[str, ...] = ("скажи", "скажите", "сказать", "скажи-ка")
+PLAY_FORMS: Tuple[str, ...] = ("сыграй", "сыграйте", "сыграть", "сыграешь")
+_VERB_ACTION = (("speak", SAY_FORMS), ("play", PLAY_FORMS))
+
+
+def verb_action(text: str) -> str:
+    """Действие Химеры, которое реплика просит глаголом, или ``""``.
+
+    «скажи» / «скажите» — ``speak``, «сыграй» / «сыграйте» — ``play``. Отрицание прямо перед глаголом
+    («не скажи», «не сыграй») просьбой не является. Два разных глагола — ``""``: код не выбирает молча.
+    Новой регулярки нет: формы ловит :func:`rob_box_dialog.words.has_form`.
+    """
+    from rob_box_dialog.words import has_form, name_tokens  # noqa: PLC0415 — words импортирует knowledge
+
+    tokens = name_tokens(text)
+    hits = []
+    for action, forms in _VERB_ACTION:
+        if not has_form(text or "", forms):
+            continue
+        if any(token in forms and (i == 0 or tokens[i - 1] != "не") for i, token in enumerate(tokens)):
+            hits.append(action)
+    return hits[0] if len(hits) == 1 else ""
+
+
+__all__ = [
+    "ACTIONS",
+    "PLAY_FORMS",
+    "SAY_FORMS",
+    "fields_for",
+    "offered_schema",
+    "perform_description",
+    "verb_action",
+]

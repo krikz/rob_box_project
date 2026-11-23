@@ -444,6 +444,7 @@ def command_form(turn: "_Turn", snapshot: SessionSnapshot, voices: Voices = (), 
     по каждому, а не по склейке); ``sing`` — путь пения, решённый кодом до модели (:func:`sing_route`);
     живое пение при играющей музыке (``SessionSnapshot.music_playing``) — поверх неё (``Form.sing_over``, n810);
     «химер» в реплике живого пения — семья ``chimera`` (``knowledge.chimera_named``, #5074);
+    «скажи» / «сыграй химерой» без маршрута пения — та же семья, действие из глагола (#5025);
     подложка сказки, анекдота и стиха — только когда человек в этой реплике назвал музыку
     (``tools_view.music_asked``); песня и рэп ставят её по смыслу (``knowledge.PERFORM_BACKING_BY_KIND``).
     ``library`` — реплика просит найти в библиотеке (``tools_view.library_asked``): ``memory_save`` в этом ходе
