@@ -21,7 +21,7 @@ from typing import Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Command, ToolCall
-from rob_box_dialog.words import has_form, name_tokens, strip_wake_word
+from rob_box_dialog.words import done_claims, has_form, name_tokens, strip_wake_word
 
 #: Ведущее слово диктовки. Прошедшее «запомнил» — ответ, не команда: его нет в таблице.
 _LEAD = "запомни"
@@ -121,19 +121,61 @@ def with_dictated(text: str, cmd: Command, acted: Sequence[ToolCall] = ()) -> Tu
     return replace(cmd, actions=(*cmd.actions, save_call(fact))), kn.MEMORY_SAVE_TOOL
 
 
-def saved(text: str, results: Sequence[object]) -> Optional[object]:
-    """Успех диктовки, чью фразу говорит код, или ``None``.
+def claimed(speech: Optional[str]) -> bool:
+    """Речь модели утверждает запись факта (``DONE_CLAIMS["remember_fact"]``).
 
-    Человек продиктовал факт и ``memory_save`` завершился простым успехом с фактом в
-    данных события — этот результат. Фраза строится из него (``memory.saved``), не из
-    слов модели: модель дописывает в подтверждение то, чего человек не говорил (#5166).
-    Не диктовка — ``None``: «Привет, Саша!» рядом с честным ``memory_save`` не
-    дублируется «Запомнил» (``QUIET_WITH_SPEECH_TOOLS``). Отказ и успех с причиной —
-    тоже ``None``: о них по-прежнему говорит код рядом со словами модели.
+    Та же сверка, что у валидатора: «Запомнил, Борис: …» — да, «Привет, Саша!» — нет.
+    Регекса по ответу нет.
     """
-    if dictated_fact(text) is None:
+    return "remember_fact" in done_claims(speech or "")
+
+
+def saved(text: str, results: Sequence[object], speech: Optional[str] = None) -> Optional[object]:
+    """Успех записи, чью фразу говорит код, или ``None``.
+
+    Человек продиктовал факт, либо речь модели утверждает запись, и ``memory_save``
+    завершился простым успехом с фактом в данных события — этот результат. Фраза
+    строится из него (``memory.saved``), не из слов модели: модель дописывает в
+    подтверждение то, чего человек не говорил (#5166). Ни диктовки, ни утверждения —
+    ``None``: «Привет, Саша!» рядом с честным ``memory_save`` не дублируется
+    «Запомнил» (``QUIET_WITH_SPEECH_TOOLS``). Отказ и успех с причиной — тоже ``None``:
+    о них говорит код, а ложное утверждение гасит :func:`drop_speech`.
+    """
+    if dictated_fact(text) is None and not claimed(speech):
         return None
     return next((r for r in results if _plain_save(r)), None)
+
+
+def drop_speech(text: str, speech: Optional[str], results: Sequence[object]) -> bool:
+    """Слова модели о записи не звучат: успех уже сказал код, либо запись не вышла.
+
+    Успех — :func:`saved`. Отказ и провал при утверждении «запомнил» — тоже, но только
+    если реплика не диктовка: «запомни …» отказ не гасит, человек слышит и отказ кода,
+    и слова модели (#5172). Не диктовка — слова модели выдали бы несделанное за сделанное
+    (ADR-0148).
+    """
+    if saved(text, results, speech) is not None:
+        return True
+    if dictated_fact(text) is not None:
+        return False
+    failed = any(
+        getattr(r, "tool", None) == kn.MEMORY_SAVE_TOOL and getattr(r, "status", None) in ("rejected", "failure")
+        for r in results
+    )
+    return bool(failed and claimed(speech))
+
+
+def unkept_claim(speech: Optional[str], actions: Sequence[ToolCall], acted: Sequence[ToolCall] = ()) -> bool:
+    """Речь утверждает запись факта, а ``memory_save`` нет ни в команде, ни в исполненном хода (#5128).
+
+    Та же сверка, что у валидатора: «Запомнил, Борис: …» при пустых действиях — неправда.
+    Диктовка сюда не доходит с пустой командой: хук хода уже положил тул, и утверждение
+    держит он. Фразу вместо лжи говорит код (``command.done_claim``), модель второй раз
+    не зовётся: повтор моста этот случай уже отдал, а тест хода мост не зовёт.
+    """
+    if not claimed(speech):
+        return False
+    return not any(_saves(call) for call in (*actions, *acted))
 
 
 def _plain_save(result: object) -> bool:

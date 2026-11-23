@@ -297,6 +297,33 @@ def asked_level(text: str) -> str:
     return asked.pop() if len(asked) == 1 else ""
 
 
+def _fact_excluded(text: str, tokens: Sequence[str], at: int, claim: MusicPromise) -> bool:
+    """Глагол записи факта здесь — не факт: вопрос, объект чужого вида, знакомство или счёт.
+
+    ``unless_after`` и ``_promises`` смотрят объект только у ``with_near`` и только после глагола. «Запомнил?»
+    кончается глаголом (вопрос — по «?» исходной фразы, как у остальных утверждений), «точку запомнил» несёт
+    объект до него, «запомнил двоих» — счёт после. Свои виды (``waypoint_save``, ``remember_person``) такие
+    фразы ловят сами.
+    """
+    if at + 1 == len(tokens) and text.rstrip().endswith("?"):
+        return True
+    # голый глагол без объекта факта — не утверждение записи: «Записала» в чат рядом со звуком (#3698).
+    # «Запомнил!» объект несёт само: восклицание 1-го лица о факте. Вопрос снят строкой выше.
+    if at + 1 == len(tokens) and not text.rstrip().endswith("!"):
+        return True
+    window = (*tokens[max(0, at - MUSIC_PROMISE_WINDOW):at], *tokens[at + 1:at + 1 + MUSIC_PROMISE_WINDOW])
+    if any(word.startswith(("точк", "голос", "лиц", "человек")) for word in window):
+        return True
+    if "зовут" in window or "звать" in window:
+        return True
+    # имя ДО глагола — обращение, не объект факта: «Хорошо, Тамара, запомнил» (#4054). После глагола
+    # имя не снимает: «Запомнил, Борис: …» — как раз утверждение записи (n206).
+    before = tokens[max(0, at - MUSIC_PROMISE_WINDOW):at]
+    if set(before) & set(_kn.KNOWN_FIRST_NAMES):
+        return True
+    return bool(set(tokens[at + 1:at + 1 + MUSIC_PROMISE_WINDOW]) & set(claim.unless_after))
+
+
 def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
     """Обещает ли фраза ``tokens`` (:func:`name_tokens`) это действие: глагол из ``alone``, либо глагол из ``with_near`` и
     в ``MUSIC_PROMISE_WINDOW`` словах с любой стороны слово с основой из ``near``."""
@@ -342,7 +369,7 @@ def search_promises(text: str) -> Tuple[str, ...]:
 
 def done_claims(text: str) -> Tuple[str, ...]:
     """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
-    ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
+    ``remember_fact``, ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
     («Готово, хил-окно удалена.», «сохранил точку», «поехал», «говорю медленнее») и обещании отправки снимков
     (#4505). Слово с ``unless_before`` за одно-два слова до
     него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Слово из
@@ -352,6 +379,10 @@ def done_claims(text: str) -> Tuple[str, ...]:
     found = []
     for kind, claim in DONE_CLAIMS.items():
         kept = tuple("" if set(tokens[max(0, i - 2):i]) & set(claim.unless_before) else t for i, t in enumerate(tokens))
+        if kind == "remember_fact":
+            verbs = set(claim.alone) | set(claim.with_near)
+            kept = tuple(
+                "" if t in verbs and _fact_excluded(text, tokens, i, claim) else t for i, t in enumerate(kept))
         if _promises(kept, replace(claim, unless_before=())):
             found.append(kind)
     return tuple(found)
