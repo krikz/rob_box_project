@@ -149,7 +149,7 @@ def to_message(message: Any) -> LLMMessage:
 def tool_schema(entry: Any) -> Mapping[str, Any]:
     """Запись каталога (``ToolCatalogEntry``) → OpenAI-схема тула для провайдера.
 
-    Семья ``chimera`` сужает ``action`` до ``sing`` той же функцией, что валидатор (#5074, #5152).
+    Семья ``chimera`` сужает ``action`` до действия реплики той же функцией, что валидатор (#5025, #5074).
     Остальные тулы отдают параметры записи как есть: подмена каталогом ломала бы заглушку теста.
     """
     parameters = entry.parameters

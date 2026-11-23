@@ -3970,8 +3970,8 @@ CHIMERA_STEM = "химер"
 #: играет («под этот бит зачитай рэп», акт 8 n810): играющее и есть подложка — ``backing`` только ``none``, выступление
 #: идёт поверх, без вопроса «выключить и зачитать?» (``perform.ask_replace_music``) и без второго бита. ``generate``
 #: (генерация и кэш) — песню делает ``generate_music`` (фразу о старте строит код по исходу тула), петь выступлением
-#: (song/rap) нельзя. ``chimera`` — «спой … химерой» (#5074): живое ``perform`` не обязательно, обязателен
-#: ``chimera_perform`` (срез музыки его вытесняет, форму хода — нет).
+#: (song/rap) нельзя. ``chimera`` — «скажи / спой / сыграй … химерой» (#5025, #5074): живое ``perform``
+#: не обязательно, обязателен ``chimera_perform`` (срез музыки его вытесняет, форму хода — нет).
 SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     "live": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True,
                      backings=tuple(b for b in PERFORM_BACKINGS if b != "none")),
@@ -3984,6 +3984,7 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     # «спой химерой»: не живое пение — тул Химеры обязателен, действие sing (#5074, #5152, ADR-0148).
     # Каталог поставки объявляет только call. Это не вторая таблица клипов: форма сужает action до sing,
     # существо и вызов из схемы уходят — готовый WAV этим ходом не выбирается.
+    # «скажи» / «сыграй» берут действие из :func:`chimera_form_actions`, не из этой строки.
     "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False, tool_actions=("sing",)),
 })
 #: Голова id пути хода «правка играющего» (``edit:<вид>+…``): музыка играет, а реплика её правит («сделай бит
@@ -4011,7 +4012,9 @@ def sing_family(route: str, over_music: bool = False, text: str = "") -> str:
     """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); правка
     играющего ``edit:*`` (:data:`EDIT_ROUTE`) — ``edit``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
     «» — не пение. Живое пение, в реплике которого названа Химера (:func:`chimera_named`), — семья ``chimera``:
-    форма требует ``chimera_perform``, а не ``perform`` (#5074)."""
+    форма требует ``chimera_perform``, а не ``perform`` (#5074). Пустой маршрут с тем же стеблем и глаголом
+    «скажи» / «сыграй» (:func:`rob_box_dialog.chimera_offer.verb_action`) — та же семья (#5025): «сыграй» музыкой
+    пением не считается, а схема тула без семьи остаётся ``call``. «Покажи химеру» глагола нет — семья пуста."""
     head = (route or "").split(":", 1)[0]
     if head == EDIT_ROUTE:
         return "edit"
@@ -4019,7 +4022,11 @@ def sing_family(route: str, over_music: bool = False, text: str = "") -> str:
         if chimera_named(text):
             return "chimera"
         return "live_over" if over_music else "live"
-    return "generate" if head else ""
+    if head:
+        return "generate"
+    from rob_box_dialog.chimera_offer import verb_action  # noqa: PLC0415 — offer не тянет knowledge
+
+    return "chimera" if chimera_named(text) and verb_action(text) else ""
 
 
 #: Просьба найти в библиотеке (марафон #3 акт 7 n705, #5093): глагол поиска словом целиком и основа «библиотек».
@@ -4114,6 +4121,19 @@ def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:
     if form.kinds:
         return form.kinds
     return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
+
+
+def chimera_form_actions(text: str, route: str = "") -> Tuple[str, ...]:
+    """Действие ``chimera_perform``, которое форма хода оставляет в схеме (#5025, ADR-0148).
+
+    Живой маршрут — ``sing``, как в :data:`SING_FORMS`: «спой химерой» не становится речью от слова «скажи»
+    рядом. Пустой маршрут — ``speak`` или ``play`` из :func:`rob_box_dialog.chimera_offer.verb_action`.
+    Глагола нет — действие пения: семью без глагола открывает только живой маршрут.
+    """
+    from rob_box_dialog.chimera_offer import verb_action  # noqa: PLC0415 — offer не тянет knowledge
+
+    asked = "" if (route or "").split(":", 1)[0] == "live" else verb_action(text)
+    return (asked or "sing",)
 
 
 def chimera_tool_schema(schema: Mapping[str, Any], form: SingForm) -> Dict[str, Any]:
