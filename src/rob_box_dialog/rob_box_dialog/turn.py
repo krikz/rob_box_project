@@ -121,7 +121,7 @@ from rob_box_dialog.respond import (ActionResult, asks, audible, classed, failed
 from rob_box_dialog.session import Session, SessionSnapshot, SpeakerRef
 from rob_box_dialog.speaker_adapter import asks_recognized, known_voice_registers, recognition_reply, speaker_block
 from rob_box_dialog.window_reset import WindowGuard, reset_if_idle, reset_window
-from rob_box_dialog.words import (asks_own_memory_condition, asks_question, asks_to_listen, has_form, has_word,
+from rob_box_dialog.words import (asks_own_memory_condition, asks_question, asks_to_listen, has_form,
                                   music_stop_claimed, same_stop_rest)
 from rob_box_dialog.tools_view import (available_tools, catalogs_asked, library_asked, music_asked, needs_words,
                                        robot_asked, show_asked, speech_asked, voice_asked, voice_named)
@@ -1252,9 +1252,9 @@ def switched_theme(log: Any, snapshot: SessionSnapshot, turn: "_Turn", cmd: Comm
 
 
 def _remap_ambulance_for_siren(text: str, actions: Sequence[ToolCall]) -> Sequence[ToolCall]:
-    """``animation=ambulance`` → ``police_lights`` только когда в тексте есть ``сирен*``/``мигалк*``
-    и нет явной скорой помощи ``скорая/скорой/скорую/амбуланс*`` (#4694). Решает код, не модель."""
-    if not has_word(text, kn.POLICE_LIGHTS_STEMS) or has_word(text, kn.AMBULANCE_EXCLUDE_STEMS):
+    """``animation=ambulance`` → ``police_lights``, когда реплика про сирену или мигалку и не про скорую
+    (#4694). Оговорка STT «сериал» читается тем же словарём, что и звук (#5020). Решает код, не модель."""
+    if not siren_ask.asks_police_lights(text):
         return actions
     fixed: List[ToolCall] = []
     changed = False

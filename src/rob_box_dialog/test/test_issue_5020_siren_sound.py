@@ -3,6 +3,10 @@
 Живой n903 (марафон №3, 22.11): даже дословная реплика «сирену и мигалку покажи» дала только
 ``play_animation``. Перепись ``ambulance`` → ``police_lights`` (#4694) звук не добавляет.
 Что человек назвал, код читает из ``knowledge.SOUND_ALIASES_RU`` и ставит вызов сам.
+
+Тот же шаг 21.11 (run 44916929470) и 22.11 (run 44999727503): STT слышит «сирену» как «сериал».
+Основа ``сирен*`` такое слово не ловит. Оговорка — целое слово в ``knowledge.SOUND_MISHEARS_RU``,
+и только когда реплика уже просит звук или мигалку.
 """
 
 import asyncio
@@ -111,6 +115,35 @@ def test_empty_and_noise_do_not_add_a_call_and_do_not_break():
 def test_explicit_ambulance_does_not_gain_the_siren_sound():
     """«Включи сирену скорой помощи»: скорая остаётся скорой, ``robot_alert`` код не подкладывает."""
     assert _run("включи сирену скорой помощи", (AMBULANCE,)) == [[("play_animation", {"animation": "ambulance"})]]
+
+
+def test_turn_on_siren_plays_the_catalog_sound_and_not_the_flasher():
+    """«Включи сирену»: звук каталога ``robot_alert``, мигалку код не выдумывает."""
+    assert _run("включи сирену", ()) == [[("play_sound", {"sound": "robot_alert"})]]
+
+
+def test_serial_with_flasher_is_the_siren_mishear_and_plays_the_sound():
+    """n903, как услышал STT: «сериал и мигалку» — оговорка ``сериал`` → основа ``сирен``, звук и сцена."""
+    heard = "робот а теперь сериал и мигалку покажи напугаем валеру"
+    assert _run(heard, (ANIM,)) == [list(BOTH)]
+    assert _run(heard, (AMBULANCE,)) == [list(BOTH)]
+    assert _run(heard, ()) == [list(BOTH)]
+
+
+def test_serial_alone_is_not_a_siren_and_does_not_play_a_sound():
+    """Голое «сериал» / «включи сериал» звук не называет: оговорка без звука и без мигалки не читается."""
+    assert _run("включи сериал", ()) == []
+    assert _run("посмотри сериал", ()) == []
+    assert _run("сериал", ()) == []
+    assert siren_ask.named_sound("включи сериал") is None
+    assert siren_ask.misheard_stems("включи сериал") == ()
+
+
+def test_serial_next_to_a_named_bell_does_not_replace_that_sound():
+    """«Звонок и сериал» без мигалки: оговорка не читается, звучит названный звонок, не сирена."""
+    assert siren_ask.misheard_stems("включи звонок и сериал") == ()
+    assert siren_ask.named_sound("включи звонок и сериал") == "ui_bell"
+    assert _run("включи звонок и сериал", ()) == [[("play_sound", {"sound": "ui_bell"})]]
 
 
 def test_with_asked_skips_a_query_and_salvage_still_adds_the_sound():
