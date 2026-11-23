@@ -38,6 +38,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, List, Mapp
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import (NOT_RUN, Busy, Command, Expression, Invalid, Result, explain, fit_speech,
                                     form_schema, is_empty, is_query_data, loud_actions, overlong_only, parse, to_args,
+                                    tool_schema,
                                     validate, words_only)
 from rob_box_dialog.command import ToolCall as CommandCall
 from rob_box_dialog.degrade import CommandMode, select_mode
@@ -96,7 +97,7 @@ def _schemas(names: Iterable[str]) -> List[Mapping[str, Any]]:
     from rob_box_core.tool_catalog import get_tool  # noqa: PLC0415
 
     return [{"type": "function", "function": {"name": t.name, "description": t.description,
-                                              "parameters": dict(t.parameters)}} for t in map(get_tool, names)]
+                                              "parameters": dict(tool_schema(t.name))}} for t in map(get_tool, names)]
 
 
 def mode_note(mode: CommandMode, request: ModeRequest, schema: Mapping[str, Any] | None = None) -> str:

@@ -264,6 +264,25 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
     return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over, form.text)
 
 
+def tool_schema(name: str, form: Optional[Form] = None) -> Mapping[str, Any]:
+    """Схема тула, которую ход показывает модели и которой судит ответ.
+
+    Каталог — как есть, кроме семьи ``chimera``: там действие — ``sing`` формы, не ``call`` поставки
+    (#5074, #5152). Одна функция и для схемы модели, и для :func:`validate`.
+    """
+    form = form or current_form()
+    schema = get_tool(name).parameters
+    sing = form.sing_form
+    if name != kn.CHIMERA_TOOL or sing is None:
+        return schema
+    return kn.chimera_tool_schema(schema, sing)
+
+
+def _tool_schema(name: str) -> Mapping[str, Any]:
+    """Схема тула в текущей форме хода. Валидатор зовёт её, не каталог напрямую."""
+    return tool_schema(name, current_form())
+
+
 @dataclass
 class _Repairs:
     """Что разбор поправил, не отвергая команду: переложенные слоты лица и отброшенные поля экспрессии."""
@@ -637,6 +656,15 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
+    token = _FORM.set(form)  # схема тула читает ту же форму, что судит ход (#5074, #5152)
+    try:
+        return _validate_form(cmd, available_tools, session, busy, form)
+    finally:
+        _FORM.reset(token)
+
+
+def _validate_form(cmd: Command, available_tools: Collection[str], session: Any, busy: Busy, form: Form) -> Result:
+    """Проверки :func:`validate` при уже выставленной форме хода."""
     cmd = _drop_closed_passed(_drop_cosmetic_voice(_fit_soft_args(_drop_nested_extras(cmd)), form, busy), form)
     cmd = _drop_replaced_stops(cmd)  # stop+start одного тула - смена, не два действия класса (#4347)
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
@@ -1174,7 +1202,7 @@ def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], ag
     for call in actions:
         cls = _action_class(call.tool, available, agent)
         per_class[cls] = per_class.get(cls, 0) + 1
-        error = _schema_error(get_tool(call.tool).parameters, call.args, call.tool)
+        error = _schema_error(_tool_schema(call.tool), call.args, call.tool)
         if error:
             raise _Bad("bad_args", error)
     crowded = [c for c in kn.SINGLE_ACTION_CLASSES if per_class.get(c, 0) > 1]

@@ -3918,13 +3918,15 @@ SING_PERFORM_KINDS: Tuple[str, ...] = ("song", "rap")
 class SingForm:
     """Что форма хода делает по пути пения: ``closed_tools`` — тулы вне среза и вне команды (новая музыка мимо
     выступления), ``needs_perform`` — команда обязана петь (``perform``), ``needs_tool`` — команда обязана позвать тул,
-    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все)."""
+    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все),
+    ``tool_actions`` — действие тула, которое форма оставляет в схеме (пусто — enum каталога как есть)."""
 
     closed_tools: Tuple[str, ...] = ()
     needs_perform: bool = False
     needs_tool: str = ""
     kinds: Tuple[str, ...] = ()
     backings: Tuple[str, ...] = ()
+    tool_actions: Tuple[str, ...] = ()
 
 
 #: Стебель, которым реплика называет Химеру. Тот же, что в :data:`SOUND_STEMS` (группа ``sound``): нового списка нет,
@@ -3946,8 +3948,10 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     # правка играющего: заказ нового закрыт, правка обязательна; выступление форма не трогает (любой вид)
     "edit": SingForm(closed_tools=("generate_music", "request_music", "dj_set"), needs_tool=EDIT_TOOL,
                      kinds=PERFORM_KINDS),
-    # «спой химерой»: не живое пение — тул Химеры обязателен, perform не обязателен (#5074, ADR-0148)
-    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False),
+    # «спой химерой»: не живое пение — тул Химеры обязателен, действие sing (#5074, #5152, ADR-0148).
+    # Каталог поставки объявляет только call. Это не вторая таблица клипов: форма сужает action до sing,
+    # существо и вызов из схемы уходят — готовый WAV этим ходом не выбирается.
+    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False, tool_actions=("sing",)),
 })
 #: Голова id пути хода «правка играющего» (``edit:<вид>+…``): музыка играет, а реплика её правит («сделай бит
 #: потяжелее», «ускорь», «добавь баса»; кейс Шифу 27.10 посреди рэпа, марафон n504–n506). Решает хост до модели тем же
@@ -4077,6 +4081,27 @@ def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:
     if form.kinds:
         return form.kinds
     return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
+
+
+def chimera_tool_schema(schema: Mapping[str, Any], form: SingForm) -> Dict[str, Any]:
+    """Схема ``chimera_perform`` на форме семьи ``chimera``.
+
+    Каталог поставки честно объявляет только ``call`` (#5152). Этот ход — живой синтез-маршрут (#5074):
+    действие в схеме — ``tool_actions`` формы, не список файлов. Существо и вызов клипа из схемы уходят:
+    их нет в маршруте пения, и оставлять enum поставки значило бы звать клип действием ``sing``.
+    Другие формы каталог не трогают.
+    """
+    if form.needs_tool != CHIMERA_TOOL or not form.tool_actions:
+        return dict(schema)
+    out = copy.deepcopy(dict(schema))
+    props = out.get("properties")
+    if not isinstance(props, dict) or "action" not in props:
+        return out
+    props["action"] = dict(props["action"])
+    props["action"]["enum"] = list(form.tool_actions)
+    props.pop("creature", None)
+    props.pop("call", None)
+    return out
 
 
 def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False, text: str = "") -> Dict[str, Any]:

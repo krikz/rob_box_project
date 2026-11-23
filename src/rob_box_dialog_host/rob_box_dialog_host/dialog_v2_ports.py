@@ -30,6 +30,7 @@ from rob_box_core import expression_client, speech_client
 from rob_box_core.utterance import Sink, Utterance
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Busy, Expression, Result, ToolCall as CommandCall
+from rob_box_dialog.command import tool_schema as form_tool_schema
 from rob_box_dialog.context import measure
 from rob_box_dialog.deadline import ProviderFailed
 from rob_box_dialog.execute import ActionRequest, Executor, owner_event
@@ -146,9 +147,13 @@ def to_message(message: Any) -> LLMMessage:
 
 
 def tool_schema(entry: Any) -> Mapping[str, Any]:
-    """Запись каталога (``ToolCatalogEntry``) → OpenAI-схема тула для провайдера."""
+    """Запись каталога (``ToolCatalogEntry``) → OpenAI-схема тула для провайдера.
+
+    Семья ``chimera`` сужает ``action`` до ``sing`` той же функцией, что валидатор (#5074, #5152).
+    Каталог поставки при этом остаётся ``call``.
+    """
     return {"type": "function", "function": {"name": entry.name, "description": entry.description,
-                                             "parameters": dict(entry.parameters)}}
+                                             "parameters": dict(form_tool_schema(entry.name))}}
 
 
 def follow_for(result: Result) -> Callable[[str], Sequence[Any]]:

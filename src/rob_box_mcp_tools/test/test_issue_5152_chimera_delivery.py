@@ -27,7 +27,19 @@ BIRD = "bird_chirps_16k_notail.wav"
 BIRD_SHA = "03fc28940f71091bc60e89b21cca846b5173bac521a15f3166f3c902c369ab33"
 SEAL = "seal_zap_16k_notail.wav"
 SEAL_SHA = "fac1baf26afa3134d2abc8eaddc2cb794c3218c110bac96ed78b918b7ae0c2c2"
-REPO_CLIPS = Path(__file__).resolve().parents[3] / "sound_pack" / "chimera"
+
+
+def _repo_clips() -> Path:
+    """Поставка лежит в чекауте. Идём вверх до profile.json, а не считаем parents[N]."""
+    here = Path(__file__).resolve()
+    for ancestor in Path(__file__).resolve().parents:
+        profile = ancestor / "sound_pack" / "chimera" / "profile.json"
+        if profile.is_file():
+            return profile.parent
+    raise FileNotFoundError(f"sound_pack/chimera/profile.json не найден от {here}")
+
+
+REPO_CLIPS = _repo_clips()
 
 
 class _Node:

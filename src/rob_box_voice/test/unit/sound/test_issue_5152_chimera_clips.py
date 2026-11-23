@@ -14,7 +14,23 @@ from rob_box_voice.sound_node import load_chimera_clips
 
 BIRD = "bird_chirps_16k_notail.wav"
 SEAL = "seal_zap_16k_notail.wav"
-REPO_CLIPS = Path(__file__).resolve().parents[5] / "sound_pack" / "chimera"
+
+
+def _repo_clips() -> Path:
+    """Каталог поставки. CI копирует тест в test_ws/src и sound_pack рядом с ним.
+
+    Считать parents[N] нельзя: в чекауте и в test_ws число уровней разное. Идём вверх
+    до корня, где лежит sound_pack/chimera/profile.json.
+    """
+    here = Path(__file__).resolve()
+    for ancestor in Path(__file__).resolve().parents:
+        profile = ancestor / "sound_pack" / "chimera" / "profile.json"
+        if profile.is_file():
+            return profile.parent
+    raise FileNotFoundError(f"sound_pack/chimera/profile.json не найден от {here}")
+
+
+REPO_CLIPS = _repo_clips()
 
 
 class _ClipNode:
