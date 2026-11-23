@@ -959,23 +959,32 @@ def outcome_phrase(results: Sequence[ActionResult]) -> Optional[str]:
 
 
 def _spoken_outcome(cmd: Command, results: Sequence[ActionResult], agent: str,
-                    performing: bool = False) -> Optional[str]:
+                    performing: bool = False, text: str = "") -> Optional[str]:
     """Фраза кода об исходе хода; речь модели рядом с тихими действиями (в чат телеграма она не звучит) молчит об их
     простом успехе (``respond.audible``), а при идущем выступлении (``performing``) молчит общий успех запуска
     музыки — только у агента, чьи фразы звучат в динамиках поверх выступления: чату о запуске музыки на роботе
-    код говорит всегда (пульт). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели
+    код говорит всегда (пульт). Успех диктовки — исключение: фраза из факта результата, слова модели о нём не
+    звучат (:func:`fact_dictation.saved`, #5166). Исходов ``query`` здесь нет: пока итерации есть, они уходят модели
     (:func:`query_more`, там же отказ чтения памяти), на последней ``query`` не исполняется (:func:`_runnable`)."""
     speaks = bool(cmd.speech) and agent != kn.TEXT_CHANNEL_AGENT
     over_performance = performing and agent_spec(agent).sink == Sink.SPEAKERS
-    return outcome_phrase(audible(results, speaks, over_performance)) if results else None
+    heard = audible(results, speaks, over_performance) if results else ()
+    told = fact_dictation.saved(text, results)
+    if told is not None and told not in heard:
+        heard = (*heard, told)
+    return outcome_phrase(heard) if heard else None
 
 
-def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True) -> List[Tuple[str, str]]:
+def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = True, text: str = "",
+                   results: Sequence[ActionResult] = ()) -> List[Tuple[str, str]]:
     """Что звучит из слов модели: реплика или вопрос — только без действий (§4.1), выступление — всегда. У агента с
     текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно.
-    ``segments=False`` — выступление взял его владелец (``Ports.perform``): сегменты звучат там, не репликами."""
+    ``segments=False`` — выступление взял его владелец (``Ports.perform``): сегменты звучат там, не репликами.
+    Успех диктовки (:func:`_dictation_said`) — слова модели не звучат: фраза уже из факта результата (#5166)."""
     lines: List[Tuple[str, str]] = []
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
+    if _dictation_said(text, results):
+        said = None
     if said and (not loud_actions(cmd) or agent == kn.TEXT_CHANNEL_AGENT):
         lines.append((said, cmd.voice or ""))
     elif said:
@@ -1280,12 +1289,21 @@ def dictated_fact(log: Any, turn: "_Turn", cmd: Command) -> Command:
     """Продиктованный факт без тула в команде — вызовом кода (#5128).
 
     «Запомни про меня…» модель закрывала словами «Запомнил» и ``memory_save`` не звала.
-    Слова модели не подменяются.
+    Слова модели не подменяются: что звучит при успехе, решает :func:`_dictation_said`.
     """
     fresh, done = fact_dictation.with_dictated(turn.text, cmd, turn.acted)
     if done:
         log.info(f"{LOG_MARK} диктовка факта: код добавил {done} (модель тул не звала) turn={turn.turn_id}")
     return fresh
+
+
+def _dictation_said(text: str, results: Sequence[ActionResult]) -> bool:
+    """Успех диктовки уже в исходах: слова модели об этом ходе не звучат (#5166).
+
+    Фраза — из факта результата (:func:`fact_dictation.saved`), не из речи модели.
+    Не диктовка и отказ записи — слова модели остаются.
+    """
+    return fact_dictation.saved(text, results) is not None
 
 
 def owed_now(snapshot: SessionSnapshot, turn: "_Turn", cmd: Command, fresh: Command, names: Collection[str],
@@ -2574,7 +2592,8 @@ class TurnEngine:
         (:func:`_close_unread`), без грусти, если это ответ по данным (:func:`query_emotion`)."""
         turn.expression = command_face(cmd.expression, results, turn.text, earlier=turn.expression,
                                        wake_words=turn.wake_words)
-        outcome = _spoken_outcome(cmd, unsaid_stops(turn, results), self.session.snapshot.agent, self.log.performing())
+        outcome = _spoken_outcome(
+            cmd, unsaid_stops(turn, results), self.session.snapshot.agent, self.log.performing(), turn.text)
         outcome = replace_timeout_outcome(self, turn, results, outcome)  # прежний сет звучит - не «не заиграла» (#4479)
         if outcome:  # провал - грустно, вопрос тула («Удалить «X»?») - эмоцией вопроса, иначе лицом модели
             self._say(turn, outcome, None, outcome_emotion(results, cmd.expression.emotion))
@@ -2586,7 +2605,8 @@ class TurnEngine:
         owned, refusal = hand_perform(self._ports, turn.turn_id, turn.epoch, asked, self._log)
         note_perform_start(self.log, turn.turn_id, cmd, owned and not refusal)
         self._say(turn, refusal, None, "sad")  # отказ владельца выступления — фраза кода, а не тишина ("" — нет)
-        lines = _content_lines(cmd, self.session.snapshot.agent, segments=not owned)
+        lines = _content_lines(
+            cmd, self.session.snapshot.agent, segments=not owned, text=turn.text, results=results)
         for text, voice in lines:
             self._say(turn, text, voice or None, cmd.expression.emotion)
         if cmd.ask is not None and not cmd.actions:
