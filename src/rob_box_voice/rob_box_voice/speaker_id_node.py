@@ -1910,9 +1910,10 @@ class SpeakerIdNode(Node):
         # 2) Профили-тёзки (issue #2747, живой "Дэнчик" — 1ae4b0ac и
         #    c9e981cb) -- top-1 может оказаться ВТОРЫМ профилем ТОГО ЖЕ
         #    человека (другой speaker_id, то же имя). Это не "другой
-        #    голос" -- сравниваем по имени, как ``_gap_to_other_name``
-        #    (issue #2809/#2818): совпадение имени = не конкурент,
+        #    голос" -- сравниваем по имени через ``_same_speaker_name``
+        #    (issue #2809/#2818, #5019): совпадение ИМЕНИ = не конкурент,
         #    дописываем в галерею ВЛАДЕЛЬЦА СЕССИИ (не в top-1 профиль).
+        #    Пустое имя именем не является: два безымянных — не тёзки.
         # 3) Если есть конкурент с ДРУГИМ именем -- требуем отрыв
         #    (``_gap_to_other_name``, тот же порог
         #    ``name_confidence_min_gap``, что и у #2809): маленький
@@ -1964,10 +1965,12 @@ class SpeakerIdNode(Node):
         """
         candidates = self._db.identify_candidates(embedding, top_n=5)
         best = candidates[0] if candidates else None
-        owner_name_cf = (owner_name or "").strip().casefold()
+        # #5019: пустое имя — не имя. ``"" == ""`` делало два безымянных
+        # профиля тёзками. ``_same_speaker_name`` мусорное имя ни с чем не
+        # сводит; именованных тёзок («Дэнчик») считает одним человеком.
         best_is_owner_or_twin = bool(best) and (
             best.speaker_id == owner_id
-            or (best.name or "").strip().casefold() == owner_name_cf
+            or _se_mod._same_speaker_name(best.name, owner_name)
         )
         if not best_is_owner_or_twin:
             return (
@@ -1981,6 +1984,20 @@ class SpeakerIdNode(Node):
                 f"похожесть на владельца ({best.confidence:.3f}) ниже "
                 f"growth_owner_min_score={self._growth_owner_min_score} — "
                 "недостаточно уверенно, чтобы дописать чужим риском"
+            )
+        # #5019: у безымянного нет имени, которым он подтвердил бы «это я».
+        # Пол роста 0.65 ниже порога опознания 0.72: голос, которого
+        # identify не узнал, в галерею безымянного не пишем — иначе
+        # max-по-галерее потом узнает чужого как первого. Именованному
+        # порог не поднимаем: свой на плохом канале галерею растит.
+        if (
+            not _se_mod._validate_speaker_name(owner_name)
+            and best.confidence < _se_mod.IDENTIFY_THRESHOLD
+        ):
+            return (
+                f"безымянный владелец: похожесть {best.confidence:.3f} ниже "
+                f"порога опознания {_se_mod.IDENTIFY_THRESHOLD} — чужой "
+                "голос свой профиль не подтверждает"
             )
         gap = _gap_to_other_name(best, candidates)
         if gap is not None and gap < self._name_confidence_min_gap:
