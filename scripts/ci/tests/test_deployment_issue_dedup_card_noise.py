@@ -9,6 +9,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "deployment_issue_dedup.py"
 SPEC = importlib.util.spec_from_file_location("deployment_issue_dedup", SCRIPT_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -262,3 +264,55 @@ def test_stt_other_grpc_status_echo_stays_critical() -> None:
     line = STT_DEADLINE_ECHO.replace("DEADLINE_EXCEEDED", "UNAUTHENTICATED")
 
     assert critical(line, "main") == line
+
+
+# Sound Pi, staging run 45414643521. The next successful Yandex attempt preceded the deploy check.
+STT_DEADLINE = (
+    "[stt_node-5] [WARN] [1795530779.006027370] [stt_node]: ⚠️ [issue 1477] stream error: "
+    "StatusCode.DEADLINE_EXCEEDED Deadline Exceeded [#2924 phase=REAL_TIME responses=0 partials=0 "
+    "eou=0 segments=0 stream=[-]]"
+)
+
+
+def test_stt_source_deadline_is_reported_as_warning() -> None:
+    recovery = "[stt_node-5] [INFO] [1795530810.728058853] [stt_node]: [stt_attempt_metric] provider=yandex reason=ok"
+    logs = f"{STT_DEADLINE}\n{recovery}"
+    assert critical(logs, "sound") is None
+    assert warning(logs, "sound") == STT_DEADLINE
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("[WARN]", "[ERROR]"),
+        ("DEADLINE_EXCEEDED", "UNAUTHENTICATED"),
+        ("DEADLINE_EXCEEDED", "PERMISSION_DENIED"),
+        ("[stt_node]:", "[dialog_node]:"),
+    ],
+)
+def test_stt_other_source_errors_stay_critical(old: str, new: str) -> None:
+    line = STT_DEADLINE.replace(old, new)
+    assert critical(line, "sound") == line
+
+
+def test_stt_deadline_does_not_hide_a_traceback() -> None:
+    detail = "[stt_node-5] RuntimeError: failed to capture audio"
+    logs = f"{STT_DEADLINE}\n[stt_node-5] Traceback (most recent call last):\n{detail}"
+    assert critical(logs, "sound") == detail
+
+
+def test_stt_deadline_does_not_hide_another_node_error() -> None:
+    error = "[ERROR] [audio_node]: capture failed"
+    assert critical(f"{STT_DEADLINE}\n{error}", "sound") == error
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        STT_DEADLINE.replace("Deadline Exceeded", "[ERROR] Authorization failed"),
+        STT_DEADLINE + " [ERROR] audio capture failed",
+        STT_DEADLINE.replace("stream=[-]", "stream=[[ERROR] audio capture failed]"),
+    ],
+)
+def test_stt_deadline_with_unexpected_error_text_stays_critical(line: str) -> None:
+    assert critical(line, "sound") == line
