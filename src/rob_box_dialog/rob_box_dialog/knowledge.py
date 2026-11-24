@@ -3417,6 +3417,20 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
         tools=("set_speed",),
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
 })
+#: Настоящее время записи факта (#5215). Не в :data:`DONE_CLAIMS`: фраза плана кода «Запоминаю: {items}»
+#: (``chain.plan.save``) звучит ДО шагов и законно (инвариант #4403, ``test_code_plan_claims_nothing_done``).
+#: Речь модели звучит ПОСЛЕ тула, и «Записываю: …» при ``rejected``/``timeout`` выдаёт несделанное за
+#: сделанное. Читает только :mod:`.fact_dictation` (:func:`words.recording_claims`), не валидатор команды.
+#: ``alone`` без восклицания не утверждение (``words._fact_excluded``): голое «Записываю» в чат — не ложь.
+RECORDING_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
+    "remember_fact": MusicPromise(
+        alone=("записываю", "запоминаю"),
+        with_near=("сохраняю",),
+        near=("что", "про", "это"),
+        tools=(MEMORY_SAVE_TOOL,),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE,
+        unless_after=REMEMBER_PERSON_COUNT_AFTER),
+})
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
 #: ретрай мимо команды (ночной замер 22.10, ход 4: звук потерян). Молчать честно — ``passed``.

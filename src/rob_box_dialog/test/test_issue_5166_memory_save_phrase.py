@@ -110,10 +110,16 @@ def test_a_greeting_beside_an_honest_save_is_not_doubled_by_remembered():
     assert all("Запомнил" not in line for line in ports.said)
 
 
-def test_a_rejected_dictation_still_says_the_failure_and_the_model():
-    """Отказ записи — не успех диктовки: отказ говорит код, слова модели остаются."""
+def test_a_rejected_dictation_says_the_failure_not_the_model_claim():
+    """Отказ записи при диктовке: отказ говорит код, а речь модели, утверждающая запись, не звучит (#5215).
+
+    Раньше (#5172) слова модели оставались: живой ход 24.11 показал, что «Записываю: …» при
+    ``rejected{no_person}`` звучит следом за отказом. Реплика, которая записи не утверждает,
+    по-прежнему звучит (``test_issue_5215``).
+    """
     ports = _run(N206, "Запомнил!", outcomes={kn.MEMORY_SAVE_TOOL: ("rejected", {})})
-    assert ports.said == [phrases.text("local.rejected"), "Запомнил!"]
+    assert ports.said == [phrases.text("local.rejected")]
+    assert "Запомнил!" not in ports.said
 
 
 def test_a_claimed_save_that_is_not_a_dictation_is_said_from_the_result():
