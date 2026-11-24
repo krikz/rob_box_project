@@ -186,8 +186,7 @@ def test_patch_applies_after_existing_controller_patches(tmp_path: Path):
     cmake_text = cmake.read_text(encoding="utf-8")
     assert "Python3::Python" not in cmake_text
     assert "find_package(Python3" not in cmake_text
-    # #5021: конструктор не инициализирует проверку. Образ везёт только
-    # libcontroller_server_core.so, а `ros2 run` запускает штатный бинарь.
+    # #5021: конструктор не инициализирует проверку до spin.
     ctor = after.index('RCLCPP_INFO(get_logger(), "Creating controller server");')
     assert "stuckAgainstInit" not in after
     assert after.index('declare_parameter("controller_frequency", 20.0);', ctor) < after.index(
