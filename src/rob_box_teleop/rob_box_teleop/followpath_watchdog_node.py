@@ -26,6 +26,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from rob_box_core.follow_path_halt import FOLLOW_PATH_CANCEL_SRV, NAV_CMD_VEL_TOPIC, ZERO_TWIST_REPEATS
 from rob_box_teleop import followpath_orphan as fo
+from rob_box_teleop.yaw_at_goal_node import YawAtGoal
 
 #: Action, из которых дерево зовёт FollowPath. Новый источник — строка сюда, не новая ветка правила.
 PARENT_STATUS_TOPICS = (
@@ -85,10 +86,7 @@ class FollowPathWatchdogNode(Node):
         self._cancel_client = self.create_client(CancelGoal, FOLLOW_PATH_CANCEL_SRV)
         self._cmd_vel = self.create_publisher(Twist, NAV_CMD_VEL_TOPIC, 10)
         self.create_timer(1.0 / max(rate, 1.0), self._tick)
-        # Импорт здесь: yaw_at_goal_node берёт PARENT_STATUS_TOPICS из этого модуля.
-        from rob_box_teleop.yaw_at_goal_node import YawAtGoal  # noqa: PLC0415
-
-        self._yaw = YawAtGoal(self, self._follow_path_active)
+        self._yaw = YawAtGoal(self, self._may_approach_goal)
         sources = ", ".join(source for source, _ in PARENT_STATUS_TOPICS)
         self.get_logger().info(f"#4458 сторож сирот FollowPath: orphan_timeout_s={self._timeout} источники={sources}")
 
@@ -102,8 +100,10 @@ class FollowPathWatchdogNode(Node):
         self._follow = _goals(msg)
         self._follow_infos = {_uuid_hex(s.goal_info): s.goal_info for s in msg.status_list}
 
-    def _follow_path_active(self) -> bool:
-        return any(status in fo.FOLLOW_ACTIVE for _, _, status in self._follow)
+    def _may_approach_goal(self) -> bool:
+        # Для управления подходят ACCEPTED/EXECUTING. Сторож считает живым и CANCELING.
+        parent_active = any(status in fo.FOLLOW_ACTIVE for goals in self._parents.values() for _, _, status in goals)
+        return parent_active and any(status in fo.FOLLOW_ACTIVE for _, _, status in self._follow)
 
     def _tick(self) -> None:
         now = self._now()

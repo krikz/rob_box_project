@@ -47,24 +47,14 @@ from typing import Callable, Optional
 import yaml
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Path
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from rob_box_core.follow_path_halt import YAW_AT_GOAL_CMD_VEL_TOPIC
 from rob_box_core.tf_lookup import NoTransform, Tf2Lookup, TransformStale
 from rob_box_teleop import yaw_at_goal as yag
-from rob_box_teleop.followpath_watchdog_node import PARENT_STATUS_TOPICS
 
-# Те же родители, что у сторожа сирот: полоса HIL — NavigateThroughPoses, не второй топик.
-PARENT_TOPICS = tuple(topic for _, topic in PARENT_STATUS_TOPICS)
 PLAN_TOPIC = "/plan"
 MAP_FRAME = "map"
 BASE_FRAME = "base_footprint"
-# action_msgs/GoalStatus. Числа, не импорт: заглушка тестов делает из класса MagicMock,
-# и «живой» статус тогда истинен всегда. Те же коды, что у followpath_orphan.
-_STATUS_ACCEPTED = 1
-_STATUS_EXECUTING = 2
-# Живая родительская цель (NavigateToPose или NavigateThroughPoses). Отмена и успех — уже не наша забота.
-_NAV_LIVE = frozenset({_STATUS_ACCEPTED, _STATUS_EXECUTING})
 # План старше этого далеко от хвоста — не цель. У цели planner замирает; порог не поднимаем.
 PLAN_STALE_S = 2.0
 
@@ -117,9 +107,9 @@ class YawAtGoal:
     ``create_subscription`` / ``create_publisher`` / ``create_timer`` / ``get_logger``.
     """
 
-    def __init__(self, node, follow_path_active: Callable[[], bool]) -> None:
+    def __init__(self, node, may_approach_goal: Callable[[], bool]) -> None:
         self._node = node
-        self._follow_path_active = follow_path_active
+        self._may_approach_goal = may_approach_goal
         self._xy, self._yaw, self._omega, self._max_v = self._load_tolerances(
             str(node.get_parameter("nav2_params_file").value)
         )
@@ -135,20 +125,8 @@ class YawAtGoal:
         # и /cmd_vel_yaw молчит (Depot 17.11 20:27Z, #4788 в образе, разворота нет).
         self._lookup = Tf2Lookup(buffer)
         self._tf_listener = tf2_ros.TransformListener(buffer, node)
-        qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
-        from action_msgs.msg import (  # noqa: PLC0415 — тип подписки, в тесте заглушка
-            GoalStatusArray,
-        )
-
-        for topic in PARENT_TOPICS:
-            node.create_subscription(GoalStatusArray, topic, self._on_nav, qos)
         node.create_subscription(Path, PLAN_TOPIC, self._on_plan, 10)
         self._cmd_vel = node.create_publisher(Twist, YAW_AT_GOAL_CMD_VEL_TOPIC, 10)
-        self._nav_live = False
         self._plan = None
         self._hold = None
         self._engaged_at = 0.0
@@ -166,9 +144,6 @@ class YawAtGoal:
     def _load_tolerances(self, path: str) -> tuple:
         with open(path, encoding="utf-8") as handle:
             return yag.tolerances_from_nav2(yaml.safe_load(handle))
-
-    def _on_nav(self, msg) -> None:
-        self._nav_live = any(s.status in _NAV_LIVE for s in msg.status_list)
 
     def _on_plan(self, msg) -> None:
         self._plan = msg
@@ -243,7 +218,7 @@ class YawAtGoal:
         return self._hold
 
     def _tick(self) -> None:
-        if not self._nav_live or not self._follow_path_active():
+        if not self._may_approach_goal():
             self._hold = None
             self._stage.forget()
             self._release()

@@ -15,11 +15,12 @@ import yaml
 from rob_box_core.follow_path_halt import NAV_CMD_VEL_TOPIC, YAW_AT_GOAL_CMD_VEL_TOPIC
 from rob_box_teleop import followpath_orphan as fo
 from rob_box_teleop import yaw_at_goal as yag
-from rob_box_teleop.followpath_watchdog_node import FollowPathWatchdogNode
+from rob_box_teleop.followpath_watchdog_node import FOLLOW_STATUS_TOPIC, PARENT_STATUS_TOPICS, FollowPathWatchdogNode
 from rob_box_teleop.yaw_at_goal_node import goal_from_plan
 
 REPO = Path(__file__).resolve().parents[3]
 NAV2 = REPO / "docker" / "main" / "config" / "nav2" / "nav2_params.yaml"
+_TO_POSE, _THROUGH_POSES = (topic for _, topic in PARENT_STATUS_TOPICS)
 
 # Depot 17.11 17:06Z, истина Gazebo на GOAL_END (комментарий #4694).
 M2_GOAL = (-1.0, 4.5, 0.0)
@@ -168,11 +169,7 @@ def _plan(x, y, yaw, stamp_s=1.0, frame="map"):
     return types.SimpleNamespace(header=header, poses=[types.SimpleNamespace(pose=pose)])
 
 
-def _status(code: int):
-    return types.SimpleNamespace(status=code)
-
-
-def _follow_status(node, *goals):
+def _action_status(node, topic, *goals):
     status_list = []
     for goal_id, code in goals:
         goal_info = types.SimpleNamespace(
@@ -180,7 +177,10 @@ def _follow_status(node, *goals):
             stamp=types.SimpleNamespace(sec=100, nanosec=0),
         )
         status_list.append(types.SimpleNamespace(goal_info=goal_info, status=code))
-    node._on_follow(types.SimpleNamespace(status_list=status_list))
+    msg = types.SimpleNamespace(status_list=status_list)
+    for subscribed_topic, callback in node.subscriptions:
+        if subscribed_topic == topic:
+            callback(msg)
 
 
 def test_goal_from_plan_is_the_tail_the_checker_compares():
@@ -202,8 +202,8 @@ def _arm(node, pose, goal, now_s=100.0, stamp_s=None):
     yaw = node._yaw
     yaw._lookup._buffer.lookup_transform = lambda *args: _tf(pose)
     yaw._now = lambda: now_s
-    yaw._on_nav(types.SimpleNamespace(status_list=[_status(2)]))
-    _follow_status(node, (1, fo.STATUS_EXECUTING))
+    _action_status(node, _TO_POSE, (1, fo.STATUS_EXECUTING))
+    _action_status(node, FOLLOW_STATUS_TOPIC, (1, fo.STATUS_EXECUTING))
     yaw._on_plan(_plan(*goal, stamp_s=now_s if stamp_s is None else stamp_s))
 
 
@@ -269,7 +269,7 @@ def test_node_is_silent_outside_the_xy_window_and_when_nav_is_not_live(node_para
     yaw = node._yaw
     _arm(node, (-1.5, 4.5, math.radians(40.0)), M2_GOAL)
     yaw._tick()
-    yaw._on_nav(types.SimpleNamespace(status_list=[_status(6)]))  # ABORTED — не наша забота
+    _action_status(node, _TO_POSE, (1, fo.STATUS_ABORTED))
     yaw._lookup._buffer.lookup_transform = lambda *args: _tf(M2_POSE)
     yaw._tick()
     assert all(pub.messages == [] for _, pub in node.publishers)
@@ -330,7 +330,7 @@ def test_nav_succeeded_publishes_one_zero_then_silence(node_params):
     node = _node(node_params)
     _arm(node, M2_POSE, M2_GOAL)
     node._yaw._tick()
-    node._yaw._on_nav(types.SimpleNamespace(status_list=[_status(4)]))
+    _action_status(node, _TO_POSE, (1, fo.STATUS_SUCCEEDED))
     for _ in range(_STALL_TICKS):
         node._yaw._tick()
     twists = _yaw_twists(node)
@@ -353,7 +353,7 @@ def test_recovery_gets_control_until_a_new_follow_path_starts(node_params, statu
     assert yaw._stage.finishing
 
     # Родительский NavigateToPose всё ещё выполняется и /plan не менялся.
-    _follow_status(node, (1, status))
+    _action_status(node, FOLLOW_STATUS_TOPIC, (1, status))
     for _ in range(_STALL_TICKS):
         yaw._tick()
     assert len(twists) == 2
@@ -361,7 +361,7 @@ def test_recovery_gets_control_until_a_new_follow_path_starts(node_params, statu
     assert yaw._hold is None
     assert not yaw._stage.finishing
 
-    _follow_status(node, (1, status), (2, fo.STATUS_EXECUTING))
+    _action_status(node, FOLLOW_STATUS_TOPIC, (1, status), (2, fo.STATUS_EXECUTING))
     yaw._tick()
     assert len(twists) == 3 and twists[-1].angular.z < 0.0
 
@@ -369,9 +369,36 @@ def test_recovery_gets_control_until_a_new_follow_path_starts(node_params, statu
 def test_no_yaw_command_until_follow_path_is_active(node_params):
     node = _node(node_params)
     _arm(node, M2_POSE, M2_GOAL)
-    _follow_status(node)
+    _action_status(node, FOLLOW_STATUS_TOPIC)
     node._yaw._tick()
     assert _yaw_twists(node) == []
+
+
+@pytest.mark.parametrize("status", [fo.STATUS_ABORTED, fo.STATUS_CANCELING])
+def test_old_parent_status_does_not_suppress_other_live_parent(node_params, status):
+    node = _node(node_params)
+    yaw = node._yaw
+    _arm(node, M2_POSE, M2_GOAL)
+    _action_status(node, _THROUGH_POSES, (2, fo.STATUS_EXECUTING))
+    yaw._tick()
+    twists = _yaw_twists(node)
+    assert len(twists) == 1 and twists[-1].linear.x > 0.0
+
+    _action_status(node, _TO_POSE, (1, status))
+    yaw._tick()
+    assert len(twists) == 2 and twists[-1].linear.x > 0.0
+
+    _action_status(node, _THROUGH_POSES, (2, status))
+    for _ in range(_STALL_TICKS):
+        yaw._tick()
+    assert len(twists) == 3
+    assert (twists[-1].linear.x, twists[-1].angular.z) == (0.0, 0.0)
+
+
+def test_each_action_status_is_subscribed_once(node_params):
+    node = _node(node_params)
+    topics = [topic for topic, _ in node.subscriptions]
+    assert all(topics.count(topic) == 1 for topic in (_TO_POSE, _THROUGH_POSES, FOLLOW_STATUS_TOPIC))
 
 
 def test_m3_keeps_publishing_after_rotation_throws_it_out_of_the_window(node_params):
