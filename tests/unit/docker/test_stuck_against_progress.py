@@ -13,12 +13,15 @@ rob_box_teleop.stuck_against из процесса контроллера (ADR-0
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import urllib.request
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 NAV2_DIR = REPO / "docker" / "main" / "nav2"
@@ -76,6 +79,38 @@ def test_patch_names_the_stuck_failure_and_does_not_touch_thresholds():
     assert "movement_time_allowance" not in added
     assert "xy_goal_tolerance" not in added
     assert "terminate_all" not in added
+
+
+def test_stuck_progress_uses_the_scan_odometry_frame_configured_on_the_robot():
+    config = yaml.safe_load((NAV2_DIR.parent / "config/nav2/nav2_params.yaml").read_text(encoding="utf-8"))
+    assert config["controller_server"]["ros__parameters"]["stuck_progress_frame"] == "icp_odom"
+    local = config["local_costmap"]["local_costmap"]["ros__parameters"]
+    assert local["global_frame"] == "odom"
+
+
+def test_compiled_stuck_check_uses_icp_motion_and_forgets_tracking_loss(tmp_path):
+    prefix = []
+    if not shutil.which("c++") and os.name == "nt":
+        prefix = ["wsl.exe", "--cd", str(tmp_path), "--exec"]
+    tree = _patched_tree(tmp_path) / "nav2_controller"
+    cpp = (tree / "src/controller_server.cpp").read_text(encoding="utf-8")
+    header = (tree / "include/nav2_controller/controller_server.hpp").read_text(encoding="utf-8")
+
+    def between(source, start, end):
+        first = source.index(start)
+        last = source.index(end, first)
+        return source[first:last]
+
+    declarations = between(header, "  static constexpr double kWindowS", "  std::string stuck_progress_frame_")
+    methods = between(
+        cpp, "void ControllerServer::stuckAgainstReset()", "bool ControllerServer::stuckAgainstCourseBlocked("
+    )
+    methods += between(cpp, "bool ControllerServer::stuckAgainstObstacle(", "void ControllerServer::updateGlobalPath()")
+    (tmp_path / "motion_declarations.inc").write_text(declarations, encoding="utf-8")
+    (tmp_path / "motion_methods.inc").write_text(methods, encoding="utf-8")
+    shutil.copyfile(Path(__file__).with_name("stuck_odom_progress.cpp"), tmp_path / "case.cpp")
+    subprocess.run([*prefix, "c++", "-std=c++17", "case.cpp", "-o", "regression"], cwd=tmp_path, check=True)
+    subprocess.run([*prefix, "./regression"], cwd=tmp_path, check=True)
 
 
 def test_stuck_patch_embeds_no_cpython_and_does_not_link_libpython():
