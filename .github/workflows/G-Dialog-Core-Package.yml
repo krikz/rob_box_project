@@ -6,8 +6,9 @@ name: "G: Dialog Core Package"
 #   * тесты пакетов ядра (rob_box_dialog, rob_box_core, rob_box_llm, rob_box_harness) против поставленного пакета;
 #   * test_core_package_4245: состав пакета, ни одного ROS-импорта на верхнем уровне, импорт каждого модуля без ROS,
 #     ядро в прогоне взято из пакета (ROB_BOX_CORE_FROM_PACKAGE=1);
-#   * сухой стенд и консоль (tests/unit/dialog: фейковая LLM за настоящим мостом команд) и dry_marathon.py --list;
-#   * гард пина (#4938): тот же venv как ROB_BOX_DIALOG_CORE_PREFIX, проба импорта из site-packages
+#   * сухой стенд и консоль из локальной сборки;
+#   * сухой марафон (фейковая LLM за настоящим мостом команд) и dry_marathon.py --list на теге из Dockerfile;
+#   * гард пина (#4938): venv с тегом как ROB_BOX_DIALOG_CORE_PREFIX, проба импорта из site-packages
 #     (в Unit Tests (ROS2 Humble) venv нет — там тест пропускается, здесь обязан пройти, не skip).
 # 3.10 - Python робота (ROS Humble), 3.11/3.12 - критерий П4 эпика #4236 (колонка, консоль на Windows).
 #
@@ -33,6 +34,7 @@ on:
       - 'scripts/dialogue/**'
       - 'tests/unit/dialog/**'
       - 'src/rob_box_voice/test/unit/core/test_dialog_core_installed_pin.py'
+      - 'docker/sound/voice_assistant/Dockerfile'
       - '.github/workflows/G-Dialog-Core-Package.yml'
   pull_request:
     # Как у остальных G-: PR-триггер только на develop (#3922).
@@ -52,6 +54,7 @@ on:
       - 'scripts/dialogue/**'
       - 'tests/unit/dialog/**'
       - 'src/rob_box_voice/test/unit/core/test_dialog_core_installed_pin.py'
+      - 'docker/sound/voice_assistant/Dockerfile'
       - '.github/workflows/G-Dialog-Core-Package.yml'
   workflow_dispatch:
 
@@ -118,29 +121,33 @@ jobs:
               assert "/src/" not in m.__file__, m.__file__
               print(m.__name__, "->", m.__file__)
           EOF
-          "$VENV/bin/pytest" -v -p no:cacheprovider -o addopts= tests/unit/dialog
-          "$VENV/bin/python" scripts/dialog/dry_marathon.py --acts 1 --list
+          "$VENV/bin/pytest" -v -p no:cacheprovider -o addopts= tests/unit/dialog \
+            --ignore=tests/unit/dialog/test_dry_marathon.py
 
       # #4938: гард пина. В Unit Tests (ROS2 Humble) venv нет — там тест пропускается.
       # Здесь префикс есть, и тот же тест обязан пройти, не skip. Префикс — не packaging/
       # этого чекаута: проба сверяет тег Dockerfile в direct_url, а локальная установка
       # пишет file://. Ставим git-тег, как образ (install_pin.sh влит в #4939).
-      - name: Installed pin is not shadowed by src
-        if: matrix.python == '3.10'
+      - name: Dry marathon from the installed Dockerfile pin
         run: |
           PIN="$(grep -oE 'rob_box_dialog_core@[A-Za-z0-9._-]+' docker/sound/voice_assistant/Dockerfile | head -1 | cut -d@ -f2)"
           test -n "$PIN"
           PREFIX="${RUNNER_TEMP:-/tmp}/dialog-core-pin-$PIN"
           python -m venv "$PREFIX"
           "$PREFIX/bin/python" -m pip install --upgrade pip
-          "$PREFIX/bin/python" -m pip install "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@${PIN}"
+          "$PREFIX/bin/python" -m pip install "rob-box-dialog-core[test] @ git+https://github.com/krikz/rob_box_dialog_core@${PIN}"
+          "$PREFIX/bin/python" -m pip check
           echo "ROB_BOX_DIALOG_CORE_PREFIX=$PREFIX"
           echo "PIN=$PIN"
           test -x "$PREFIX/bin/python"
           LOG="$(mktemp)"
           set -o pipefail
-          ROB_BOX_DIALOG_CORE_PREFIX="$PREFIX" "$VENV/bin/python" -m pytest -v -o addopts= -p no:cacheprovider -rs \
+          ROB_BOX_DIALOG_CORE_PREFIX="$PREFIX" "$PREFIX/bin/python" -I -m pytest -v -o addopts= -p no:cacheprovider -rs \
             src/rob_box_voice/test/unit/core/test_dialog_core_installed_pin.py::test_installed_pin_import_is_not_shadowed_by_src \
             | tee "$LOG"
           grep -E "1 passed" "$LOG"
           if grep -E "SKIPPED|skipped" "$LOG"; then echo "гард скипнут в джобе с venv"; exit 1; fi
+          # Корневой conftest добавляет src/rob_box_harness; этим тестам его фикстуры не нужны.
+          "$PREFIX/bin/python" -I -m pytest -v -p no:cacheprovider -o addopts= --import-mode=importlib \
+            --confcutdir=tests/unit/dialog tests/unit/dialog/test_dry_marathon.py
+          "$PREFIX/bin/python" -I scripts/dialog/dry_marathon.py --acts 1 --list
