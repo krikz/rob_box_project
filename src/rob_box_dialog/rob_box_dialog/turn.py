@@ -989,7 +989,7 @@ def _content_lines(cmd: Command, agent: str = kn.AGENTS[0], segments: bool = Tru
     текстовым каналом (телеграм, §9.2) реплика при действиях — текст в чат, он не звучит, и правило §4.1 не нужно.
     ``segments=False`` — выступление взял его владелец (``Ports.perform``): сегменты звучат там, не репликами.
     Успех записи и речь, утверждающая запись, которой не было (:func:`fact_dictation.drop_speech`) — слова модели
-    не звучат (#5166, #5128, #5215)."""
+    не звучат (#5166, #5128, #5215, #5221)."""
     lines: List[Tuple[str, str]] = []
     said = cmd.speech or (cmd.ask.text if cmd.ask is not None else None)
     if fact_dictation.drop_speech(text, cmd.speech, results) or fact_dictation.unkept_claim(cmd.speech, cmd.actions):

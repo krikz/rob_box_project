@@ -128,10 +128,23 @@ def claimed(speech: Optional[str]) -> bool:
     «Запомнил, Борис: …» — да, «Привет, Саша!» — нет. Настоящее — ``RECORDING_CLAIMS``
     (#5215): «Записываю: …» звучит после тула и при отказе выдаёт несделанное за сделанное.
     В ``DONE_CLAIMS`` его нет: фраза плана кода «Запоминаю: {items}» теми же словами законна
-    (#4403). Регекса по ответу нет.
+    (#4403). Регекса по ответу нет. Утверждение о голосе сюда не входит: его судит
+    :func:`voice_claimed`.
     """
     said = speech or ""
     return "remember_fact" in done_claims(said) or "remember_fact" in recording_claims(said)
+
+
+def voice_claimed(speech: Optional[str]) -> bool:
+    """Речь модели утверждает регистрацию голоса (#5221).
+
+    Настоящее — ``RECORDING_CLAIMS["remember_voice"]``: «Голос твой запоминаю» звучит после
+    ``register_speaker`` и при отказе выдаёт несделанное за сделанное. В ``DONE_CLAIMS`` этого
+    вида нет: фразы кода «Запомнил тебя, {name}.» и «Голос твой я помню» валидатор не судит,
+    а фраза плана «Запоминаю: {items}» голоса не несёт (#4403). Прошедшее «запомнил твой голос»
+    без тула ловит валидатор (``DONE_CLAIMS["remember_person"]``), не эта функция.
+    """
+    return "remember_voice" in recording_claims(speech or "")
 
 
 def saved(text: str, results: Sequence[object], speech: Optional[str] = None) -> Optional[object]:
@@ -153,22 +166,36 @@ def saved(text: str, results: Sequence[object], speech: Optional[str] = None) ->
 def drop_speech(text: str, speech: Optional[str], results: Sequence[object]) -> bool:
     """Слова модели о записи не звучат: успех уже сказал код, либо запись не вышла.
 
-    Успех — :func:`saved`. Отказ, провал и срок вышли при утверждении записи — тоже
-    (#5215): «Записываю: …» при ``rejected{no_person}`` выдаёт несделанное за сделанное,
-    и диктовка тут не исключение — отказ уже сказал код своей фразой. Реплика, которая
-    записи не утверждает («расскажу, как дойти»), звучит рядом с отказом как раньше
-    (#5172).
+    Успех факта — :func:`saved`: фразу говорит код, речь модели о записи не нужна (#5166).
+    Успех регистрации голоса код рядом со ``speech`` не озвучивает (``QUIET_WITH_SPEECH_TOOLS``,
+    #5221 как у n722): «Приятно познакомиться, Борис! Голос твой запоминаю.» при ``done`` звучит
+    целиком, фразу «Запомнил тебя» код не добавляет. Неуспех — другое: утверждение о несделанном
+    не звучит. Отказ и срок код уже сказал фразой класса (``identity.rejected`` / ``identity.timeout``);
+    ``failure`` у ``action.identity`` фразы не имеет, и код молчит — но и речь модели о голосе молчит.
+    Факт — #5215 («Записываю: …» при ``rejected{no_person}``), голос — #5221 («Голос твой запоминаю»
+    при ``rejected`` регистрации).
+    Диктовка факта тут не исключение. Реплика, которая записи не утверждает («Приятно
+    познакомиться!», «расскажу, как дойти»), звучит рядом с отказом как раньше (#5172).
     """
     if saved(text, results, speech) is not None:
         return True
-    return bool(_save_failed(results) and claimed(speech))
+    return bool(_save_failed(results) and claimed(speech)) or bool(_voice_failed(results) and voice_claimed(speech))
 
 
 def _save_failed(results: Sequence[object]) -> bool:
     """``memory_save`` хода закрылся неуспехом: отказ, провал или срок вышел."""
+    return _tool_failed(results, kn.MEMORY_SAVE_TOOL)
+
+
+def _voice_failed(results: Sequence[object]) -> bool:
+    """``register_speaker`` хода закрылся неуспехом: отказ, провал или срок вышел (#5221)."""
+    return _tool_failed(results, kn.NAME_OWNER_TOOL)
+
+
+def _tool_failed(results: Sequence[object], tool: str) -> bool:
+    """Тул хода закрылся неуспехом: отказ, провал или срок вышел."""
     return any(
-        getattr(r, "tool", None) == kn.MEMORY_SAVE_TOOL
-        and getattr(r, "status", None) in ("rejected", "failure", "timeout")
+        getattr(r, "tool", None) == tool and getattr(r, "status", None) in ("rejected", "failure", "timeout")
         for r in results
     )
 
