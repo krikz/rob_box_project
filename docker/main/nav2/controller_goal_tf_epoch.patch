@@ -1,0 +1,37 @@
+--- a/nav2_controller/src/controller_server.cpp
++++ b/nav2_controller/src/controller_server.cpp
+@@ -595,20 +595,25 @@
+
+   nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+   geometry_msgs::msg::Twist velocity = nav_2d_utils::twist2Dto3D(twist);
+
+-  geometry_msgs::msg::PoseStamped transformed_end_pose;
+-  rclcpp::Duration tolerance(rclcpp::Duration::from_seconds(costmap_ros_->getTransformTolerance()));
+-  // Ignore failed TF: default PoseStamped is (0,0,0) and can false-trigger goal checker.
+-  if (!nav_2d_utils::transformPose(
+-      costmap_ros_->getTfBuffer(), costmap_ros_->getGlobalFrameID(),
+-      end_pose_, transformed_end_pose, tolerance))
+-  {
+-    return false;
++  auto goal_pose = end_pose_;
++  if (goal_pose.header.frame_id != pose.header.frame_id) {
++    // Compare both poses at the robot observation time. A zero stamp asks tf2 for latest.
++    goal_pose.header.stamp = pose.header.stamp;
++    if (rclcpp::Time(goal_pose.header.stamp).nanoseconds() == 0) {
++      return false;
++    }
++    try {
++      goal_pose = costmap_ros_->getTfBuffer()->transform(goal_pose, pose.header.frame_id);
++    } catch (const tf2::TransformException &) {
++      // The next controller tick can check again when the transform is available.
++      return false;
++    }
+   }
+
+   return goal_checkers_[current_goal_checker_]->isGoalReached(
+-    pose.pose, transformed_end_pose.pose,
++    pose.pose, goal_pose.pose,
+     velocity);
+ }
+
+ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)

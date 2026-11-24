@@ -12,6 +12,7 @@ must apply to the pinned source and be wired into the nav2 image.
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -144,3 +145,18 @@ def test_patch_applies_to_pinned_upstream_controller_server(tmp_path: Path):
         "    return false;\n"
         "  }"
     ) in after
+
+    # Apply the production goal-check patches in Dockerfile order. The HIL probe uses the earlier version.
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    goal_patches = re.findall(r"-p1 </tmp/(controller_goal_\w+\.patch)", dockerfile)
+    assert goal_patches[0] == PATCH.name
+    for name in goal_patches[1:]:
+        subprocess.run(["git", "apply", str(NAV2_DIR / name)], cwd=src_root, check=True, capture_output=True)
+    source = target.read_text(encoding="utf-8")
+    start = source.index("bool ControllerServer::isGoalReached()")
+    end = source.index("bool ControllerServer::getRobotPose", start)
+    checker = source[start:end]
+    assert "goal_pose.header.stamp = pose.header.stamp;" in checker
+    assert "nav_2d_utils::transformPose(" not in checker  # falls back to latest on extrapolation
+    assert "->transform(goal_pose, pose.header.frame_id)" in checker  # tf2 default wait is zero
+    assert "catch (const tf2::TransformException &)" in checker
