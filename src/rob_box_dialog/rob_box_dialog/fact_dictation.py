@@ -21,7 +21,7 @@ from typing import Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Command, ToolCall
-from rob_box_dialog.words import done_claims, has_form, name_tokens, strip_wake_word
+from rob_box_dialog.words import done_claims, has_form, name_tokens, recording_claims, strip_wake_word
 
 #: Ведущее слово диктовки. Прошедшее «запомнил» — ответ, не команда: его нет в таблице.
 _LEAD = "запомни"
@@ -122,12 +122,16 @@ def with_dictated(text: str, cmd: Command, acted: Sequence[ToolCall] = ()) -> Tu
 
 
 def claimed(speech: Optional[str]) -> bool:
-    """Речь модели утверждает запись факта (``DONE_CLAIMS["remember_fact"]``).
+    """Речь модели утверждает запись факта.
 
-    Та же сверка, что у валидатора: «Запомнил, Борис: …» — да, «Привет, Саша!» — нет.
-    Регекса по ответу нет.
+    Прошедшее — ``DONE_CLAIMS["remember_fact"]``, та же сверка, что у валидатора:
+    «Запомнил, Борис: …» — да, «Привет, Саша!» — нет. Настоящее — ``RECORDING_CLAIMS``
+    (#5215): «Записываю: …» звучит после тула и при отказе выдаёт несделанное за сделанное.
+    В ``DONE_CLAIMS`` его нет: фраза плана кода «Запоминаю: {items}» теми же словами законна
+    (#4403). Регекса по ответу нет.
     """
-    return "remember_fact" in done_claims(speech or "")
+    said = speech or ""
+    return "remember_fact" in done_claims(said) or "remember_fact" in recording_claims(said)
 
 
 def saved(text: str, results: Sequence[object], speech: Optional[str] = None) -> Optional[object]:

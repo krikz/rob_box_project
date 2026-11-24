@@ -3395,12 +3395,9 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
     # remember_person, «запомнил, тебя зовут» — речь кода знакомства, счёт после глагола — отчёт n211.
     # unless_before здесь и для alone: «уже запомнил», «не запомнил» — не этот ход. Вопрос («запомнил?») глагола
     # 1-го лица не несёт.
-    # Настоящее время записи («Записываю: …», #5215) — то же утверждение, что прошедшее: речь звучит
-    # ПОСЛЕ тула, и «записываю» при ``rejected``/``timeout`` выдаёт несделанное за сделанное. ``alone``
-    # без восклицания не утверждение (``words._fact_excluded``): голое «Записываю» в чат — не ложь.
     "remember_fact": MusicPromise(
-        alone=("запомнил", "запомнила", "записал", "записала", "записываю", "запоминаю"),
-        with_near=("сохранил", "сохранила", "сохраняю"),
+        alone=("запомнил", "запомнила", "записал", "записала"),
+        with_near=("сохранил", "сохранила"),
         near=("что", "про", "это"),
         tools=(MEMORY_SAVE_TOOL,),
         unless_before=DONE_CLAIM_UNLESS_BEFORE,
@@ -3419,6 +3416,20 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
         near=("помедленн", "медленнее", "побыстр", "быстрее"),
         tools=("set_speed",),
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
+})
+#: Настоящее время записи факта (#5215). Не в :data:`DONE_CLAIMS`: фраза плана кода «Запоминаю: {items}»
+#: (``chain.plan.save``) звучит ДО шагов и законно (инвариант #4403, ``test_code_plan_claims_nothing_done``).
+#: Речь модели звучит ПОСЛЕ тула, и «Записываю: …» при ``rejected``/``timeout`` выдаёт несделанное за
+#: сделанное. Читает только :mod:`.fact_dictation` (:func:`words.recording_claims`), не валидатор команды.
+#: ``alone`` без восклицания не утверждение (``words._fact_excluded``): голое «Записываю» в чат — не ложь.
+RECORDING_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
+    "remember_fact": MusicPromise(
+        alone=("записываю", "запоминаю"),
+        with_near=("сохраняю",),
+        near=("что", "про", "это"),
+        tools=(MEMORY_SAVE_TOOL,),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE,
+        unless_after=REMEMBER_PERSON_COUNT_AFTER),
 })
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через

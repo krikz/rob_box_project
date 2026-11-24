@@ -4,8 +4,9 @@
 тул закрылся rejected{no_person}, код сказал «Не узнаю твой голос, поэтому не запомню.»,
 а следом прозвучало «Записываю: Борис болеет за Спартак и всегда приносит пиццу.» из
 speech модели. Фраза об исходе строится кодом из результата; речь, утверждающая
-несделанное действие, не озвучивается. Регекса по ответу нет: решает таблица
-``knowledge.DONE_CLAIMS`` и исход тула.
+несделанное действие, не озвучивается. Регекса по ответу нет: прошедшее решает ``knowledge.DONE_CLAIMS``,
+настоящее — ``knowledge.RECORDING_CLAIMS`` (#4403: «Запоминаю: …» в плане кода законно),
+и исход тула.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from rob_box_dialog.command import Command, ToolCall
 from rob_box_dialog.respond import ActionResult
 from rob_box_dialog.session import Session
 from rob_box_dialog.turn import Answer, TurnEngine
-from rob_box_dialog.words import done_claims
+from rob_box_dialog.words import done_claims, recording_claims
 
 HEARD = "Робот, запомни про меня борис болеет за спартак и всегда приносит пиццу"
 FACT = "Борис болеет за Спартак и всегда приносит пиццу"
@@ -89,13 +90,17 @@ def _save(fact=FACT):
     return ToolCall(kn.MEMORY_SAVE_TOOL, {"fact": fact, "category": "general"})
 
 
-def test_present_tense_recording_is_a_remember_fact_claim_and_a_bare_verb_is_not():
-    """«Записываю: …» — то же утверждение, что «Запомнил». Голый глагол и отрицание — нет (``words._fact_excluded``)."""
-    assert done_claims(RECORDING) == ("remember_fact",)
-    assert done_claims("Запоминаю про тебя: любишь чай.") == ("remember_fact",)
-    assert done_claims("Сохраняю, что ты приносишь пиццу.") == ("remember_fact",)
-    assert done_claims("Записываю") == ()
-    assert done_claims("Не записываю.") == ()
+def test_present_tense_recording_is_a_recording_claim_and_a_bare_verb_is_not():
+    """«Записываю: …» — утверждение записи, но не ``done_claims``: фраза плана «Запоминаю: …» законна (#4403).
+
+    Голый глагол и отрицание — не утверждение (``words._fact_excluded``).
+    """
+    assert recording_claims(RECORDING) == ("remember_fact",)
+    assert recording_claims("Запоминаю про тебя: любишь чай.") == ("remember_fact",)
+    assert recording_claims("Сохраняю, что ты приносишь пиццу.") == ("remember_fact",)
+    assert done_claims(RECORDING) == ()
+    assert recording_claims("Записываю") == ()
+    assert recording_claims("Не записываю.") == ()
 
 
 def test_a_rejected_dictation_does_not_voice_the_model_recording_claim():
