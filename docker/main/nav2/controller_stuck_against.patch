@@ -27,7 +27,7 @@
     * @brief get the thresholded velocity
     * @param velocity The current velocity from odometry
     * @param threshold The minimum velocity to return non-zero
-@@ -230,6 +250,15 @@
+@@ -230,6 +250,27 @@
    std::string progress_checker_id_;
    std::string progress_checker_type_;
  
@@ -40,21 +40,64 @@
 +  double stuck_last_course_{0.0};
 +  double stuck_last_course_time_{-1.0};
 +
++  static constexpr double kWindowS = 2.0;
++  static constexpr double kCmdHoldS = 0.3;
++  static constexpr double kProgressRadiusM = 0.08;
++  static void appendStuckSample(std::vector<StuckSample> & samples, const StuckSample & sample);
++  static bool stuckMotionStationary(const std::vector<StuckSample> & samples);
++  void stuckAgainstOdom(nav_msgs::msg::Odometry::ConstSharedPtr msg);
++  bool stuckOdomStationary(double now_s);
++  std::string stuck_progress_frame_;
++  std::mutex stuck_odom_mutex_;
++  std::vector<StuckSample> stuck_odom_samples_;
++  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr stuck_odom_sub_;
++
    // Goal Checker Plugin
    pluginlib::ClassLoader<nav2_core::GoalChecker> goal_checker_loader_;
    GoalCheckerMap goal_checkers_;
 --- a/nav2_controller/src/controller_server.cpp
 +++ b/nav2_controller/src/controller_server.cpp
-@@ -23,6 +23,8 @@
+@@ -23,7 +23,10 @@
  #include "nav2_core/exceptions.hpp"
  #include "nav_2d_utils/conversions.hpp"
  #include "nav_2d_utils/tf_help.hpp"
 +#include "nav2_costmap_2d/cost_values.hpp"
 +#include "tf2/utils.h"
  #include "nav2_util/node_utils.hpp"
++#include "nav2_util/validate_messages.hpp"
  #include "nav2_util/geometry_utils.hpp"
  #include "nav2_controller/controller_server.hpp"
-@@ -381,6 +383,8 @@
+
+@@ -49,6 +52,7 @@
+   RCLCPP_INFO(get_logger(), "Creating controller server");
+
+   declare_parameter("controller_frequency", 20.0);
++  declare_parameter("stuck_progress_frame", std::string{});
+
+   declare_parameter("progress_checker_plugin", default_progress_checker_id_);
+   declare_parameter("goal_checker_plugins", default_goal_checker_ids_);
+@@ -195,6 +199,12 @@
+     "Controller Server has %s controllers available.", controller_ids_concat_.c_str());
+
+   odom_sub_ = std::make_unique<nav_2d_utils::OdomSubscriber>(node);
++  get_parameter("stuck_progress_frame", stuck_progress_frame_);
++  if (!stuck_progress_frame_.empty()) {
++    stuck_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
++      get_parameter("odom_topic").as_string(), rclcpp::SystemDefaultsQoS(),
++      std::bind(&ControllerServer::stuckAgainstOdom, this, _1));
++  }
+   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
+
+   // Create the action server that we implement with our followPath method
+@@ -287,6 +297,7 @@
+
+   // Release any allocated resources
+   action_server_.reset();
++  stuck_odom_sub_.reset();
+   odom_sub_.reset();
+   costmap_thread_.reset();
+   vel_publisher_.reset();
+@@ -381,6 +392,8 @@
  
      setPlannerPath(action_server_->get_current_goal()->path);
      progress_checker_->reset();
@@ -63,7 +106,7 @@
  
      last_valid_cmd_time_ = now();
      rclcpp::WallRate loop_rate(controller_frequency_);
-@@ -533,11 +537,178 @@
+@@ -533,9 +546,225 @@
    feedback->distance_to_goal =
      nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
    action_server_->publish_feedback(feedback);
@@ -82,14 +125,78 @@
  
    RCLCPP_DEBUG(get_logger(), "Publishing velocity at time %.2f", now().seconds());
    publishVelocity(cmd_vel_2d);
- }
- 
++}
++
 +void ControllerServer::stuckAgainstReset()
 +{
++  std::lock_guard<std::mutex> lock(stuck_odom_mutex_);
++  stuck_odom_samples_.clear();
 +  stuck_samples_.clear();
 +  stuck_cmd_since_ = -1.0;
 +  stuck_last_course_ = 0.0;
 +  stuck_last_course_time_ = -1.0;
++}
++
++void ControllerServer::appendStuckSample(std::vector<StuckSample> & samples, const StuckSample & sample)
++{
++  samples.push_back(sample);
++  const double cutoff = sample.t - kWindowS;
++  size_t anchor = 0;
++  while (anchor + 1 < samples.size() && samples[anchor + 1].t <= cutoff) {
++    ++anchor;
++  }
++  samples.erase(samples.begin(), samples.begin() + anchor);
++}
++
++bool ControllerServer::stuckMotionStationary(const std::vector<StuckSample> & samples)
++{
++  if (samples.empty() || samples.front().t > samples.back().t - kWindowS) {
++    return false;
++  }
++  const auto & start = samples.front();
++  return std::none_of(samples.begin(), samples.end(), [&](const StuckSample & sample) {
++    return std::hypot(sample.x - start.x, sample.y - start.y) > kProgressRadiusM;
++  });
++}
++
++void ControllerServer::stuckAgainstOdom(nav_msgs::msg::Odometry::ConstSharedPtr msg)
++{
++  // RTAB-Map may still broadcast its guess TF while tracking is lost.
++  // Clear the sensor window in the callback: a good message can follow before the control tick.
++  std::lock_guard<std::mutex> lock(stuck_odom_mutex_);
++  const double stamp = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
++  const double age = now().seconds() - stamp;
++  const auto & cov = msg->pose.covariance;
++  if (msg->header.frame_id != stuck_progress_frame_ ||
++    msg->child_frame_id != costmap_ros_->getBaseFrameID() ||
++    !nav2_util::validateMsg(msg->header) || !nav2_util::validateMsg(msg->pose) ||
++    stamp <= 0.0 || age < 0.0 || age > kCmdHoldS ||
++    cov[0] < 0.0 || cov[0] >= 9999.0 || cov[7] < 0.0 || cov[7] >= 9999.0)
++  {
++    stuck_odom_samples_.clear();
++    return;
++  }
++  if (!stuck_odom_samples_.empty()) {
++    const double dt = stamp - stuck_odom_samples_.back().t;
++    if (dt == 0.0) {
++      return;
++    }
++    if (dt < 0.0 || dt > kCmdHoldS) {
++      stuck_odom_samples_.clear();
++    }
++  }
++  const auto & p = msg->pose.pose.position;
++  appendStuckSample(stuck_odom_samples_, {stamp, p.x, p.y, false});
++}
++
++bool ControllerServer::stuckOdomStationary(double now_s)
++{
++  std::lock_guard<std::mutex> lock(stuck_odom_mutex_);
++  if (stuck_odom_samples_.empty()) {
++    return false;
++  }
++  const double age = now_s - stuck_odom_samples_.back().t;
++  return age >= 0.0 && age <= kCmdHoldS && stuckMotionStationary(stuck_odom_samples_);
 +}
 +
 +bool ControllerServer::stuckAgainstCourseBlocked(
@@ -171,10 +278,7 @@
 +  // Window of 2 s (shorter than the 30 s radius allowance, else a wall slide
 +  // accumulates the radius), command held 0.3 s above the guard epsilon,
 +  // displacement under required_movement_radius.
-+  constexpr double kWindowS = 2.0;
-+  constexpr double kCmdHoldS = 0.3;
 +  constexpr double kCmdEps = 0.03;
-+  constexpr double kProgressRadiusM = 0.08;
 +  if (!have_last_cmd_) {
 +    return false;
 +  }
@@ -201,44 +305,30 @@
 +  }
 +  const bool held =
 +    commanded && stuck_cmd_since_ >= 0.0 && now_s - stuck_cmd_since_ >= kCmdHoldS;
-+  stuck_samples_.push_back(
-+    StuckSample{now_s, pose.pose.position.x, pose.pose.position.y, held});
++  appendStuckSample(stuck_samples_, {now_s, pose.pose.position.x, pose.pose.position.y, held});
 +  const double cutoff = now_s - kWindowS;
-+  // Keep the last pose at or before the boundary, even between controller ticks.
-+  size_t anchor = 0;
-+  while (anchor + 1 < stuck_samples_.size() && stuck_samples_[anchor + 1].t <= cutoff) {
-+    ++anchor;
-+  }
-+  stuck_samples_.erase(stuck_samples_.begin(), stuck_samples_.begin() + anchor);
 +  if (std::abs(vx) > kCmdEps) {
 +    stuck_last_course_ = vx;
 +    stuck_last_course_time_ = now_s;
 +  }
-+  if (stuck_samples_.size() < 2) {
++  if (stuck_samples_.front().t > cutoff || stuck_last_course_time_ < cutoff) {
 +    return false;
 +  }
-+  const StuckSample & start = stuck_samples_.front();
-+  if (start.t > cutoff) {
++  const bool any_held = std::any_of(
++    stuck_samples_.begin(), stuck_samples_.end(), [cutoff](const StuckSample & sample) {
++      return sample.held && sample.t >= cutoff;
++    });
++  if (!any_held) {
 +    return false;
 +  }
-+  bool any_held = false;
-+  bool moved = false;
-+  for (const StuckSample & sample : stuck_samples_) {
-+    any_held = any_held || (sample.held && sample.t >= cutoff);
-+    const double dx = sample.x - start.x;
-+    const double dy = sample.y - start.y;
-+    if (std::hypot(dx, dy) > kProgressRadiusM) {
-+      moved = true;
-+    }
-+  }
-+  if (!any_held || moved || stuck_last_course_time_ < cutoff) {
++  const bool stationary = stuck_progress_frame_.empty() ?
++    stuckMotionStationary(stuck_samples_) : stuckOdomStationary(now_s);
++  if (!stationary) {
 +    return false;
 +  }
 +  const double yaw = tf2::getYaw(pose.pose.orientation);
 +  return stuckAgainstCourseBlocked(
 +    stuck_last_course_, pose.pose.position.x, pose.pose.position.y, yaw);
-+}
-+
+ }
+
  void ControllerServer::updateGlobalPath()
- {
-   if (action_server_->is_preempt_requested()) {
