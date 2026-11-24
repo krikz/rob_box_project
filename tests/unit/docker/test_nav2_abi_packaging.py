@@ -23,10 +23,17 @@ def test_image_installs_rebuilt_nav2_servers_and_plugins(tmp_path: Path):
     }
     for package, paths in artifacts.items():
         for path in paths:
-            for root in (tmp_path / "ros", tmp_path / "colcon" / package):
-                file = root / "lib" / path
+            stock = tmp_path / "ros/lib" / path
+            built = tmp_path / "build" / package / path
+            installed = tmp_path / "colcon" / package / "lib" / path
+            for file in (stock, built, installed):
                 file.parent.mkdir(parents=True, exist_ok=True)
-                file.write_text(f"{root.name}/{path}", encoding="utf-8")
+            stock.write_bytes(b"stock")
+            built.write_bytes(path.encode())
+            if os.name == "nt":
+                shutil.copyfile(built, installed)
+            else:
+                installed.symlink_to(built)  # colcon --symlink-install
 
     dockerfile = Path(__file__).resolve().parents[3] / "docker/main/nav2/Dockerfile"
     commands = dockerfile.read_text(encoding="utf-8").replace("\\\n", " ").split("&&")
@@ -39,10 +46,11 @@ def test_image_installs_rebuilt_nav2_servers_and_plugins(tmp_path: Path):
         shell = Path(shutil.which("git")).resolve().parents[1] / "bin/sh.exe"
     subprocess.run([shell or "sh", "-ec", staging], cwd=tmp_path, check=True)
 
+    shutil.rmtree(tmp_path / "build")
     stale = [
         path
-        for package, paths in artifacts.items()
+        for paths in artifacts.values()
         for path in paths
-        if (tmp_path / "ros/lib" / path).read_bytes() != (tmp_path / "colcon" / package / "lib" / path).read_bytes()
+        if not (tmp_path / "ros/lib" / path).is_file() or (tmp_path / "ros/lib" / path).read_bytes() != path.encode()
     ]
-    assert not stale, f"stock artifacts left beside patched Nav2 libraries: {stale}"
+    assert not stale, f"missing or stale artifacts after removing the Nav2 build tree: {stale}"
