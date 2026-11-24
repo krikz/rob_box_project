@@ -719,9 +719,28 @@ class RegisterSpeakerTool(MCPTool):
         назвал), ``intro_registered`` (робот уже сам отправил регистрацию
         по этому представлению) и ``known_speaker_name`` (кем реплика
         УВЕРЕННО узнана по голосу). По ним — :func:`register_speaker_gate`.
+
+        #5238 (ADR-0148): если модель не передала ``name``, а в реплике
+        человек назвал себя (``self_intro_name`` — детерминированное решение
+        кода ``speaker_adapter.named_self`` → ``words.self_intro_name``, то
+        же значение, с которым :func:`register_speaker_gate` сверяет имя
+        модели), имя регистрации — это имя из реплики. Подстановка в самом
+        начале, до :func:`voice_already_named` и :meth:`_rename_refusal`:
+        :func:`rename_gate` при пустом ``name`` молчит, и защита «чужой
+        профиль не переименовывается» была бы обойдена, подставь имя после
+        неё. Если и в реплике имени нет — отказ ``name_required`` (#5235).
         """
         import json
         from std_msgs.msg import String
+
+        # #5238 (ADR-0148): решение кода, не догадка LLM. self_intro_name — то же
+        # значение, с которым register_speaker_gate сверяет имя модели. До любых
+        # гейтов: rename_gate при пустом name молчит и пропустил бы чужой профиль.
+        if _missing_speaker_name(name):
+            said = (self_intro_name or "").strip()
+            if said:
+                self.log_info(f"[register_speaker] name не передан — имя из реплики: {said!r}")
+                name = said
 
         # Step 1 — if old_name provided, rename the existing entry first. Issue #4095: переименование по old_name
         # проходит гейт (:func:`rename_gate`) ДО публикации - профиль не получает имя, которым человек себя не называл,
@@ -733,9 +752,9 @@ class RegisterSpeakerTool(MCPTool):
         refused = self._rename_refusal(old_name, name, self_intro_name, known_speaker_name)
         if refused is not None:
             return refused
-        # #5235: имени нет — не успех и не переименование. Раньше публикация rename с
-        # new_name=old_name возвращала success=True, и диалог говорил «Запомнил тебя, None.»
-        # self_intro_name не подставляется: это контекст гейта, не аргумент (ADR-0148).
+        # #5235: имени нет ни в аргументах, ни в реплике — не успех и не переименование.
+        # Раньше публикация rename с new_name=old_name возвращала success=True, и диалог
+        # говорил «Запомнил тебя, None.». Имя из реплики уже подставлено выше (#5238).
         if _missing_speaker_name(name):
             self._log_name_required(name)
             return _name_required_result(old_name)
@@ -945,14 +964,14 @@ def _missing_speaker_name(name: str | None) -> bool:
 
     Литерал ``"null"``/``"None"`` сюда не входит: его ещё надо прогнать через
     ``profile_name`` (регистр, пробелы по краям). ``self_intro_name`` сюда не
-    подставляется — это скрытый контекст гейта, не имя, которое назвала модель.
+    подставляется: это делает :meth:`RegisterSpeakerTool.execute` в самом
+    начале (#5238), до гейтов, и только когда ``name`` пуст.
     """
     return name is None or name.strip() == ""
 
 
 _NAME_REQUIRED_TEXT = (
-    "не передано имя: укажи name из реплики и вызови register_speaker ещё раз. "
-    "self_intro_name подставлять нельзя — это не аргумент."
+    "имени нет ни в аргументах, ни в реплике: укажи name и вызови register_speaker ещё раз."
 )
 
 
