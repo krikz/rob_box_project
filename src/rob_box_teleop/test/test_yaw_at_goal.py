@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from rob_box_core.follow_path_halt import NAV_CMD_VEL_TOPIC, YAW_AT_GOAL_CMD_VEL_TOPIC
+from rob_box_teleop import followpath_orphan as fo
 from rob_box_teleop import yaw_at_goal as yag
 from rob_box_teleop.followpath_watchdog_node import FollowPathWatchdogNode
 from rob_box_teleop.yaw_at_goal_node import goal_from_plan
@@ -171,6 +172,17 @@ def _status(code: int):
     return types.SimpleNamespace(status=code)
 
 
+def _follow_status(node, *goals):
+    status_list = []
+    for goal_id, code in goals:
+        goal_info = types.SimpleNamespace(
+            goal_id=types.SimpleNamespace(uuid=bytes([goal_id]) * 16),
+            stamp=types.SimpleNamespace(sec=100, nanosec=0),
+        )
+        status_list.append(types.SimpleNamespace(goal_info=goal_info, status=code))
+    node._on_follow(types.SimpleNamespace(status_list=status_list))
+
+
 def test_goal_from_plan_is_the_tail_the_checker_compares():
     path = _plan(-1.0, 4.5, 0.0, stamp_s=10.0)
     assert goal_from_plan(path, 10.5) == pytest.approx((-1.0, 4.5, 0.0))
@@ -186,11 +198,12 @@ def _yaw_twists(node):
 
 
 def _arm(node, pose, goal, now_s=100.0, stamp_s=None):
-    """Живой NavigateThroughPoses + хвост /plan + поза. Как окна стоянки Gate 2."""
+    """Живые родитель и FollowPath, хвост /plan и поза."""
     yaw = node._yaw
     yaw._lookup._buffer.lookup_transform = lambda *args: _tf(pose)
     yaw._now = lambda: now_s
     yaw._on_nav(types.SimpleNamespace(status_list=[_status(2)]))
+    _follow_status(node, (1, fo.STATUS_EXECUTING))
     yaw._on_plan(_plan(*goal, stamp_s=now_s if stamp_s is None else stamp_s))
 
 
@@ -326,6 +339,39 @@ def test_nav_succeeded_publishes_one_zero_then_silence(node_params):
     assert len(twists) == 2  # команда подъезда + один ноль
     assert node._yaw._floor is False
     assert node._yaw._hold is None
+
+
+@pytest.mark.parametrize("status", [fo.STATUS_ABORTED, fo.STATUS_CANCELING])
+def test_recovery_gets_control_until_a_new_follow_path_starts(node_params, status):
+    node = _node(node_params)
+    yaw = node._yaw
+    pose = (M2_GOAL[0] + 0.05, M2_GOAL[1], math.radians(45.0))
+    _arm(node, pose, M2_GOAL)
+    yaw._tick()
+    twists = _yaw_twists(node)
+    assert len(twists) == 1 and twists[0].angular.z < 0.0
+    assert yaw._stage.finishing
+
+    # Родительский NavigateToPose всё ещё выполняется и /plan не менялся.
+    _follow_status(node, (1, status))
+    for _ in range(_STALL_TICKS):
+        yaw._tick()
+    assert len(twists) == 2
+    assert (twists[-1].linear.x, twists[-1].angular.z) == (0.0, 0.0)
+    assert yaw._hold is None
+    assert not yaw._stage.finishing
+
+    _follow_status(node, (1, status), (2, fo.STATUS_EXECUTING))
+    yaw._tick()
+    assert len(twists) == 3 and twists[-1].angular.z < 0.0
+
+
+def test_no_yaw_command_until_follow_path_is_active(node_params):
+    node = _node(node_params)
+    _arm(node, M2_POSE, M2_GOAL)
+    _follow_status(node)
+    node._yaw._tick()
+    assert _yaw_twists(node) == []
 
 
 def test_m3_keeps_publishing_after_rotation_throws_it_out_of_the_window(node_params):

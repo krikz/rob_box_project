@@ -34,13 +34,15 @@ Twist идёт в ``/cmd_vel_yaw`` (twist_mux priority 15, выше Nav2, timeou
 отдаёт подъезду пол, пока тик свежий, и возвращает его контроллеру, когда нода замолчала.
 Вне подъезда нода молчит: нулевой поток на 10 Гц не даёт timeout 0.2 истечь, и канал
 priority 15 вечно перебивает Nav2 (Depot Gate 2, 20.11: M2/M5/R1/R2/R3, 20/20 ``wz=0``).
+Подъезд разрешён при живых родительском action и FollowPath. После завершения
+FollowPath дерево может выполнять BackUp, Spin или Wait при живом родителе.
 Снять ранее начатый подъезд — ровно один нулевой Twist, дальше тишина.
 Замки руля (51 и 90) глушат подъезд так же, как Nav2.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 import yaml
 from geometry_msgs.msg import Twist
@@ -115,8 +117,9 @@ class YawAtGoal:
     ``create_subscription`` / ``create_publisher`` / ``create_timer`` / ``get_logger``.
     """
 
-    def __init__(self, node) -> None:
+    def __init__(self, node, follow_path_active: Callable[[], bool]) -> None:
         self._node = node
+        self._follow_path_active = follow_path_active
         self._xy, self._yaw, self._omega, self._max_v = self._load_tolerances(
             str(node.get_parameter("nav2_params_file").value)
         )
@@ -240,7 +243,7 @@ class YawAtGoal:
         return self._hold
 
     def _tick(self) -> None:
-        if not self._nav_live:
+        if not self._nav_live or not self._follow_path_active():
             self._hold = None
             self._stage.forget()
             self._release()
