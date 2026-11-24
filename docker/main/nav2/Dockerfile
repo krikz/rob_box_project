@@ -118,7 +118,8 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
     && cp /tmp/nav2-fix/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_navfn_planner.so \
     && cp /tmp/nav2-fix/install/nav2_costmap_2d/lib/libnav2_costmap_2d_core.so \
-        /opt/ros/${ROS_DISTRO}/lib/libnav2_costmap_2d_core.so \
+        /tmp/nav2-fix/install/nav2_costmap_2d/lib/libnav2_costmap_2d_client.so \
+        /opt/ros/${ROS_DISTRO}/lib/ \
     && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libbehavior_server_core.so \
         /opt/ros/${ROS_DISTRO}/lib/libbehavior_server_core.so \
     && cp /tmp/nav2-fix/install/nav2_behaviors/lib/nav2_behaviors/behavior_server \
@@ -147,9 +148,9 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
         /tmp/costmap_publish_on_clear.patch /tmp/behavior_costmap_freshness.patch
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     for server in nav2_controller/controller_server nav2_behaviors/behavior_server; do \
-        deps=$(ldd "/opt/ros/${ROS_DISTRO}/lib/$server") || exit 1; \
+        deps=$(LC_ALL=C ldd -r "/opt/ros/${ROS_DISTRO}/lib/$server" 2>&1) || { echo "$deps"; exit 1; }; \
         echo "$deps"; \
-        if echo "$deps" | grep -Fq 'not found'; then exit 1; fi; \
+        if echo "$deps" | grep -Eq 'not found|undefined symbol:'; then exit 1; fi; \
         core="lib${server#*/}_core.so"; \
         echo "$deps" | grep -Fq "$core => /opt/ros/${ROS_DISTRO}/lib/$core (" || exit 1; \
     done
