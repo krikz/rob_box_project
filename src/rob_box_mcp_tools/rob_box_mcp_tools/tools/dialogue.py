@@ -733,21 +733,13 @@ class RegisterSpeakerTool(MCPTool):
         refused = self._rename_refusal(old_name, name, self_intro_name, known_speaker_name)
         if refused is not None:
             return refused
+        # #5235: имени нет — не успех и не переименование. Раньше публикация rename с
+        # new_name=old_name возвращала success=True, и диалог говорил «Запомнил тебя, None.»
+        # self_intro_name не подставляется: это контекст гейта, не аргумент (ADR-0148).
+        if _missing_speaker_name(name):
+            self._log_name_required(name)
+            return _name_required_result(old_name)
         self._publish_rename(old_name, name)
-
-        if name is None or name.strip() == "":
-            if old_name:
-                return MCPToolResult(
-                    success=True,
-                    data={"renamed": True, "old_name": old_name},
-                    message=f"Старое имя '{old_name}' исправлено. Новое имя не указано — спроси.",
-                )
-            self.log_info("[register_speaker] name=None → ask user")
-            return MCPToolResult(
-                success=True,
-                data={"ask_required": True, "name": None},
-                message="Спроси имя у пользователя через speak_text и вызови register_speaker(name=X) ещё раз",
-            )
         # Имя в профиль - в именительном падеже (``words.profile_name``): модель пишет «Тамарой» как услышала (#4118).
         name_clean = profile_name(name)
         # Issue #1101 (live 11.08) — LLM sometimes serialises a real
@@ -757,17 +749,10 @@ class RegisterSpeakerTool(MCPTool):
         # — a fresh junk row in /data/speakers.db. Treat ``"null"``
         # the same as ``None``: ask the user.
         if name_clean.lower() in {"null", "none"}:
-            self.log_info(
-                "[register_speaker] name='null' literal — treat as ask_user"
-            )
-            return MCPToolResult(
-                success=True,
-                data={"ask_required": True, "name": None},
-                message=(
-                    "Передан литерал 'null'/'None' — спроси имя у пользователя "
-                    "через speak_text и вызови register_speaker(name=X) ещё раз"
-                ),
-            )
+            # #5235: литерал "null"/"None" — то же, что пустое имя. Раньше success=True
+            # (ask_required) без status, и v2 записывал событие done.
+            self._log_name_required(name_clean)
+            return _name_required_result(old_name)
         if len(name_clean) < 2:
             return MCPToolResult(
                 success=False,
@@ -836,6 +821,10 @@ class RegisterSpeakerTool(MCPTool):
         data = {"name": name, "status": status, "reason": reason, "sent_by_robot": sent_by_robot}
         return MCPToolResult(success=status == "done", data=data, message=phrase,
                              error=None if status == "done" else phrase)
+
+    def _log_name_required(self, name: str | None) -> None:
+        """#5235: имя не передано или это литерал null/None — отказ валидации, не вопрос «спроси»."""
+        self.log_info(f"[register_speaker] name={name!r} → name_required (не успех, не публикую)")
 
     def _publish_rename(self, old_name: str | None, name: str | None) -> None:
         """Issue #1101 — поправка имени («я не X, я Y»): rename идёт на
@@ -949,6 +938,37 @@ class RegisterSpeakerTool(MCPTool):
                 "был факт о человеке — сохрани его через memory_save."
             ),
         )
+
+
+def _missing_speaker_name(name: str | None) -> bool:
+    """#5235: имени для регистрации нет — ``None``, пусто или одни пробелы.
+
+    Литерал ``"null"``/``"None"`` сюда не входит: его ещё надо прогнать через
+    ``profile_name`` (регистр, пробелы по краям). ``self_intro_name`` сюда не
+    подставляется — это скрытый контекст гейта, не имя, которое назвала модель.
+    """
+    return name is None or name.strip() == ""
+
+
+_NAME_REQUIRED_TEXT = (
+    "не передано имя: укажи name из реплики и вызови register_speaker ещё раз. "
+    "self_intro_name подставлять нельзя — это не аргумент."
+)
+
+
+def _name_required_result(old_name: str | None) -> MCPToolResult:
+    """#5235: отказ валидации, не успех.
+
+    ``status=rejected`` обязателен: без него старое ядро (``owner_event``: статуса нет и
+    ``is_error`` ложь → ``done``) запишет успех, а каталог скажет «Запомнил тебя, None.»
+    ``success=False`` — чтобы адаптер поставил ``is_error`` и модель увидела текст ошибки.
+    Переименование без нового имени не публикуется: no-op rename — не запись.
+    """
+    shown = (old_name or "").strip()
+    data = {"status": "rejected", "reason": "name_required", "error": "name_required"}
+    if shown:
+        data["old_name"] = shown
+    return MCPToolResult(success=False, data=data, message=_NAME_REQUIRED_TEXT, error=_NAME_REQUIRED_TEXT)
 
 
 def _rename_source(old_name: str | None) -> str | None:
