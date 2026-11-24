@@ -100,6 +100,32 @@ def test_slide_along_wall_is_progress_not_a_failure():
     assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({side: LETHAL_COST}), vx=0.1)
 
 
+def test_irregular_ticks_refuse_as_soon_as_the_full_window_is_observed():
+    checker = StuckAgainst()
+    elapsed_ms = 0
+    for tick in range(80):
+        refused = checker.update((145013 + elapsed_ms) / 1000, (0.0, 0.0, 0.0), commanded=True)
+        assert refused == (elapsed_ms >= 2000), elapsed_ms
+        elapsed_ms += (47, 61)[tick % 2]
+
+
+def test_gap_in_observations_starts_a_new_window():
+    checker = StuckAgainst()
+    pose = (0.0, 0.0, 0.0)
+    _tick(checker, 1.0, pose, commanded=True)
+    for tick in range(41):
+        assert checker.update(2.0 + tick / 20, pose, commanded=True) == (tick == 40)
+
+
+def test_held_command_just_before_cutoff_is_only_a_pose_anchor():
+    checker = StuckAgainst()
+    pose = (0.0, 0.0, 0.0)
+    for tick in range(49):
+        checker.update(tick / 20, pose, commanded=tick <= 8)
+    assert checker.note_blocked(True)  # Last held command at 0.4, cutoff still 0.4.
+    assert not checker.update(2.41, pose, commanded=False)
+
+
 def test_no_command_against_wall_is_not_a_failure():
     """Стена впереди, но команды не было — это стоянка, не упор."""
     checker = StuckAgainst()
@@ -221,6 +247,19 @@ def test_zero_command_with_no_recent_motion_is_not_a_failure():
         controller_stuck(i * 0.05, 0.0, 0.0, 0.0, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid) for i in range(steps + 1)
     ]
     assert not any(refused)
+
+
+def test_turning_in_place_drops_the_old_linear_course():
+    from rob_box_teleop.stuck_against import controller_stuck
+
+    state = StuckAgainst()
+    wall = _cell(BODY.x_max + BLOCK_GAP_M / 2, 0.0)
+    grid = _grid({wall: LETHAL_COST})
+    for tick in range(81):
+        # Only the first tick commanded translation. The angular command persists.
+        vx = 0.1 if tick == 0 else 0.0
+        refused = controller_stuck(tick / 20, 0.0, 0.0, vx, 0.3, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid, state=state)
+        assert refused == (tick == 40), tick  # Course is exactly at the cutoff on tick 40.
 
 
 def test_controller_tick_refuses_when_stuck_and_not_when_sliding():
