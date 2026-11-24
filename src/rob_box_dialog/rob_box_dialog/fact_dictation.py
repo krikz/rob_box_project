@@ -149,20 +149,24 @@ def saved(text: str, results: Sequence[object], speech: Optional[str] = None) ->
 def drop_speech(text: str, speech: Optional[str], results: Sequence[object]) -> bool:
     """Слова модели о записи не звучат: успех уже сказал код, либо запись не вышла.
 
-    Успех — :func:`saved`. Отказ и провал при утверждении «запомнил» — тоже, но только
-    если реплика не диктовка: «запомни …» отказ не гасит, человек слышит и отказ кода,
-    и слова модели (#5172). Не диктовка — слова модели выдали бы несделанное за сделанное
-    (ADR-0148).
+    Успех — :func:`saved`. Отказ, провал и срок вышли при утверждении записи — тоже
+    (#5215): «Записываю: …» при ``rejected{no_person}`` выдаёт несделанное за сделанное,
+    и диктовка тут не исключение — отказ уже сказал код своей фразой. Реплика, которая
+    записи не утверждает («расскажу, как дойти»), звучит рядом с отказом как раньше
+    (#5172).
     """
     if saved(text, results, speech) is not None:
         return True
-    if dictated_fact(text) is not None:
-        return False
-    failed = any(
-        getattr(r, "tool", None) == kn.MEMORY_SAVE_TOOL and getattr(r, "status", None) in ("rejected", "failure")
+    return bool(_save_failed(results) and claimed(speech))
+
+
+def _save_failed(results: Sequence[object]) -> bool:
+    """``memory_save`` хода закрылся неуспехом: отказ, провал или срок вышел."""
+    return any(
+        getattr(r, "tool", None) == kn.MEMORY_SAVE_TOOL
+        and getattr(r, "status", None) in ("rejected", "failure", "timeout")
         for r in results
     )
-    return bool(failed and claimed(speech))
 
 
 def unkept_claim(speech: Optional[str], actions: Sequence[ToolCall], acted: Sequence[ToolCall] = ()) -> bool:
