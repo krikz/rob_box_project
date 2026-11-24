@@ -156,7 +156,10 @@ def test_patch_applies_to_pinned_upstream_controller_server(tmp_path: Path):
     start = source.index("bool ControllerServer::isGoalReached()")
     end = source.index("bool ControllerServer::getRobotPose", start)
     checker = source[start:end]
-    assert "goal_pose.header.stamp = pose.header.stamp;" in checker
+    assert "lookupTransform(" in checker
+    assert "end_pose_.header.frame_id, costmap_ros_->getBaseFrameID(), tf2::TimePointZero" in checker
     assert "nav_2d_utils::transformPose(" not in checker  # falls back to latest on extrapolation
-    assert "->transform(goal_pose, pose.header.frame_id)" in checker  # tf2 default wait is zero
+    assert "common.nanoseconds() == 0 || common > odom_stamp || odom_stamp > check_time" in checker
+    assert "(check_time - common).seconds() > costmap_ros_->getTransformTolerance()" in checker
+    assert "pose.pose, end_pose_.pose" in checker
     assert "catch (const tf2::TransformException &)" in checker
