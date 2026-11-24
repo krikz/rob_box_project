@@ -10,7 +10,7 @@ import functools
 import itertools
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog import knowledge as _kn
 from rob_box_dialog.knowledge import (
@@ -47,6 +47,7 @@ from rob_box_dialog.knowledge import (
     QUESTION_LEADS,
     REACH_END_OR_NEXT,
     REACH_NEXT,
+    RECORDING_CLAIMS,
     REPLY_INTRO_PHRASES,
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
@@ -367,17 +368,15 @@ def search_promises(text: str) -> Tuple[str, ...]:
     return tuple(kind for kind, promise in SEARCH_PROMISES.items() if _promises(tokens, promise))
 
 
-def done_claims(text: str) -> Tuple[str, ...]:
-    """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
-    ``remember_fact``, ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
-    («Готово, хил-окно удалена.», «сохранил точку», «поехал», «говорю медленнее») и обещании отправки снимков
-    (#4505). Слово с ``unless_before`` за одно-два слова до
-    него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Слово из
-    ``unless_after`` в окне после глагола («запомнил двоих», «запомнил по голосу двоих») - тоже не утверждение. Тул,
-    что утверждение делает правдой, судит валидатор команды (``command._check_done_claim``)."""
+def _claim_kinds(text: str, table: Mapping) -> Tuple[str, ...]:
+    """Виды таблицы, чьи слова нашлись в ``text``: та же сверка, что у :func:`done_claims`.
+
+    Слово с ``unless_before`` за одно-два слова до глагола убирается до сверки. ``remember_fact``
+    дополнительно снимает вопрос, голый глагол, объект чужого вида и счёт (:func:`_fact_excluded`).
+    """
     tokens = name_tokens(text)
     found = []
-    for kind, claim in DONE_CLAIMS.items():
+    for kind, claim in table.items():
         kept = tuple("" if set(tokens[max(0, i - 2):i]) & set(claim.unless_before) else t for i, t in enumerate(tokens))
         if kind == "remember_fact":
             verbs = set(claim.alone) | set(claim.with_near)
@@ -386,6 +385,29 @@ def done_claims(text: str) -> Tuple[str, ...]:
         if _promises(kept, replace(claim, unless_before=())):
             found.append(kind)
     return tuple(found)
+
+
+def done_claims(text: str) -> Tuple[str, ...]:
+    """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
+    ``remember_fact``, ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
+    («Готово, хил-окно удалена.», «сохранил точку», «поехал», «говорю медленнее») и обещании отправки снимков
+    (#4505). Слово с ``unless_before`` за одно-два слова до
+    него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Слово из
+    ``unless_after`` в окне после глагола («запомнил двоих», «запомнил по голосу двоих») - тоже не утверждение. Тул,
+    что утверждение делает правдой, судит валидатор команды (``command._check_done_claim``). Настоящее время записи
+    («Запоминаю: …») сюда не входит: фраза плана кода звучит до шагов и ничего не утверждает (#4403)."""
+    return _claim_kinds(text, DONE_CLAIMS)
+
+
+def recording_claims(text: str) -> Tuple[str, ...]:
+    """Настоящее время записи факта в речи модели (ключи ``knowledge.RECORDING_CLAIMS``, #5215).
+
+    Та же сверка, что у :func:`done_claims`, но отдельная таблица: «Записываю: …» звучит ПОСЛЕ тула и при
+    отказе записи выдаёт несделанное за сделанное. Фраза плана кода «Запоминаю: {items}» теми же словами
+    законна — она звучит до шагов, и :func:`done_claims` её не ловит (#4403). Читает только
+    :mod:`.fact_dictation`, не валидатор команды.
+    """
+    return _claim_kinds(text, RECORDING_CLAIMS)
 
 
 def theme_switch_ask(text: str) -> Optional[str]:

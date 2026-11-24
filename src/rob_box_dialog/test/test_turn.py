@@ -614,7 +614,8 @@ def test_quiet_action_with_surprising_outcome_or_failure_is_still_said_by_code()
     saved = Command(speech="Запомнил!", actions=(ToolCall("memory_save", {"fact": "x"}),))
     lost = Ports(answers=[Answer(saved, "deepseek")], outcomes={"memory_save": ("rejected", {})})
     _run(_engine(lost), "запомни что x")
-    assert [t for t, _, _ in lost.said] == [phrases.text("local.rejected"), "Запомнил!"]
+    # #5215: речь, утверждающая отказавшую запись, не звучит — отказ уже сказал код
+    assert [t for t, _, _ in lost.said] == [phrases.text("local.rejected")]
 
 
 def test_passed_is_not_a_failure():

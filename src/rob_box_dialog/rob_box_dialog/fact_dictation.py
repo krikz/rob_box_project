@@ -21,7 +21,7 @@ from typing import Optional, Sequence, Tuple
 
 from rob_box_dialog import knowledge as kn
 from rob_box_dialog.command import Command, ToolCall
-from rob_box_dialog.words import done_claims, has_form, name_tokens, strip_wake_word
+from rob_box_dialog.words import done_claims, has_form, name_tokens, recording_claims, strip_wake_word
 
 #: Ведущее слово диктовки. Прошедшее «запомнил» — ответ, не команда: его нет в таблице.
 _LEAD = "запомни"
@@ -122,12 +122,16 @@ def with_dictated(text: str, cmd: Command, acted: Sequence[ToolCall] = ()) -> Tu
 
 
 def claimed(speech: Optional[str]) -> bool:
-    """Речь модели утверждает запись факта (``DONE_CLAIMS["remember_fact"]``).
+    """Речь модели утверждает запись факта.
 
-    Та же сверка, что у валидатора: «Запомнил, Борис: …» — да, «Привет, Саша!» — нет.
-    Регекса по ответу нет.
+    Прошедшее — ``DONE_CLAIMS["remember_fact"]``, та же сверка, что у валидатора:
+    «Запомнил, Борис: …» — да, «Привет, Саша!» — нет. Настоящее — ``RECORDING_CLAIMS``
+    (#5215): «Записываю: …» звучит после тула и при отказе выдаёт несделанное за сделанное.
+    В ``DONE_CLAIMS`` его нет: фраза плана кода «Запоминаю: {items}» теми же словами законна
+    (#4403). Регекса по ответу нет.
     """
-    return "remember_fact" in done_claims(speech or "")
+    said = speech or ""
+    return "remember_fact" in done_claims(said) or "remember_fact" in recording_claims(said)
 
 
 def saved(text: str, results: Sequence[object], speech: Optional[str] = None) -> Optional[object]:
@@ -149,20 +153,24 @@ def saved(text: str, results: Sequence[object], speech: Optional[str] = None) ->
 def drop_speech(text: str, speech: Optional[str], results: Sequence[object]) -> bool:
     """Слова модели о записи не звучат: успех уже сказал код, либо запись не вышла.
 
-    Успех — :func:`saved`. Отказ и провал при утверждении «запомнил» — тоже, но только
-    если реплика не диктовка: «запомни …» отказ не гасит, человек слышит и отказ кода,
-    и слова модели (#5172). Не диктовка — слова модели выдали бы несделанное за сделанное
-    (ADR-0148).
+    Успех — :func:`saved`. Отказ, провал и срок вышли при утверждении записи — тоже
+    (#5215): «Записываю: …» при ``rejected{no_person}`` выдаёт несделанное за сделанное,
+    и диктовка тут не исключение — отказ уже сказал код своей фразой. Реплика, которая
+    записи не утверждает («расскажу, как дойти»), звучит рядом с отказом как раньше
+    (#5172).
     """
     if saved(text, results, speech) is not None:
         return True
-    if dictated_fact(text) is not None:
-        return False
-    failed = any(
-        getattr(r, "tool", None) == kn.MEMORY_SAVE_TOOL and getattr(r, "status", None) in ("rejected", "failure")
+    return bool(_save_failed(results) and claimed(speech))
+
+
+def _save_failed(results: Sequence[object]) -> bool:
+    """``memory_save`` хода закрылся неуспехом: отказ, провал или срок вышел."""
+    return any(
+        getattr(r, "tool", None) == kn.MEMORY_SAVE_TOOL
+        and getattr(r, "status", None) in ("rejected", "failure", "timeout")
         for r in results
     )
-    return bool(failed and claimed(speech))
 
 
 def unkept_claim(speech: Optional[str], actions: Sequence[ToolCall], acted: Sequence[ToolCall] = ()) -> bool:
