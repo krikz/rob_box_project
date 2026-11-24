@@ -272,7 +272,7 @@ def test_name_none_is_validation_error(tool: RegisterSpeakerTool, mock_node: Mag
     assert result.data["reason"] == "name_required"
     assert result.data["error"] == "name_required"
     assert "name" not in result.data
-    assert "не передано имя" in (result.error or "")
+    assert "имени нет ни в аргументах, ни в реплике" in (result.error or "")
     mock_node.register_pub.publish.assert_not_called()
     mock_node.rename_pub.publish.assert_not_called()
 
@@ -285,16 +285,25 @@ def test_empty_name_is_validation_error(tool: RegisterSpeakerTool, mock_node: Ma
     mock_node.register_pub.publish.assert_not_called()
 
 
-def test_self_intro_name_is_not_substituted(tool: RegisterSpeakerTool, mock_node: MagicMock) -> None:
-    """#5235: self_intro_name — контекст гейта, не имя. Пустой name его не копирует."""
-    result = tool.execute(name=None, self_intro_name="Тамара", known_speaker_name="Нина")
+def test_missing_name_without_self_intro_stays_name_required(
+    tool: RegisterSpeakerTool, mock_node: MagicMock
+) -> None:
+    """#5236 не откатывается: нет name и нет имени в реплике — отказ name_required."""
+    result = tool.execute(name=None, self_intro_name=None, known_speaker_name="Нина")
     assert result.success is False
+    assert result.data["status"] == "rejected"
     assert result.data["reason"] == "name_required"
-    assert result.data.get("name") != "Тамара"
-    blob = str(result.data) + (result.message or "") + (result.error or "")
-    assert "Тамара" not in blob
+    assert "имени нет ни в аргументах, ни в реплике" in (result.error or "")
     mock_node.register_pub.publish.assert_not_called()
     mock_node.rename_pub.publish.assert_not_called()
+
+
+def test_blank_self_intro_does_not_substitute(tool: RegisterSpeakerTool, mock_node: MagicMock) -> None:
+    """#5238: одни пробелы в self_intro_name — имени в реплике нет, подстановки нет."""
+    result = tool.execute(name="  ", self_intro_name="   ")
+    assert result.success is False
+    assert result.data["reason"] == "name_required"
+    mock_node.register_pub.publish.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -549,3 +558,61 @@ def test_names_containing_noise_prefix_are_published(
     assert result.data["status"] == "timeout", f"{real_name!r} не должен быть отклонён"
     assert result.data["name"] == real_name.strip().capitalize()
     assert mock_node.register_pub.publish.called
+
+
+# ---------------------------------------------------------------------------
+# 7. Issue #5238 — имя из реплики, когда модель не передала name.
+# self_intro_name — решение кода (speaker_adapter.named_self), не догадка LLM.
+# Подстановка до гейтов: чужой old_name всё равно ловит not_own_profile.
+# ---------------------------------------------------------------------------
+
+
+def test_name_from_self_intro_is_published(tool: RegisterSpeakerTool, mock_node: MagicMock) -> None:
+    """#5238, акт 2c: register_speaker({}) + self_intro_name='тамара' → публикация «Тамара».
+
+    profile_name('тамара') == 'Тамара': в профиль уходит именительный с заглавной,
+    не сырой аргумент хода. Исход — не name_required (владелец в тесте молчит → timeout).
+    """
+    from rob_box_dialog.words import profile_name
+
+    said = "тамара"
+    assert profile_name(said) == "Тамара"
+
+    result = tool.execute(name=None, self_intro_name=said, known_speaker_name="Нина")
+    assert result.data.get("reason") != "name_required"
+    assert result.data["status"] != "rejected"
+    assert result.data["name"] == "Тамара"
+
+    assert mock_node.register_pub.publish.called
+    register_msg = mock_node.register_pub.publish.call_args[0][0]
+    assert json.loads(register_msg.data) == {"name": "Тамара", "utterance_id": _UTT}
+    mock_node.rename_pub.publish.assert_not_called()
+
+
+def test_foreign_old_name_still_refused_when_name_comes_from_self_intro(
+    tool: RegisterSpeakerTool, mock_node: MagicMock
+) -> None:
+    """#5238: подстановка до гейта. old_name='Саша' при голосе 'Нина' — not_own_profile, без публикации."""
+    result = tool.execute(
+        name=None, old_name="Саша", self_intro_name="тамара", known_speaker_name="Нина"
+    )
+    assert result.success is False
+    assert result.data["status"] == "rejected"
+    assert result.data["reason"] == "not_own_profile"
+    assert result.data["error"] == "not_own_profile"
+    mock_node.register_pub.publish.assert_not_called()
+    mock_node.rename_pub.publish.assert_not_called()
+
+
+def test_explicit_name_is_not_replaced_by_self_intro(
+    tool: RegisterSpeakerTool, mock_node: MagicMock
+) -> None:
+    """#5238: name передан — подстановки нет, старый гейт not_self_introduction."""
+    result = tool.execute(name="Игорь", self_intro_name="тамара", known_speaker_name="Нина")
+    assert result.success is False
+    assert result.data["status"] == "rejected"
+    assert result.data["reason"] == "not_self_introduction"
+    assert result.data["received"] == "Игорь"
+    assert result.data.get("name") != "Тамара"
+    mock_node.register_pub.publish.assert_not_called()
+    mock_node.rename_pub.publish.assert_not_called()
