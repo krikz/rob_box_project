@@ -18,7 +18,7 @@ def test_image_installs_rebuilt_nav2_servers_and_plugins(tmp_path: Path):
             "libnav2_drive_on_heading_behavior.so",
             "libnav2_back_up_behavior.so",
         ],
-        "nav2_costmap_2d": ["libnav2_costmap_2d_core.so"],
+        "nav2_costmap_2d": ["libnav2_costmap_2d_core.so", "libnav2_costmap_2d_client.so"],
         "nav2_navfn_planner": ["libnav2_navfn_planner.so"],
     }
     for package, paths in artifacts.items():
