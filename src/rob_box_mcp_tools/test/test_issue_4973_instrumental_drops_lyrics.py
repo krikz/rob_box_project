@@ -15,9 +15,10 @@ from rob_box_mcp_tools.engine.engine_tools import SOURCE_DECLINED, GenerateMusic
 from rob_box_mcp_tools.engine.gen import kie_suno
 from rob_box_mcp_tools.engine.gen.library import GeneratedMusicLibrary
 from rob_box_mcp_tools.engine.gen.provider import GenJob, GenUnavailable
+from rob_box_mcp_tools.engine.gen import song as sg
 from rob_box_mcp_tools.engine.instrumental_order import supplied_lyrics_refusal
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.song_order import song_request
+from rob_box_mcp_tools.engine.song_order import song_request, supplied_lyrics
 from rob_box_music.source import REASON_WORDS
 
 from .test_adr0158_pr7_song import ZH_LYRICS, FakeStudio
@@ -28,6 +29,9 @@ pytestmark = pytest.mark.unit
 
 #: Синтетика, не чей-то текст: длины хватает на порог готовых слов.
 GIVEN = "ветер тихо дует над рекою\n" * 6
+#: Однострочные клаузы той же синтетики: речь после STT переводов строк не имеет (#5222).
+SPOKEN = ", ".join(["ветер тихо дует над рекою"] * 6)
+SHORT_THEME = "зима, снег, звёзды"
 
 
 class _Maker:
@@ -107,6 +111,49 @@ def test_instrumental_with_given_lyrics_declines_before_launch_and_does_not_subs
     assert "Сочиняю" not in result.data["message"]
 
 
+def test_spoken_one_line_lyrics_decline_an_instrumental_before_launch(tmp_path):
+    """Шесть клауз одной строкой — сказанные вслух слова: отказ до заказа, KIE не вызван (#5222)."""
+    assert sg.is_spoken_lyrics(SPOKEN) and not sg.is_given_lyrics(SPOKEN)
+    req, maker, played = _instrumental_request(tmp_path)
+    result = GenerateMusicTool(None, req).execute(
+        kind="instrumental", theme=SPOKEN, heard_text="сгенерируй инструментал")
+    assert not result.success and result.data["reason"] == SOURCE_DECLINED
+    assert REASON_WORDS["no_lyrics_path"] in result.data["message"]
+    assert maker.orders == [] and not played
+
+
+def test_spoken_lyrics_in_heard_text_alone_decline_too():
+    """Слова лежат только в heard_text (args[5]): гард смотрит и его, не только theme.
+
+    В ``SongRequest.lyrics`` однострочная речь не попадает: путь песни её не поёт дословно,
+    текст пишет LLM. Отказ инструментала читает :func:`supplied_lyrics`, не это поле."""
+    args = ("track", "", None, "rock", "t-heard", SPOKEN)
+    assert supplied_lyrics(args) == SPOKEN
+    assert song_request(args, "rock").lyrics == ""
+    assert REASON_WORDS["no_lyrics_path"] in supplied_lyrics_refusal(args, "rock")
+
+
+def test_short_theme_still_orders_an_instrumental(tmp_path):
+    """Короткая тема — не слова: заказ идёт, как до #5222."""
+    assert not sg.is_spoken_lyrics(SHORT_THEME) and not sg.is_given_lyrics(SHORT_THEME)
+    req, maker, played = _instrumental_request(tmp_path)
+    result = GenerateMusicTool(None, req).execute(
+        kind="instrumental", theme=SHORT_THEME, heard_text="сгенерируй инструментал")
+    assert result.success and maker.orders and maker.orders[0][2]
+    assert REASON_WORDS["no_lyrics_path"] not in str(result.data)
+    assert not played
+
+
+def test_spoken_lyrics_bound_is_chars_and_clauses():
+    """Граница порога: 119 знаков — тема, 121 знак при шести клаузах — слова. По одной паре."""
+    under = "а" * 119
+    over = "ветер дует, снег идёт, город спит, печь трещит, ночь темна, " + "о" * 70
+    assert len(under) == 119 and not sg.is_spoken_lyrics(under)
+    assert len(over) >= 121 and over.count(",") == 5 and sg.is_spoken_lyrics(over)
+    five = "ветер дует, снег идёт, город спит, печь трещит, ночь темна " + "о" * 80
+    assert five.count(",") == 4 and len(five) >= 121 and not sg.is_spoken_lyrics(five)
+
+
 def test_words_after_the_phrase_block_an_instrumental_order_too():
     """Хвост после «этими словами» — те же готовые слова: инструментал их не заказывает."""
     heard = "сделай трек с этими словами " + GIVEN
@@ -153,3 +200,23 @@ def test_song_path_still_carries_verbatim_lyrics(tmp_path):
         _rig(), studio, GeneratedMusicLibrary(str(tmp_path / "song")), []
     ).execute(intent="track", text=GIVEN, heard_text="сгенерируй песню своим голосом")
     assert result.success and studio.requests and studio.requests[0].lyrics == GIVEN
+
+
+def test_spoken_one_line_does_not_become_song_lyrics(tmp_path):
+    """Длинная однострочная речь + песня: lyrics пуст, ``given_song`` не зовётся, текст пишет LLM.
+
+    Иначе ``check_song`` говорит «строк мало» и человек слышит отказ вместо песни (#5222).
+    Инструментал на том же входе по-прежнему отказывает до KIE."""
+    heard = "сгенерируй песню. " + SPOKEN
+    args = ("track", "", None, "rock", "t-song", heard)
+    order = song_request(args, "rock")
+    assert order.lyrics == "" and order.theme == heard
+    assert supplied_lyrics(args) == heard
+    assert REASON_WORDS["no_lyrics_path"] in supplied_lyrics_refusal(args, "rock")
+    from .test_adr0158_pr7_song import _request
+
+    studio = FakeStudio()
+    result = _request(
+        _rig(), studio, GeneratedMusicLibrary(str(tmp_path / "song")), []
+    ).execute(intent="track", text="", heard_text=heard)
+    assert result.success and studio.requests and studio.requests[0].lyrics == ""

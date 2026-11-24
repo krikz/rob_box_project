@@ -44,6 +44,10 @@ SONG_MAX_CHARS = 950
 TITLE_MAX = 40
 MIN_LINES = 6
 MIN_CHARS = 120
+#: Клауза сказанных вслух слов — кусок между запятой или концом фразы. Речь после STT всегда одна строка,
+#: поэтому :data:`MIN_LINES` для неё недостижим (ход ca5e20f22093, #5222: 138 знаков, 6 клауз, гард #4973 молчал).
+#: Шесть — столько же, сколько строк у песни, и на одну больше, чем у короткой темы («зима, снег, звёзды» — три).
+SPOKEN_MIN_CLAUSES = 6
 #: Доля букв нужного письма в тексте песни (куплет с парой чужих слов — ещё свой язык, смесь языков — нет).
 SCRIPT_SHARE = 0.85
 #: ``add-instrumental`` отвечает 422 «Please enter negativeTags» без этого поля (прогон 13.10): что Suno не должен петь/добавлять.
@@ -280,9 +284,41 @@ def voice_sings(provider: str, voice_language: str, language: str) -> bool:
 def is_given_lyrics(text: str) -> bool:
     """Текст сам дотягивает до песни: от ``MIN_LINES`` строк и от ``MIN_CHARS`` символов.
 
-    Короче — тема, не слова (#5092). Пороги те же, что у :func:`check_song`, не ниже."""
+    Короче — тема, не слова (#5092). Пороги те же, что у :func:`check_song`, не ниже.
+    Сказанную вслух речь этот порог не ловит: у неё нет переводов строк — её судит
+    :func:`is_spoken_lyrics` (#5222)."""
     lines = [ln for ln in text.splitlines() if ln.strip()]
     return len(lines) >= MIN_LINES and len(text) >= MIN_CHARS
+
+
+def _clauses(text: str) -> int:
+    """Сколько клауз в одной строке: куски между запятой, точкой, вопросом и восклицанием.
+
+    Точка с запятой и многоточие — та же граница. Перевод строки клаузой не считается:
+    многострочный текст судит :func:`is_given_lyrics`."""
+    count, piece = 0, ""
+    for char in text:
+        if char in ",.;?!…":
+            if piece.strip():
+                count += 1
+            piece = ""
+        else:
+            piece += char
+    return count + 1 if piece.strip() else count
+
+
+def is_spoken_lyrics(text: str) -> bool:
+    """Однострочная речь сама дотягивает до поданных слов, а не до темы (#5222).
+
+    Порог — от ``MIN_CHARS`` знаков и от ``SPOKEN_MIN_CLAUSES`` клауз. Длина та же, что у
+    песни: короче 120 знаков шести клауз не набрать осмысленным текстом. Клауз столько же,
+    сколько строк у песни, и на одну больше короткой темы («зима, снег, звёзды» — три клаузы,
+    «джаз для вечера» — одна). Порог подобран на ходе ca5e20f22093: тема 138 знаков и 6 клауз
+    ушла в KIE, потому что :func:`is_given_lyrics` требует строки. Многострочный текст здесь
+    не судится — у него свой порог."""
+    if "\n" in text or len(text) < MIN_CHARS:
+        return False
+    return _clauses(text) >= SPOKEN_MIN_CLAUSES
 
 
 def given_song(request: SongRequest) -> Song:
@@ -499,7 +535,8 @@ class SongStudio:
 
 
 __all__ = ["BUSY_TEXT", "DEFAULT_GENRE", "STARTED_WAIT_S", "LYRICS_SCHEMA", "LyricsAsk", "Song", "SongFailed", "SongRequest",
-           "SongResult", "SongStudio", "check_song", "is_given_lyrics", "order_language", "song_language",
+           "SongResult", "SongStudio", "check_song", "is_given_lyrics", "is_spoken_lyrics", "order_language",
+           "song_language",
            "text_language",
            "current_voice", "done_text", "failed_words", "given_song", "harness_lyrics_ask", "lyrics_prompt",
            "rules_text", "song_tags", "sung_by", "verbatim_refusal", "voice_sings", "wait_text", "write_lyrics"]
