@@ -19,6 +19,7 @@ from .gen.song import (
     SongStudio,
     failed_words,
     is_given_lyrics,
+    is_spoken_lyrics,
     verbatim_refusal,
     wait_text,
 )
@@ -64,13 +65,21 @@ def _phrase_span(words: list, entry: str) -> int:
     return 0
 
 
+def _supplied_part(part: str) -> bool:
+    """Аргумент сам несёт поданные слова: многострочные (:func:`is_given_lyrics`) или сказанные
+    вслух одной строкой (:func:`is_spoken_lyrics`). Короткая тема — ни то, ни другое."""
+    return is_given_lyrics(part) or is_spoken_lyrics(part)
+
+
 def song_request(args: Tuple[Any, ...], genre: str) -> SongRequest:
     """Заказ песни из аргументов тула ``(intent, text, mood, genre, turn_id, heard_text)``.
 
     Готовые слова (``SongRequest.lyrics``) — только когда человек их реально дал (#4973) или когда
-    аргумент сам дотягивает до песни (:func:`is_given_lyrics`). Тема («про енота-механика») готовым
-    текстом не становится: иначе ``SongStudio.make`` проверяет её как слова и падает за 14 мс,
-    не позвав LLM (#5092). Тема — первый непустой из ``text`` и ``heard_text``.
+    аргумент сам дотягивает до песни (:func:`is_given_lyrics`) либо до сказанных вслух слов
+    (:func:`is_spoken_lyrics`, #5222: речь после STT однострочная, порог строк недостижим). Тема
+    («про енота-механика») готовым текстом не становится: иначе ``SongStudio.make`` проверяет её
+    как слова и падает за 14 мс, не позвав LLM (#5092). Тема — первый непустой из ``text`` и
+    ``heard_text``.
 
     Порядок готовых слов: хвост после «этими словами»/«этим текстом» важнее явного ``text`` (ход
     17:16: LLM кладёт просьбу в ``text``, слова оставляет в ``heard_text``). Затем — ``text``, если
@@ -80,7 +89,7 @@ def song_request(args: Tuple[Any, ...], genre: str) -> SongRequest:
     переписывала."""
     text, heard = str(args[1] or ""), str(args[5] or "")
     given = _given_after_phrase(heard)
-    lyrics = given or next((part for part in (text, heard) if is_given_lyrics(part)), "")
+    lyrics = given or next((part for part in (text, heard) if _supplied_part(part)), "")
     theme = given or text or heard
     return SongRequest(theme, genre, str(args[2] or ""), lyrics)
 

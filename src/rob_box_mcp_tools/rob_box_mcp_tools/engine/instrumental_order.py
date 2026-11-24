@@ -31,7 +31,8 @@ def supplied_lyrics_refusal(args: Tuple[Any, ...], genre: str) -> str:
     """Фраза отказа, если в аргументах уже лежат дословные слова, или «».
 
     Инструментал их не поёт (:data:`SINGS_SUPPLIED_WORDS`): заказ не уходит, тема не подменяется
-    (#4973, ADR-0148). Пустая строка — слов нет, путь как был."""
+    (#4973, ADR-0148). Слова ищутся и в ``args[1]`` (text), и в ``args[5]`` (heard_text), в том
+    числе сказанные вслух одной строкой (#5222). Пустая строка — слов нет, путь как был."""
     if "instrumental" in SINGS_SUPPLIED_WORDS or not song_request(args, genre).lyrics.strip():
         return ""
     return f"Сгенерировать не вышло: {REASON_WORDS['no_lyrics_path']}."
