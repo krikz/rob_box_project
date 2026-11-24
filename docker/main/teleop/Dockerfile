@@ -52,10 +52,13 @@ WORKDIR /ws
 COPY --from=msgs /ws/install /ws/install
 RUN ln -s /ws /workspace
 
-# rob_box_core (speech_client, Utterance) - ВЕСЬ пакет, а не отдельные файлы:
-# setup.py тащит data_files (config/, resource/), и новый файл там ломает сборку
-# выборочного COPY (#2250 в quest). Образец - docker/sound/telegram_bot/Dockerfile.
-COPY src/rob_box_core /ws/src/rob_box_core
+# Ядро публикуется отдельно (ADR-0167 Ш3, #4932). Пин совпадает с
+# voice-assistant и telegram-bot. pip базы Ubuntu 22.04 надо обновить для
+# PEP 621-метаданных ядра (#4940).
+RUN pip3 install --no-cache-dir --upgrade pip==26.3 && \
+    pip3 install --no-cache-dir \
+        "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.33"
+
 # Copy workspace source (пакет rob_box_teleop)
 COPY --chown=ros2:ros2 src/rob_box_teleop /ws/src/rob_box_teleop
 
@@ -74,7 +77,7 @@ RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     . /ws/install/setup.sh && \
     cd /ws && \
     colcon build \
-        --packages-select rob_box_core rob_box_teleop \
+        --packages-select rob_box_teleop \
         --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     test -f /workspace/install/setup.bash
 

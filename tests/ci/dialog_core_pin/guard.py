@@ -45,17 +45,13 @@ def pin_in(dockerfile: Path) -> str:
 
 
 def pin_from_dockerfile(repo: Path = _REPO) -> str:
-    """Тег ядра. voice-assistant и telegram_bot обязаны нести один и тот же.
-
-    Расхождение — дырка: образ телеграма молча останется на старом теге. Источник
-    истины — voice Dockerfile; telegram сверяется с ним, второго хардкода нет.
-    """
-    voice = repo / "docker" / "sound" / "voice_assistant" / "Dockerfile"
-    telegram = repo / "docker" / "sound" / "telegram_bot" / "Dockerfile"
-    pin = pin_in(voice)
-    other = pin_in(telegram)
-    if other != pin:
-        raise SystemExit(f"пины ядра разошлись: voice-assistant {pin}, telegram_bot {other}")
+    """Тег voice-assistant, с которым сверяются Telegram и Teleop."""
+    docker = repo / "docker"
+    pin = pin_in(docker / "sound" / "voice_assistant" / "Dockerfile")
+    for consumer in (docker / "sound" / "telegram_bot", docker / "main" / "teleop"):
+        other = pin_in(consumer / "Dockerfile")
+        if other != pin:
+            raise SystemExit(f"пины ядра разошлись: voice-assistant {pin}, {consumer.name} {other}")
     return pin
 
 
