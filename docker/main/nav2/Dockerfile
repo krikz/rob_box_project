@@ -82,6 +82,7 @@ RUN apt-get update && apt-get install -y \
 #   behavior_server (ADR-0148). Both server executables allocate the patched
 #   classes. Ship them with their cores and all plugins using TimedBehavior.
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
+COPY controller_goal_tf_epoch.patch /tmp/controller_goal_tf_epoch.patch
 COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 COPY controller_stuck_against.patch /tmp/controller_stuck_against.patch
 COPY navfn_refuse_unknown_tail.patch /tmp/navfn_refuse_unknown_tail.patch
@@ -101,6 +102,7 @@ RUN apt-get update && apt-get install -y \
     && mv /tmp/nav2-fix/src/navigation2-a097086719c88f781aa59788eca29ac6ca5e56db \
         /tmp/nav2-fix/src/navigation2 \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
+    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_goal_tf_epoch.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_progress_abort.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_stuck_against.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_refuse_unknown_tail.patch \
@@ -142,7 +144,7 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
            fi; \
          done; \
        done \
-    && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch \
+    && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch /tmp/controller_goal_tf_epoch.patch \
         /tmp/controller_progress_abort.patch /tmp/controller_stuck_against.patch \
         /tmp/navfn_refuse_unknown_tail.patch /tmp/navfn_gradient_origin.patch \
         /tmp/costmap_publish_on_clear.patch /tmp/behavior_costmap_freshness.patch

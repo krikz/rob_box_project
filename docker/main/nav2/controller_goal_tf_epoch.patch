@@ -1,0 +1,44 @@
+--- a/nav2_controller/src/controller_server.cpp
++++ b/nav2_controller/src/controller_server.cpp
+@@ -595,20 +595,32 @@
+
+   nav_2d_msgs::msg::Twist2D twist = getThresholdedTwist(odom_sub_->getTwist());
+   geometry_msgs::msg::Twist velocity = nav_2d_utils::twist2Dto3D(twist);
+
+-  geometry_msgs::msg::PoseStamped transformed_end_pose;
+-  rclcpp::Duration tolerance(rclcpp::Duration::from_seconds(costmap_ros_->getTransformTolerance()));
+-  // Ignore failed TF: default PoseStamped is (0,0,0) and can false-trigger goal checker.
+-  if (!nav_2d_utils::transformPose(
+-      costmap_ros_->getTfBuffer(), costmap_ros_->getGlobalFrameID(),
+-      end_pose_, transformed_end_pose, tolerance))
+-  {
+-    return false;
++  // FollowPath poses are in the path frame (setPlannerPath). Compare the base in that
++  // frame at the latest common TF time, even when localization trails wheel odometry.
++  if (pose.header.frame_id != end_pose_.header.frame_id) {
++    try {
++      const auto base_in_plan = costmap_ros_->getTfBuffer()->lookupTransform(
++        end_pose_.header.frame_id, costmap_ros_->getBaseFrameID(), tf2::TimePointZero);
++      const rclcpp::Time common(base_in_plan.header.stamp);
++      const rclcpp::Time odom_stamp(pose.header.stamp);
++      const auto check_time = now();
++      if (common.nanoseconds() == 0 || common > odom_stamp || odom_stamp > check_time ||
++        (check_time - common).seconds() > costmap_ros_->getTransformTolerance())
++      {
++        return false;
++      }
++      geometry_msgs::msg::PoseStamped base_origin;
++      tf2::toMsg(tf2::Transform::getIdentity(), base_origin.pose);
++      tf2::doTransform(base_origin, pose, base_in_plan);
++    } catch (const tf2::TransformException &) {
++      return false;
++    }
+   }
+
+   return goal_checkers_[current_goal_checker_]->isGoalReached(
+-    pose.pose, transformed_end_pose.pose,
++    pose.pose, end_pose_.pose,
+     velocity);
+ }
+
+ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
