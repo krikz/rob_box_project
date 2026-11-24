@@ -71,25 +71,37 @@ def _supplied_part(part: str) -> bool:
     return is_given_lyrics(part) or is_spoken_lyrics(part)
 
 
+def supplied_lyrics(args: Tuple[Any, ...]) -> str:
+    """Слова, которые человек уже подал, или «» — для отказа инструментала (#5222), не для песни.
+
+    Хвост после «этими словами»/«этим текстом» важнее явного ``text``. Затем — первый из
+    ``text`` и ``heard_text``, который сам дотягивает до готовых слов или до сказанных вслух.
+    В ``SongRequest.lyrics`` это не кладётся: однострочную речь ``check_song`` отверг бы
+    («строк мало»), и песня не заказалась бы. Путь песни судит только :func:`song_request`."""
+    text, heard = str(args[1] or ""), str(args[5] or "")
+    return _given_after_phrase(heard) or next((part for part in (text, heard) if _supplied_part(part)), "")
+
+
 def song_request(args: Tuple[Any, ...], genre: str) -> SongRequest:
     """Заказ песни из аргументов тула ``(intent, text, mood, genre, turn_id, heard_text)``.
 
     Готовые слова (``SongRequest.lyrics``) — только когда человек их реально дал (#4973) или когда
-    аргумент сам дотягивает до песни (:func:`is_given_lyrics`) либо до сказанных вслух слов
-    (:func:`is_spoken_lyrics`, #5222: речь после STT однострочная, порог строк недостижим). Тема
-    («про енота-механика») готовым текстом не становится: иначе ``SongStudio.make`` проверяет её
-    как слова и падает за 14 мс, не позвав LLM (#5092). Тема — первый непустой из ``text`` и
-    ``heard_text``.
+    аргумент сам дотягивает до песни (:func:`is_given_lyrics`: от ``MIN_LINES`` строк). Сказанная
+    вслух речь — одна строка, порог строк недостижим: в текст песни она не попадает, его пишет LLM
+    (#5222). Иначе ``SongStudio.make`` зовёт ``given_song``, ``check_song`` говорит «строк мало»,
+    и человек слышит отказ вместо песни. Тема («про енота-механика») готовым текстом не становится
+    по той же причине: студия проверяет её как слова и падает за 14 мс, не позвав LLM (#5092).
+    Тема — первый непустой из ``text`` и ``heard_text``.
 
     Порядок готовых слов: хвост после «этими словами»/«этим текстом» важнее явного ``text`` (ход
     17:16: LLM кладёт просьбу в ``text``, слова оставляет в ``heard_text``). Затем — ``text``, если
     он сам длиннее порога (ход 17:23: жалоба в ``heard_text`` не вытесняет поданные слова).
     ``heard_text`` целиком — только когда он сам длиннее порога и ``text`` пуст. Дословные слова
     идут и темой, и текстом: тема нужна ``check_song`` (название), текст — чтобы LLM его не
-    переписывала."""
+    переписывала. Слова для отказа инструментала — :func:`supplied_lyrics`, не это поле."""
     text, heard = str(args[1] or ""), str(args[5] or "")
     given = _given_after_phrase(heard)
-    lyrics = given or next((part for part in (text, heard) if _supplied_part(part)), "")
+    lyrics = given or next((part for part in (text, heard) if is_given_lyrics(part)), "")
     theme = given or text or heard
     return SongRequest(theme, genre, str(args[2] or ""), lyrics)
 

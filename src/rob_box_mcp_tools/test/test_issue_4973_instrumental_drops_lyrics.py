@@ -18,7 +18,7 @@ from rob_box_mcp_tools.engine.gen.provider import GenJob, GenUnavailable
 from rob_box_mcp_tools.engine.gen import song as sg
 from rob_box_mcp_tools.engine.instrumental_order import supplied_lyrics_refusal
 from rob_box_mcp_tools.engine.search import ThemeHits
-from rob_box_mcp_tools.engine.song_order import song_request
+from rob_box_mcp_tools.engine.song_order import song_request, supplied_lyrics
 from rob_box_music.source import REASON_WORDS
 
 from .test_adr0158_pr7_song import ZH_LYRICS, FakeStudio
@@ -123,9 +123,13 @@ def test_spoken_one_line_lyrics_decline_an_instrumental_before_launch(tmp_path):
 
 
 def test_spoken_lyrics_in_heard_text_alone_decline_too():
-    """Слова лежат только в heard_text (args[5]): гард смотрит и его, не только theme."""
+    """Слова лежат только в heard_text (args[5]): гард смотрит и его, не только theme.
+
+    В ``SongRequest.lyrics`` однострочная речь не попадает: путь песни её не поёт дословно,
+    текст пишет LLM. Отказ инструментала читает :func:`supplied_lyrics`, не это поле."""
     args = ("track", "", None, "rock", "t-heard", SPOKEN)
-    assert song_request(args, "rock").lyrics == SPOKEN
+    assert supplied_lyrics(args) == SPOKEN
+    assert song_request(args, "rock").lyrics == ""
     assert REASON_WORDS["no_lyrics_path"] in supplied_lyrics_refusal(args, "rock")
 
 
@@ -196,3 +200,23 @@ def test_song_path_still_carries_verbatim_lyrics(tmp_path):
         _rig(), studio, GeneratedMusicLibrary(str(tmp_path / "song")), []
     ).execute(intent="track", text=GIVEN, heard_text="сгенерируй песню своим голосом")
     assert result.success and studio.requests and studio.requests[0].lyrics == GIVEN
+
+
+def test_spoken_one_line_does_not_become_song_lyrics(tmp_path):
+    """Длинная однострочная речь + песня: lyrics пуст, ``given_song`` не зовётся, текст пишет LLM.
+
+    Иначе ``check_song`` говорит «строк мало» и человек слышит отказ вместо песни (#5222).
+    Инструментал на том же входе по-прежнему отказывает до KIE."""
+    heard = "сгенерируй песню. " + SPOKEN
+    args = ("track", "", None, "rock", "t-song", heard)
+    order = song_request(args, "rock")
+    assert order.lyrics == "" and order.theme == heard
+    assert supplied_lyrics(args) == heard
+    assert REASON_WORDS["no_lyrics_path"] in supplied_lyrics_refusal(args, "rock")
+    from .test_adr0158_pr7_song import _request
+
+    studio = FakeStudio()
+    result = _request(
+        _rig(), studio, GeneratedMusicLibrary(str(tmp_path / "song")), []
+    ).execute(intent="track", text="", heard_text=heard)
+    assert result.success and studio.requests and studio.requests[0].lyrics == ""

@@ -20,7 +20,7 @@ from rob_box_music.source import CACHE, GENERATE, REASON_WORDS, Route, SourceAsk
 from .gen.gen_session import bridge_style
 from .gen.instrumental import BUSY_TEXT, InstrumentalResult, failed_text, ready_text, wait_text
 from .gen.kie_suno import SINGS_SUPPLIED_WORDS
-from .song_order import DECLINED, bridge_hold, song_request
+from .song_order import DECLINED, bridge_hold, supplied_lyrics
 from .theme_grounding import order_theme
 
 _LOG = logging.getLogger(__name__)
@@ -31,9 +31,11 @@ def supplied_lyrics_refusal(args: Tuple[Any, ...], genre: str) -> str:
     """Фраза отказа, если в аргументах уже лежат дословные слова, или «».
 
     Инструментал их не поёт (:data:`SINGS_SUPPLIED_WORDS`): заказ не уходит, тема не подменяется
-    (#4973, ADR-0148). Слова ищутся и в ``args[1]`` (text), и в ``args[5]`` (heard_text), в том
-    числе сказанные вслух одной строкой (#5222). Пустая строка — слов нет, путь как был."""
-    if "instrumental" in SINGS_SUPPLIED_WORDS or not song_request(args, genre).lyrics.strip():
+    (#4973, ADR-0148). Слова ищет :func:`supplied_lyrics` — и в ``args[1]`` (text), и в ``args[5]``
+    (heard_text), в том числе сказанные вслух одной строкой (#5222). Поле ``SongRequest.lyrics``
+    для этого не годится: однострочную речь путь песни в него не кладёт. Пустая строка — слов нет,
+    путь как был."""
+    if "instrumental" in SINGS_SUPPLIED_WORDS or not supplied_lyrics(args).strip():
         return ""
     return f"Сгенерировать не вышло: {REASON_WORDS['no_lyrics_path']}."
 
