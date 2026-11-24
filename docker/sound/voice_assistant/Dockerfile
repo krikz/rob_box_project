@@ -256,7 +256,7 @@ COPY docker/sound/voice_assistant/custom_synthdefs /ws/custom_synthdefs
 # Ставится ДО colcon: colcon собирает только ROS-хосты (rob_box_voice) и
 # полный ROS-пакет rob_box_mcp_tools, а ядро уже лежит в окружении.
 RUN pip3 install --no-cache-dir \
-    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.27"
+    "rob-box-dialog-core @ git+https://github.com/krikz/rob_box_dialog_core@v0.7.32"
 
 # ============================================
 # 🚀 СБОРКА ROS2 ПАКЕТОВ
@@ -295,6 +295,11 @@ ENV ALSA_CARD=ArrayUAC10
 
 # Пути к данным
 ENV SOUND_PACK_DIR=/ws/sound_pack
+# Поставка Химеры едет в образе (ADR-0175 шаг 1.1, #5152). Монтирование чекаута
+# ../../sound_pack:/ws/sound_pack:ro перекрывает тот же путь; без тома остаётся копия образа.
+# CHIMERA_PACKAGE_DIR не задаём: дефолт package_dir() — /ws/sound_pack/chimera.
+COPY sound_pack/chimera /ws/sound_pack/chimera
+
 ENV TTS_CACHE_DIR=/config/voice_assistant/tts_cache
 
 # Проверка доступности нод

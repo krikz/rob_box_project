@@ -191,3 +191,42 @@ def test_rendered_params_match_the_dicts(tmp_path):
     for key, value in module.ICP_ODOMETRY_PARAMS.items():
         literal = module.render_param_value(value)
         assert f'"{key}": {literal}' in icp and f'"{key}"' not in rtabmap, key
+
+
+# #5161: эти ключи не ставим. Optimizer/Strategy=1 и GravitySigma=0 - решение HIL
+# (docs/research/2026-11-05-nav2-hil-tuning.md §9.6): без замера не менять.
+# RGBD/ProximityBySpace=false в том же замере дал 0 proximity-связей. DetectionRate,
+# NeighborLinkRefining, OptimizeFromGraphEnd апстрим не ставит, и молчаливый ретюнинг
+# «чтобы заткнуть has hessian not valid» тест должен поймать.
+_NOT_OURS = (
+    "RGBD/ProximityBySpace",
+    "Rtabmap/DetectionRate",
+    "RGBD/NeighborLinkRefining",
+    "RGBD/OptimizeFromGraphEnd",
+    "RGBD/LinearUpdate",
+    "RGBD/AngularUpdate",
+)
+
+
+def test_measured_optimizer_params_are_locked_and_not_duplicated():
+    """#5161: Strategy=1, GravitySigma=0, Force3DoF=true - ровно один раз, в узле rtabmap.
+
+    Compose этих ключей не держит (docker/main/docker-compose.yaml, комментарий у сервиса
+    rtabmap: параметры живут только здесь). Дубль ключа в launch - мёртвый параметр.
+    """
+    module = load_module()
+    locked = {
+        "Optimizer/Strategy": "1",
+        "Optimizer/GravitySigma": "0",
+        "Reg/Force3DoF": "true",
+    }
+    for key, value in locked.items():
+        assert module.RTABMAP_PARAMS[key] == value
+        assert key not in module.ICP_ODOMETRY_PARAMS
+
+    for key in _NOT_OURS:
+        assert key not in module.RTABMAP_PARAMS, key
+        assert key not in module.ICP_ODOMETRY_PARAMS, key
+
+    keys = list(module.RTABMAP_PARAMS)
+    assert len(keys) == len(set(keys))

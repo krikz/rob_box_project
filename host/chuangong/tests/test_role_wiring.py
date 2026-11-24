@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from chuangong.activation import ActivationMachine
 from chuangong.agent import Config, Deps
 from chuangong.state import Mode
@@ -29,7 +30,17 @@ class _Executor:
         self.calls = []
 
     def __call__(
-        self, release, role, *, docker, project_dir, state_dir, previous=None, health_after=None, previous_release=None
+        self,
+        release,
+        role,
+        *,
+        docker,
+        project_dir,
+        state_dir,
+        previous=None,
+        health_after=None,
+        previous_release=None,
+        releases_root=None,
     ):
         self.calls.append(
             {
@@ -38,6 +49,7 @@ class _Executor:
                 "previous": previous,
                 "project_dir": str(project_dir),
                 "state_dir": str(state_dir),
+                "releases_root": None if releases_root is None else str(releases_root),
             }
         )
         return {"state": "role_switched", "execute": True, "role": role, "release": release["release"]}
@@ -368,3 +380,40 @@ def test_activation_hands_the_previous_release_to_the_executor(tmp_path, monkeyp
     assert seen["previous_release"] is not None, "активация не передала прежний релиз"
     assert seen["previous_release"]["release"] == "2026.11.08-1"
     assert execute_role  # исполнитель #4911 остаётся точкой вызова
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["blocked", "role_rolled_back", "rollback_planned", "rollback_failed", "changed", ""],
+)
+def test_activation_blocks_unless_executor_returns_role_switched(tmp_path, monkeypatch, outcome):
+    """Цепочка активации продолжается только на точном role_switched (#5202).
+
+    Иной исход исполнителя — blocked / role_switch_failed, executed заполнен,
+    остальные роли не вызываются.
+    """
+    cfg = _cfg(tmp_path)
+    seen = {"roles": []}
+
+    def _spy(release, role, **kwargs):
+        seen["roles"].append(role)
+        seen["releases_root"] = kwargs.get("releases_root")
+        return {"state": outcome, "execute": True, "role": role, "release": release["release"]}
+
+    monkeypatch.setattr("chuangong.activation.fetch_release", lambda *a, **k: _release(k.get("ref") or a[2]))
+    monkeypatch.setattr(
+        "chuangong.activation.ActivationMachine._preflight", lambda self, record, release: (object(), {})
+    )
+    cfg.state_dir.mkdir()
+    (cfg.state_dir / "state.json").write_text(
+        json.dumps({"current": "2026.11.08-1", "previous": None}), encoding="utf-8"
+    )
+
+    rec = _machine(cfg, _spy).activate("2026.11.09-1", execute=True)
+
+    assert rec["state"] == "blocked", rec
+    assert rec["reason"] == "role_switch_failed"
+    assert rec["detail"]["state"] == outcome
+    assert rec["executed"] == [rec["detail"]]
+    assert seen["roles"] == ["vision"], "после не-role_switched цепочка не должна идти дальше"
+    assert seen["releases_root"] == cfg.releases_root

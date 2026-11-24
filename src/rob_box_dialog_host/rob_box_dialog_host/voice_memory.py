@@ -117,19 +117,75 @@ def same_inflection(left: str, right: str) -> bool:
     return any(a in family and b in family for family in _INFLECTION_FAMILIES)
 
 
-def _fact_matches(fact: str, tokens: List[str]) -> bool:
-    """Токен запроса — подстрока факта или та же семья форм (#4956).
+_MIN_SUBSTRING_CHARS = 3
 
-    Подстрока — прежний контракт («чай» в «зелёный чай»). Семья — точное
-    равенство формы (``same_inflection``): «еда» находит «ест», «если» нет.
+
+def fact_overlap_score(fact: str, tokens: List[str]) -> float:
+    """Сила совпадения запроса с фактом без вектора (#4956). 0 — промах.
+
+    Приоритет, сверху вниз, векторный путь не участвует:
+
+    * 1.0 — токен равен слову факта («чай» = «чай») или та же замкнутая
+      семья форм (``same_inflection``: «еда»↔«ест»). Другая форма того же
+      слова сюда не входит: «пицца» не «пиццу» (#3890);
+    * 0.5 — слово факта содержит токен запроса целиком и длиннее его
+      («лук» внутри «луковицу»). Обратное направление не считается:
+      «луковица» не находит «лук», иначе «кухне» находила бы «не».
+
+    Сравнение — по целым словам после casefold и ``ё``→``е``, не по куску
+    внутри другого корня: «если» не находит «есть», «письмо» не находит
+    «пить». Токен короче ``_MIN_SUBSTRING_CHARS`` в подстроку не идёт.
+    Несколько токенов складываются и режутся потолком 1.0.
     """
-    folded = fact.casefold()
-    fact_words = query_words(fact)
-    return any(
-        token in folded or any(same_inflection(token, word) for word in fact_words)
-        for token in tokens
-    )
+    if not tokens:
+        return 0.0
+    fact_words = [_yo_fold(word) for word in query_words(fact)]
+    total = 0.0
+    for token in tokens:
+        folded = _yo_fold(token)
+        if len(folded) < _MIN_SUBSTRING_CHARS:
+            continue
+        if folded in fact_words or any(
+            same_inflection(folded, word) for word in fact_words
+        ):
+            total += 1.0
+        elif any(folded in word and folded != word for word in fact_words):
+            total += 0.5
+    return min(total, 1.0)
 
+
+def rank_fact_rows(
+    rows: Sequence[sqlite3.Row], tokens: List[str], limit: int
+) -> List[Dict]:
+    """Совпавшие факты по убыванию ``fact_overlap_score``, не больше ``limit``.
+
+    При равном счёте побеждает более свежий: ``rows`` уже идут
+    ``ORDER BY updated_at DESC``, стабильная сортировка это сохраняет.
+    ``source`` остаётся ``"fact"`` — это поиск, не каталог
+    (``fact_browse``). Вектор сюда не подмешивается.
+    """
+    if limit <= 0 or not tokens:
+        return []
+    ranked = [(fact_overlap_score(row["fact"], tokens), row) for row in rows]
+    ranked = [(score, row) for score, row in ranked if score > 0.0]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [_fact_hit(row, score) for score, row in ranked[:limit]]
+
+
+def _fact_hit(row: sqlite3.Row, score: float) -> Dict:
+    """Строка ``voice_facts`` в контракт ``search()``."""
+    return {
+        "id": row["id"],
+        "role": "fact",
+        "content": row["fact"],
+        "session_id": None,
+        "speaker_id": row["speaker_id"],
+        "category": row["category"],
+        "timestamp": row["updated_at"],
+        "score": score,
+        "source": "fact",
+        "kind": "fact",
+    }
 
 class OllamaEmbedder:
     """
@@ -205,6 +261,84 @@ class OllamaEmbedder:
     def is_available(self) -> bool:
         """Quick non-blocking availability check (uses cached state)."""
         return self._available is True
+
+
+def _catalog_when_search_empty(
+    memory: "VoiceMemory",
+    fact_hits: List[Dict],
+    turn_hits: List[Dict],
+    limit: int,
+    speaker_id: Optional[str],
+    browse_when_empty: bool,
+) -> List[Dict]:
+    """Каталог фактов, только если поиск пуст и его попросили (#4956).
+
+    Семьи форм («еда»↔«ест», «пить»↔«пьёт») сводит ``same_inflection``
+    в ``_fact_search``: на стенде Ollama нет (``vec=no``), вектор мёртв.
+    Каталог — последний fallback для запроса, которого нет ни в факте, ни в
+    реплике, и только по флагу: иначе он вытеснил бы найденные реплики.
+    Дефолт False, чтобы прямой search() не ломал контракт #3890 (ложный
+    запрос → []). Каталог просит memory_search (browse_when_empty=True).
+    """
+    if browse_when_empty and not fact_hits and not turn_hits:
+        return _browse_facts(memory, limit, speaker_id=speaker_id)
+    return fact_hits + turn_hits
+
+
+def _browse_facts(
+    memory: "VoiceMemory",
+    limit: int,
+    speaker_id: Optional[str] = None,
+) -> List[Dict]:
+    """Каталог фактов говорящего, свежие сверху (#4956).
+
+    Детерминированный fallback без эмбеддингов (ADR-0148): вызывается
+    из ``search()`` только когда и ``_fact_search``, и ``_search_turns``
+    вернули пусто. Тот же скоуп спикера, что у ``get_facts``: запрошенный
+    ``speaker_id`` плюс legacy-строки с ``speaker_id IS NULL``;
+    ``speaker_id=None`` — все строки. ``score`` = 0.0, чтобы модель
+    отличала каталог от подстрочного попадания (``source="fact"``, 1.0).
+    """
+    if limit <= 0:
+        return []
+
+    where = ""
+    params: List[Any] = []
+    if speaker_id:
+        where = "WHERE (speaker_id = ? OR speaker_id IS NULL)"
+        params.append(speaker_id)
+    params.append(limit)
+
+    try:
+        with memory.lock:
+            rows = memory.conn.execute(
+                f"""
+                SELECT id, fact, category, speaker_id, updated_at
+                FROM voice_facts
+                {where}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    return [
+        {
+            "id": r["id"],
+            "role": "fact",
+            "content": r["fact"],
+            "session_id": None,
+            "speaker_id": r["speaker_id"],
+            "category": r["category"],
+            "timestamp": r["updated_at"],
+            "score": 0.0,
+            "source": "fact_browse",
+            "kind": "fact",
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -699,17 +833,16 @@ class VoiceMemory:
         for hit in turn_hits:
             hit.setdefault("kind", "turn")
 
-        # #4956: каталог — последний fallback, не замена поиска. Семьи форм
-        # («еда»↔«ест», «пить»↔«пьёт») сводит ``same_inflection`` в
-        # ``_fact_search``: на стенде Ollama нет (``vec=no``), вектор мёртв.
-        # Каталог остаётся для запроса, которого нет ни в факте, ни в реплике,
-        # и только по флагу: иначе он вытеснил бы найденные реплики. Дефолт
-        # False, чтобы прямой search() не ломал контракт #3890 (ложный
-        # запрос → []). Каталог просит memory_search (browse_when_empty=True).
-        if browse_when_empty and not fact_hits and not turn_hits:
-            return self._browse_facts(limit, speaker_id=speaker_id)
-
-        return fact_hits + turn_hits
+        # #4956: решение о каталоге — в _catalog_when_search_empty, не в этом
+        # методе: ветка здесь подняла бы WMC класса выше baseline (ADR-0145).
+        return _catalog_when_search_empty(
+            self,
+            fact_hits,
+            turn_hits,
+            limit,
+            speaker_id,
+            browse_when_empty=browse_when_empty,
+        )
 
     def _search_turns(
         self,
@@ -752,10 +885,14 @@ class VoiceMemory:
         with ``str.casefold`` rather than SQL ``LIKE``/``LOWER`` -- SQLite's
         built-in ``LOWER()`` only folds ASCII, so a raw SQL ``LOWER(fact)
         LIKE ?`` silently never matches Cyrillic (the primary language
-        here). Any token matching is enough, mirroring the OR-of-tokens
-        behaviour of ``_fts_search`` above. Respects the same speaker
-        scoping rule as ``save_fact``/``get_facts``: ``speaker_id`` OR
-        legacy NULL rows.
+        with ``str.casefold`` rather than SQL ``LIKE``/``LOWER`` -- SQLite's
+        built-in ``LOWER()`` only folds ASCII, so a raw SQL ``LOWER(fact)
+        LIKE ?`` silently never matches Cyrillic (the primary language
+        here). Matching and rank live in ``rank_fact_rows`` (#4956): whole
+        token or inflection family first, then a word-level substring
+        fallback. That fallback does not replace the vector path of
+        ``_search_turns`` — facts have no embedding index, and on the robot
+        Ollama is down (``vec=no``). Respects the same speaker scoping rule
         """
         if limit <= 0:
             return []
@@ -784,78 +921,8 @@ class VoiceMemory:
         except sqlite3.OperationalError:
             return []
 
-        matches = [r for r in rows if _fact_matches(r["fact"], tokens)]
+        return rank_fact_rows(rows, tokens, limit)
 
-        return [
-            {
-                "id": r["id"],
-                "role": "fact",
-                "content": r["fact"],
-                "session_id": None,
-                "speaker_id": r["speaker_id"],
-                "category": r["category"],
-                "timestamp": r["updated_at"],
-                "score": 1.0,
-                "source": "fact",
-                "kind": "fact",
-            }
-            for r in matches[:limit]
-        ]
-
-    def _browse_facts(
-        self,
-        limit: int,
-        speaker_id: Optional[str] = None,
-    ) -> List[Dict]:
-        """Каталог фактов говорящего, свежие сверху (#4956).
-
-        Детерминированный fallback без эмбеддингов (ADR-0148): вызывается
-        из ``search()`` только когда и ``_fact_search``, и ``_search_turns``
-        вернули пусто. Тот же скоуп спикера, что у ``get_facts``: запрошенный
-        ``speaker_id`` плюс legacy-строки с ``speaker_id IS NULL``;
-        ``speaker_id=None`` — все строки. ``score`` = 0.0, чтобы модель
-        отличала каталог от подстрочного попадания (``source="fact"``, 1.0).
-        """
-        if limit <= 0:
-            return []
-
-        where = ""
-        params: List[Any] = []
-        if speaker_id:
-            where = "WHERE (speaker_id = ? OR speaker_id IS NULL)"
-            params.append(speaker_id)
-        params.append(limit)
-
-        try:
-            with self.lock:
-                rows = self.conn.execute(
-                    f"""
-                    SELECT id, fact, category, speaker_id, updated_at
-                    FROM voice_facts
-                    {where}
-                    ORDER BY updated_at DESC
-                    LIMIT ?
-                    """,
-                    params,
-                ).fetchall()
-        except sqlite3.OperationalError:
-            return []
-
-        return [
-            {
-                "id": r["id"],
-                "role": "fact",
-                "content": r["fact"],
-                "session_id": None,
-                "speaker_id": r["speaker_id"],
-                "category": r["category"],
-                "timestamp": r["updated_at"],
-                "score": 0.0,
-                "source": "fact_browse",
-                "kind": "fact",
-            }
-            for r in rows
-        ]
 
     def _speaker_clause(self, speaker_id: Optional[str]) -> Tuple[str, list]:
         """

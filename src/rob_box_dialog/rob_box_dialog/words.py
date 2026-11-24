@@ -10,7 +10,7 @@ import functools
 import itertools
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Dict, FrozenSet, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Sequence, Set, Tuple
 
 from rob_box_dialog import knowledge as _kn
 from rob_box_dialog.knowledge import (
@@ -47,6 +47,7 @@ from rob_box_dialog.knowledge import (
     QUESTION_LEADS,
     REACH_END_OR_NEXT,
     REACH_NEXT,
+    RECORDING_CLAIMS,
     REPLY_INTRO_PHRASES,
     REPLY_NOT_A_NAME,
     REPLY_VERB_ENDINGS,
@@ -297,6 +298,33 @@ def asked_level(text: str) -> str:
     return asked.pop() if len(asked) == 1 else ""
 
 
+def _fact_excluded(text: str, tokens: Sequence[str], at: int, claim: MusicPromise) -> bool:
+    """Глагол записи факта здесь — не факт: вопрос, объект чужого вида, знакомство или счёт.
+
+    ``unless_after`` и ``_promises`` смотрят объект только у ``with_near`` и только после глагола. «Запомнил?»
+    кончается глаголом (вопрос — по «?» исходной фразы, как у остальных утверждений), «точку запомнил» несёт
+    объект до него, «запомнил двоих» — счёт после. Свои виды (``waypoint_save``, ``remember_person``) такие
+    фразы ловят сами.
+    """
+    if at + 1 == len(tokens) and text.rstrip().endswith("?"):
+        return True
+    # голый глагол без объекта факта — не утверждение записи: «Записала» в чат рядом со звуком (#3698).
+    # «Запомнил!» объект несёт само: восклицание 1-го лица о факте. Вопрос снят строкой выше.
+    if at + 1 == len(tokens) and not text.rstrip().endswith("!"):
+        return True
+    window = (*tokens[max(0, at - MUSIC_PROMISE_WINDOW):at], *tokens[at + 1:at + 1 + MUSIC_PROMISE_WINDOW])
+    if any(word.startswith(("точк", "голос", "лиц", "человек")) for word in window):
+        return True
+    if "зовут" in window or "звать" in window:
+        return True
+    # имя ДО глагола — обращение, не объект факта: «Хорошо, Тамара, запомнил» (#4054). После глагола
+    # имя не снимает: «Запомнил, Борис: …» — как раз утверждение записи (n206).
+    before = tokens[max(0, at - MUSIC_PROMISE_WINDOW):at]
+    if set(before) & set(_kn.KNOWN_FIRST_NAMES):
+        return True
+    return bool(set(tokens[at + 1:at + 1 + MUSIC_PROMISE_WINDOW]) & set(claim.unless_after))
+
+
 def _promises(tokens: Sequence[str], promise: MusicPromise) -> bool:
     """Обещает ли фраза ``tokens`` (:func:`name_tokens`) это действие: глагол из ``alone``, либо глагол из ``with_near`` и
     в ``MUSIC_PROMISE_WINDOW`` словах с любой стороны слово с основой из ``near``."""
@@ -340,21 +368,46 @@ def search_promises(text: str) -> Tuple[str, ...]:
     return tuple(kind for kind, promise in SEARCH_PROMISES.items() if _promises(tokens, promise))
 
 
+def _claim_kinds(text: str, table: Mapping) -> Tuple[str, ...]:
+    """Виды таблицы, чьи слова нашлись в ``text``: та же сверка, что у :func:`done_claims`.
+
+    Слово с ``unless_before`` за одно-два слова до глагола убирается до сверки. ``remember_fact``
+    дополнительно снимает вопрос, голый глагол, объект чужого вида и счёт (:func:`_fact_excluded`).
+    """
+    tokens = name_tokens(text)
+    found = []
+    for kind, claim in table.items():
+        kept = tuple("" if set(tokens[max(0, i - 2):i]) & set(claim.unless_before) else t for i, t in enumerate(tokens))
+        if kind == "remember_fact":
+            verbs = set(claim.alone) | set(claim.with_near)
+            kept = tuple(
+                "" if t in verbs and _fact_excluded(text, tokens, i, claim) else t for i, t in enumerate(kept))
+        if _promises(kept, replace(claim, unless_before=())):
+            found.append(kind)
+    return tuple(found)
+
+
 def done_claims(text: str) -> Tuple[str, ...]:
     """Виды утверждений о действии в речи робота (ключи ``knowledge.DONE_CLAIMS``: ``delete``, ``waypoint_save``,
-    ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
+    ``remember_fact``, ``motion``, ``photo_send``, ``volume``, ``speed``) - по словам, как :func:`music_promises`: о сделанном
     («Готово, хил-окно удалена.», «сохранил точку», «поехал», «говорю медленнее») и обещании отправки снимков
     (#4505). Слово с ``unless_before`` за одно-два слова до
     него («уже удалил», «не удалил») - не утверждение: такие слова из фразы убираются до сверки. Слово из
     ``unless_after`` в окне после глагола («запомнил двоих», «запомнил по голосу двоих») - тоже не утверждение. Тул,
-    что утверждение делает правдой, судит валидатор команды (``command._check_done_claim``)."""
-    tokens = name_tokens(text)
-    found = []
-    for kind, claim in DONE_CLAIMS.items():
-        kept = tuple("" if set(tokens[max(0, i - 2):i]) & set(claim.unless_before) else t for i, t in enumerate(tokens))
-        if _promises(kept, replace(claim, unless_before=())):
-            found.append(kind)
-    return tuple(found)
+    что утверждение делает правдой, судит валидатор команды (``command._check_done_claim``). Настоящее время записи
+    («Запоминаю: …») сюда не входит: фраза плана кода звучит до шагов и ничего не утверждает (#4403)."""
+    return _claim_kinds(text, DONE_CLAIMS)
+
+
+def recording_claims(text: str) -> Tuple[str, ...]:
+    """Настоящее время записи факта в речи модели (ключи ``knowledge.RECORDING_CLAIMS``, #5215).
+
+    Та же сверка, что у :func:`done_claims`, но отдельная таблица: «Записываю: …» звучит ПОСЛЕ тула и при
+    отказе записи выдаёт несделанное за сделанное. Фраза плана кода «Запоминаю: {items}» теми же словами
+    законна — она звучит до шагов, и :func:`done_claims` её не ловит (#4403). Читает только
+    :mod:`.fact_dictation`, не валидатор команды.
+    """
+    return _claim_kinds(text, RECORDING_CLAIMS)
 
 
 def theme_switch_ask(text: str) -> Optional[str]:

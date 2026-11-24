@@ -226,8 +226,18 @@ class Form:
 
     @property
     def sing_form(self) -> Optional[kn.SingForm]:
-        """Что форма хода закрывает и требует по пути пения; не пение — ``None``."""
-        return kn.SING_FORMS.get(kn.sing_family(self.sing, self.sing_over, self.text))
+        """Что форма хода закрывает и требует по пути пения; не пение — ``None``.
+
+        Семья ``chimera`` берёт действие из реплики (:func:`knowledge.chimera_form_actions`): «спой» —
+        ``sing``, «скажи» — ``speak``, «сыграй» — ``play``. Строка :data:`knowledge.SING_FORMS` остаётся
+        действием пения; подмена на ходе не пишет в неё.
+        """
+        family = kn.sing_family(self.sing, self.sing_over, self.text)
+        form = kn.SING_FORMS.get(family)
+        if form is None or family != "chimera":
+            return form
+        actions = kn.chimera_form_actions(self.text, self.sing)
+        return form if form.tool_actions == actions else replace(form, tool_actions=actions)
 
     def closed_tools(self) -> Tuple[str, ...]:
         """Тулы, которых в этом ходе нет: путь пения и библиотечная просьба (вне среза и вне команды)."""
@@ -262,6 +272,28 @@ def form_schema(schema: Mapping[str, Any], form: Optional[Form] = None) -> Dict[
     (``knowledge.without_fields``); путь пения сужает перечни выступления (``knowledge.with_sing``)."""
     form = form or current_form()
     return kn.with_sing(kn.without_fields(schema, form.closed()), form.sing, form.sing_over, form.text)
+
+
+def tool_schema(name: str, form: Optional[Form] = None) -> Mapping[str, Any]:
+    """Схема тула, которую ход показывает модели и которой судит ответ.
+
+    Каталог — как есть, кроме семьи ``chimera``: там действие — из реплики (``sing`` / ``speak`` / ``play``),
+    не ``call`` поставки, и поля чужих действий уходят (#5025, #5074, #5152). Одна функция и для схемы
+    модели, и для :func:`validate`.
+    Показ модели сужает поля ещё и вне этой семьи (``knowledge.chimera_model_schema``): валидатор вне
+    хода каталог не режет, иначе ``sing`` стал бы «лишним полем», а не «не из enum».
+    """
+    form = form or current_form()
+    schema = get_tool(name).parameters
+    sing = form.sing_form
+    if name != kn.CHIMERA_TOOL or sing is None:
+        return schema
+    return kn.chimera_tool_schema(schema, sing)
+
+
+def _tool_schema(name: str) -> Mapping[str, Any]:
+    """Схема тула в текущей форме хода. Валидатор зовёт её, не каталог напрямую."""
+    return tool_schema(name, current_form())
 
 
 @dataclass
@@ -637,6 +669,15 @@ def validate(cmd: Result, available_tools: Collection[str], session: Any = None,
     if isinstance(cmd, Invalid):
         return cmd
     form = form or current_form()
+    token = _FORM.set(form)  # схема тула читает ту же форму, что судит ход (#5074, #5152)
+    try:
+        return _validate_form(cmd, available_tools, session, busy, form)
+    finally:
+        _FORM.reset(token)
+
+
+def _validate_form(cmd: Command, available_tools: Collection[str], session: Any, busy: Busy, form: Form) -> Result:
+    """Проверки :func:`validate` при уже выставленной форме хода."""
     cmd = _drop_closed_passed(_drop_cosmetic_voice(_fit_soft_args(_drop_nested_extras(cmd)), form, busy), form)
     cmd = _drop_replaced_stops(cmd)  # stop+start одного тула - смена, не два действия класса (#4347)
     # подложка: сначала вид без просьбы о музыке теряет её, потом путь пения подгоняет остальное;
@@ -1174,7 +1215,7 @@ def _check_actions(actions: Tuple[ToolCall, ...], available: Collection[str], ag
     for call in actions:
         cls = _action_class(call.tool, available, agent)
         per_class[cls] = per_class.get(cls, 0) + 1
-        error = _schema_error(get_tool(call.tool).parameters, call.args, call.tool)
+        error = _schema_error(_tool_schema(call.tool), call.args, call.tool)
         if error:
             raise _Bad("bad_args", error)
     crowded = [c for c in kn.SINGLE_ACTION_CLASSES if per_class.get(c, 0) > 1]
@@ -1238,13 +1279,18 @@ def _fit_segments(cmd: Command) -> Command:
     пустым - ``bad_segments``, на повторе ролей не по числу сегментов - «Не понял, как это сделать»). Пустой сегмент
     (``""``, одни пробелы) убирается вместе со своим элементом в полях по сегменту (:data:`_PER_SEGMENT`); длина
     ``role_per_segment`` после этого - ровно по сегментам: недостающие роли - рассказчик (``""``), лишние отрезаются.
-    Поправки - в ``dropped`` (``perform.segments[10->9]``, ``perform.role_per_segment[8->9]``). Ничего не осталось или
-    сегментов вне пределов - по-прежнему ``bad_segments`` (:func:`_check_segments`). ``voice_per_segment`` решает код
-    (:func:`_voice_roles`): его длину не подгоняем - она нарушение, как прежде."""
+    Рэп и стих, у которых сегментов меньше ``SEGMENTS_MIN`` и строки куплета сложены в сегмент через перевод строки
+    (промпт велит строку с новой строки, #5080), режутся по строкам до проверки числа (:func:`_split_verse_lines`).
+    Уже валидное число сегментов не трогается. Поправки - в ``dropped``
+    (``perform.segments[10->9]``, ``perform.role_per_segment[8->9]``). Ничего не осталось или сегментов вне пределов -
+    по-прежнему ``bad_segments`` (:func:`_check_segments`). ``voice_per_segment`` решает код (:func:`_voice_roles`):
+    его длину не подгоняем - она нарушение, как прежде."""
     perf = cmd.perform
     if perf is None:
         return cmd
     notes: List[str] = []
+    perf, split = _split_verse_lines(perf)
+    notes.extend(split)
     keep = [i for i, segment in enumerate(perf.segments) if str(segment).strip()]
     if len(keep) != len(perf.segments):
         fields: Dict[str, Any] = {"segments": tuple(perf.segments[i] for i in keep)}
@@ -1260,6 +1306,32 @@ def _fit_segments(cmd: Command) -> Command:
         notes.append(f"perform.role_per_segment[{len(roles)}->{len(fitted)}]")
         perf = replace(perf, role_per_segment=fitted)
     return replace(cmd, perform=perf, dropped=cmd.dropped + tuple(notes)) if notes else cmd
+
+
+def _split_verse_lines(perf: Performance) -> Tuple[Performance, List[str]]:
+    """Строки рэпа и стиха, сложенные моделью в один сегмент через перевод строки, становятся сегментами (n810 22.11,
+    #5080: один сегмент с ``\\n`` внутри ниже ``SEGMENTS_MIN`` — отказ целиком, хотя промпт велит строку с новой
+    строки). Режет только когда сегментов меньше ``SEGMENTS_MIN``: уже валидная команда (три сегмента по две строки,
+    семь по две) не меняет нарезку TTS и не упирается в ``SEGMENTS_MAX`` счётом строк. Рэп и стих: у них одна строка
+    промпта. Сказка и песня не трогаются (перевод строки там — внутри реплики, не граница сегмента). Роль и лицо
+    строки — у её сегмента; пустая строка уходит с сегментом дальше по :func:`_fit_segments`. Больше ``SEGMENTS_MAX``
+    строк судит :func:`_check_segments`."""
+    if perf.kind not in ("rap", "poem") or len(perf.segments) >= kn.SEGMENTS_MIN:
+        return perf, []
+    lines = [line.strip() for segment in perf.segments for line in str(segment).split("\n")]
+    if lines == [str(segment).strip() for segment in perf.segments]:
+        return perf, []
+    fields: Dict[str, Any] = {"segments": tuple(lines)}
+    for name in _PER_SEGMENT:
+        per = getattr(perf, name)
+        if per is None or len(per) != len(perf.segments):
+            continue
+        repeated = (per[i] for i, segment in enumerate(perf.segments) for _line in str(segment).split("\n"))
+        fields[name] = tuple(repeated)
+    note = f"perform.segments[{len(perf.segments)}->{len(lines)}:lines]"
+    return replace(perf, **fields), [note]
+
+
 
 
 def _fit_foreign_roles(cmd: Command) -> Command:

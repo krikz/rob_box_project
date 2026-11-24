@@ -78,7 +78,9 @@ RUN apt-get update && apt-get install -y \
 # - recovery BackUp skips a collision tick when the costmap_raw copy is older
 #   than costmap_freshness_tolerance (#5003): the copy is published at 2 Hz,
 #   so a tick within tens of milliseconds of a clear still shows the wall.
-#   Past the skip limit the check fails closed. Decision is C++ (ADR-0148).
+#   Past the skip limit the check fails closed. The decision lives in
+#   behavior_server; BackUp is its own plugin library, so that .so ships too
+#   (ADR-0148).
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
 COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 COPY controller_stuck_against.patch /tmp/controller_stuck_against.patch
@@ -119,6 +121,18 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
         /opt/ros/${ROS_DISTRO}/lib/libbehavior_server_core.so \
     && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_drive_on_heading_behavior.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_drive_on_heading_behavior.so \
+    && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_back_up_behavior.so \
+        /opt/ros/${ROS_DISTRO}/lib/libnav2_back_up_behavior.so \
+    && echo "#5003: the shared-library linker allows undefined symbols, so the broken image built silently. A symbol undefined in a plugin .so is fine when behavior_server defines it; fail only when no .so in the image defines it." \
+    && nm -D --defined-only /opt/ros/${ROS_DISTRO}/lib/*.so > /tmp/nav2-defined-symbols \
+    && for so in libnav2_back_up_behavior.so libnav2_drive_on_heading_behavior.so libbehavior_server_core.so; do \
+         for sym in $(nm -D --undefined-only /opt/ros/${ROS_DISTRO}/lib/$so | awk '/nav2_behaviors|behavior_server/ {print $2}'); do \
+           if ! grep -ql " ${sym}$" /tmp/nav2-defined-symbols; then \
+             echo "FAIL: ${sym} is undefined in $so and defined by no .so in the image (#5003)" >&2; \
+             exit 1; \
+           fi; \
+         done; \
+       done \
     && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch \
         /tmp/controller_progress_abort.patch /tmp/controller_stuck_against.patch \
         /tmp/navfn_refuse_unknown_tail.patch /tmp/navfn_gradient_origin.patch \

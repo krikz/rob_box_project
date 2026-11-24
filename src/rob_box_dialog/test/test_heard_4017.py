@@ -3,9 +3,10 @@
 * шаг B — однозначные искажения команд чинит код по закрытой таблице до Tier-1 и до модели (``heard.repair``,
   ``knowledge.HEARD_FIXES``): n712 «Робот, всё, глуши.» → STT «робот всох в глуши» — модель «залипала на бите», стопа не
   было; n511 «Робот, всё, глуши музыку, у меня уши в трубочку.» → «робот все глушу музыку …»; «глуши» — стоп-слово;
-* шаг A — строка о шуме STT в промпте формы ответа (``knowledge.STT_NOISE_NOTE``), временная до снятия #4127;
+* шаг A — строка о шуме STT в промпте снята #4127 после шага C (#4017, PR #4838):
+  переспрос стопа решает код, правило в промпте не возвращать;
 * шаг C2 — переспрос стопа кодом при расхождении ``alternatives`` со стоп-смыслом (детектор ``words.stop_verdict``);
-  порог confidence не вводится; STT_NOISE_NOTE этим шагом не снимается.
+  порог confidence не вводится.
 """
 
 import asyncio
@@ -231,7 +232,10 @@ def test_n511_stop_by_code_then_the_rest_goes_to_the_model():
     assert len(ports.asked) == 1 and ports.asked[0][-1]["content"].endswith("музыку у меня уши в трубочку")
 
 
-# -- шаг A: строка о шуме STT не зависит от формы хода ----------------------------------------------------------
+# -- #4127: строка о шуме STT снята из промпта формы ответа (шаг C принят) ---------------------------------------
+
+#: Снятый текст TEMP(ADR-0148). Возврат этой строки в ``prompt_fragment`` — регресс #4127.
+_REMOVED_NOISE_LINE = "Реплика человека с микрофона — текст распознавания речи (STT), в нём бывают ошибки"
 
 
 @pytest.mark.parametrize(
@@ -242,8 +246,12 @@ def test_n511_stop_by_code_then_the_rest_goes_to_the_model():
         kn.with_sing(kn.command_schema("json"), "live:song"),
     ],
 )
-def test_stt_noise_note_opens_the_prompt_fragment_for_every_turn_form(schema):
-    assert kn.prompt_fragment(schema).splitlines()[0] == kn.STT_NOISE_NOTE
+def test_stt_noise_note_is_absent_from_every_turn_form(schema):
+    """Промпт формы ответа не начинается со строки о шуме STT и не содержит её (#4127)."""
+    fragment = kn.prompt_fragment(schema)
+    assert not fragment.startswith(_REMOVED_NOISE_LINE)
+    assert _REMOVED_NOISE_LINE not in fragment
+    assert fragment.splitlines()[0] == "Ответ — одна команда (JSON-объект) с полями:"
 
 
 # -- шаг C2: переспрос стопа при расхождении гипотез STT (без порога confidence) --------------------------------
@@ -349,6 +357,8 @@ def test_c2_repaired_n712_with_agreeing_alt_still_stops():
     assert all("ты про стоп?" not in s for s in ports.said)
 
 
-def test_stt_noise_note_still_in_prompt_after_c2():
-    """STT_NOISE_NOTE не снят этим шагом (снимет #4127, когда C2 принят)."""
-    assert kn.prompt_fragment(None).splitlines()[0] == kn.STT_NOISE_NOTE
+def test_stt_noise_note_absent_after_c2():
+    """Строка о шуме STT снята #4127 после приёмки C2: промпт её не содержит."""
+    fragment = kn.prompt_fragment(None)
+    assert _REMOVED_NOISE_LINE not in fragment
+    assert fragment.splitlines()[0] == "Ответ — одна команда (JSON-объект) с полями:"

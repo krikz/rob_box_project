@@ -11,6 +11,7 @@
 | #4435 | kill клиента без `cancel_goal`; `ros2 action cancel` с хоста. Робот стоит, нет ложного «приехал» | `client_kill`, `host_cancel` |
 | #4365 | в движении у препятствия: стоп, писк, «Осторожно!», маячок вместе | `zone` |
 | #4470 | умолчание `HIL_GUARD_SOUND=off`: только строка в журнале, стоп и маячок; явно `on`: писк на настоящего робота | `zone` (on), `guard_off` (off) |
+| #5160 | «Робот, вперёд на метр»: цель создаёт `move_direction` в `map`, проба только мерит сдвиг | `move_ahead` |
 
 Скрипты лежат в `scripts/hil/checks/`: `run_checks.sh` (оркестр), `probe.py` (rclpy в контейнере gazebo песочницы),
 `verdicts.py` (вердикты кода, тесты `tests/unit/scripts/test_hil_checks_verdicts.py`). HIL включает и выключает
@@ -41,7 +42,7 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_cancel_matrix.sh        # м�
 Сам берёт `hil.sh on` (замок `/tmp/hil.lock`) и в конце `hil.sh off`. Занятый `stand.lock` или уже включённый HIL — выход 3, `hil.sh on` не вызывается.
 `NOT_TRIGGERED` — не PASS. Робот на кирпичах. Живьём ещё не гонял.
 
-Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel`.
+Сценарии по умолчанию идут так: `orphan zone guard_off nav_aborted stop_idle stop_active orphan_natural controller_abort client_kill host_cancel move_ahead`.
 `orphan_natural` без `ORPHAN_GOAL` пропускается со строкой `NOT_TRIGGERED`: цель зависит от мира.
 
 Переменные (умолчания — в шапке `run_checks.sh`):
@@ -57,6 +58,8 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_cancel_matrix.sh        # м�
 | `ORPHAN_GRACE_S` | за сколько секунд sim после провала цели FollowPath должен погаснуть (2.0 = `orphan_timeout_s` 1.5 + такт) |
 | `PROGRESS_ALLOWANCE_S` | боевой `movement_time_allowance` FollowPath (30 с). `controller_abort` его не укорачивает |
 | `HOLD_AHEAD_M` | длина свободного отрезка для цели `controller_abort` (1.5 м) |
+| `MOVE_AHEAD_PHRASE` | реплика `move_ahead` (по умолчанию «Робот, вперёд на метр.») |
+| `MOVE_AHEAD_WAIT_S` | сколько ждать исход `move_direction` (90 с) |
 
 После прогона: `scripts/hil/hil.sh off` и снять свой замок.
 
@@ -96,6 +99,21 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_cancel_matrix.sh        # м�
 - **`guard_off`** (#4470 off). Проба отъезжает назад. `proximity-guard` с `HIL_GUARD_SOUND=off` (умолчание HIL),
   тот же наезд. PASS: стоп есть, маячок есть, писка и фразы на Sound Pi нет, в журнале защиты есть строка
   «HIL: зона stop, на настоящий робот не уходит».
+- **`move_ahead`** (#5160). До реплики оркестр снимает сырьё и спрашивает
+  `scripts/hil/checks/isolation.py` (не `hil.sh status`: тот ходит на все Pi).
+  Код пускает цель только если сразу четыре факта: `docker inspect` боевого
+  `ros2-control` не `running`, в графе ровно один `/controller_manager` (сторож
+  `python3 -m rob_box_sim.hil count` внутри gazebo), контейнер `{HIL_SIM_PREFIX}-gazebo`
+  `running`, командных кадров VESC нет (`commands: 0` в `/tmp/hil/can_speed.json` на
+  Main Pi; файл уже должен лежать, его пишет `scripts/hil/speed/can_watch.py`,
+  предохранитель candump не запускает). Нет сырья или факт нарушен — строка
+  `ISOLATION REFUSE` и выход 2, `inject` не вызывается. Реплика `MOVE_AHEAD_PHRASE`
+  («Робот, вперёд на метр.») уходит в диалог
+  (`scripts/robot_dev/inject.sh`). Цель создаёт тул `move_direction`, проба в режиме `watch` только пишет
+  `TRACK` правды Gazebo и своей цели не шлёт. PASS: в `voice.log` есть «Отправлен запрос …: move_direction»,
+  «✅ Инструмент move_direction выполнен успешно» и строка `[navigate_to_pose] цель: frame_id=map`; сдвиг
+  первого и последнего `TRACK` в [0.75, 1.25] м; в `probe.log` нет `NAV_SENT`. Тул не вызвался —
+  `NOT_TRIGGERED`, не PASS. Пустые логи — `NO_DATA`. Живьём ещё не гонял: робот заморожен.
 - **`nav_aborted`** (#3789, #4435). Реплика `ABORT_PHRASE` уходит в диалог (`scripts/robot_dev/inject.sh`), проба
   слушает статусы. PASS: тул навигации вернул ABORTED, а `tts_node` сказал фразу ключа `motion.rejected.aborted`
   или `motion.not_reached.aborted` из `phrases/ru.yaml`. Если в окне есть «Приехал», это FAIL. Если исход не ABORTED
@@ -109,7 +127,7 @@ HIL_CHECKS_OWNER=hil-checks scripts/hil/checks/run_cancel_matrix.sh        # м�
 ## 3. Сколько длится [оценка]
 
 Предусловия ~0.5 мин, `orphan` ~1 мин, `zone` ~1.5 мин, `guard_off` ~3–4 мин (пересоздание защиты ×2),
-`nav_aborted` до 4.5 мин (ждёт исход тула до 180 с), `stop_idle` до 2 мин, `stop_active` до 2.5 мин,
+`nav_aborted` до 4.5 мин (ждёт исход тула до 180 с), `move_ahead` до ~2 мин (ждёт исход тула до 90 с), `stop_idle` до 2 мин, `stop_active` до 2.5 мин,
 `orphan_natural` до 4 мин, `controller_abort` ~1 мин (30 с allowance + запас, на стенде ещё не мерено).
 Всего ~16–21 мин, плюс `hil.sh on/off` 2–3 мин каждый. На стенде ещё не мерено.
 
@@ -124,6 +142,7 @@ orphan/{probe.log,watchdog.log,nav2.log}
 controller_abort/{probe.log,nav2.log,watchdog.log}
 zone/{probe.log,guard.log,voice.log,expr.log,env.txt}          guard_off/ — то же + recreate_*.txt
 nav_aborted/{probe.log,voice.log,nav2.log,inject.txt}          stop_*/{voice.log,inject.txt[,probe.log]}
+move_ahead/{hil_status.txt,inspect.txt,can_watch.json,probe.log,voice.log,nav2.log,inject.txt}
 ```
 
 В комментарий к карточке: строку `VERDICT` из `verdicts.txt`, `git rev-parse HEAD` и тег образа с робота,
@@ -139,4 +158,4 @@ nav_aborted/{probe.log,voice.log,nav2.log,inject.txt}          stop_*/{voice.log
   на мигалку, а не снимок лица на Vision Pi.
 - `zone` и `orphan` выбирают направление по скану, мир им не важен. В мире Depot нет collision у стен: физика
   не остановит, остановить может только защита. Для `zone` это даже строже.
-- Выбор тула в `nav_aborted` и `stop_*` делает модель, поэтому `NOT_TRIGGERED` здесь честный исход, а не сбой скрипта.
+- Выбор тула в `nav_aborted`, `stop_*` и `move_ahead` делает модель, поэтому `NOT_TRIGGERED` здесь честный исход, а не сбой скрипта.

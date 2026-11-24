@@ -296,6 +296,26 @@ def _run_role_checks(
     return None
 
 
+def _rollback_compose_dir(
+    project_dir: Path,
+    role: str,
+    previous_release: dict[str, Any],
+    releases_root: Path | str | None,
+) -> Path:
+    """Каталог compose прежнего релиза.
+
+    С ``releases_root`` — раскладка бандла: ``releases_root/<релиз>/<role>/docker/<role>``
+    (``pointers.verify_staged`` кладёт бандл в ``releases_root/<релиз>/<node>``, внутри
+    бандла compose лежит в ``docker/<role>/``). Без ``releases_root`` — прежний расчёт от
+    ``project_dir`` (``project_dir.parent.parent / <релиз> / docker / <role>``): вызов без
+    нового keyword не меняет путь. Это не каталог бандла, если ``project_dir`` — чекаут.
+    """
+    release_name = previous_release["release"]
+    if releases_root is None:
+        return project_dir.parent.parent / release_name / "docker" / role
+    return Path(releases_root) / release_name / role / "docker" / role
+
+
 def execute_role(
     release: dict[str, Any],
     role: str,
@@ -306,6 +326,7 @@ def execute_role(
     previous: str | None = None,
     health_after: Callable[[], HealthResult] | HealthResult | None = None,
     previous_release: dict[str, Any] | None = None,
+    releases_root: Path | str | None = None,
 ) -> dict[str, Any]:
     """Исполнить plan_role: compose_*, pointers.advance, ROLE_CHECKS.
 
@@ -316,6 +337,12 @@ def execute_role(
     доп. проверка после checks (callable или HealthResult). unhealthy → план
     отката роли и его actions (не «успех»). Падение advance не глотается.
     Живой compose на роботе этим PR не гоняем: тесты — FakeDocker.
+
+    ``releases_root`` — корень распакованных бандлов. Откат (``compose_down`` /
+    ``compose_up``) поднимается из ``releases_root/<прежний релиз>/<role>/docker/<role>``.
+    ``None`` (дефолт) сохраняет прежний путь от ``project_dir`` — см. ``_rollback_compose_dir``.
+    ``ROLE_CHECKS`` после отката читают контейнер по имени из образов шага, не каталог,
+    поэтому остаются на исходном ``project_dir``: им нужен docker-адаптер, а не путь бандла.
     """
     project_dir = Path(project_dir)
     state_dir = Path(state_dir)
@@ -367,7 +394,7 @@ def execute_role(
     rollback_dir = project_dir
     rollback_images = None
     if previous_release is not None:
-        rollback_dir = project_dir.parent.parent / previous_release["release"] / "docker" / role
+        rollback_dir = _rollback_compose_dir(project_dir, role, previous_release, releases_root)
         rollback_images = _digest_images(role, _role_entry(previous_release, role))
     for step in rollback["plan"]:
         if rollback_images is not None:

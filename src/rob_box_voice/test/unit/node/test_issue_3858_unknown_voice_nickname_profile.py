@@ -46,10 +46,10 @@ for _hw in ("pyaudio", "usb", "usb.core", "usb.util", "sounddevice"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from rob_box_core.speaker_wire import first_heard, speaker_result_to_payload  # noqa: E402
 from rob_box_voice import speaker_id_node as sid_node  # noqa: E402
 from rob_box_voice.core import unnamed_voice  # noqa: E402
 from rob_box_voice.utils.speaker_embeddings import SpeakerDatabase  # noqa: E402
-from rob_box_core.speaker_wire import first_heard, speaker_result_to_payload  # noqa: E402
 
 UNNAMED_MAX = 3
 
@@ -190,6 +190,67 @@ def test_two_different_unknown_voices_get_two_profiles_and_two_nicknames(node):
 
     assert first["speaker_id"] != second["speaker_id"]
     assert first["epithet"] != second["epithet"], "тёзок-безымянных различает кличка"
+    assert len(_profiles(node)) == 2
+
+
+def _phrase_at_cosine(base: np.ndarray, target: float, noise_seed: int) -> np.ndarray:
+    """Эмбеддинг с косинусом к ``base`` ровно ``target`` (плоскость base × ортогональный шум)."""
+    noise = _embedding(noise_seed)
+    ortho = noise - float(np.dot(noise, base)) * base
+    ortho = ortho / np.linalg.norm(ortho)
+    phrase = target * base + (1.0 - target**2) ** 0.5 * ortho
+    return (phrase / np.linalg.norm(phrase)).astype(np.float32)
+
+
+def test_stranger_below_identify_threshold_does_not_reuse_unnamed_profile(node):
+    """#5019: второй голос ниже порога опознания не садится на безымянный профиль первого.
+
+    Живой прогон 21.11 (акт 2b → 2c): безымянный профиль одного человека пережил акт, и
+    чужой голос сел на него. Здесь второй голос не проходит порог 0.72 — это другой
+    человек, не «тот же, но тише». Свой профиль заводится отдельно, галерея первого не
+    растёт. Пороги не трогаем.
+    """
+    first_voice = _embedding(30)
+    first = _hear(node, first_voice, 4.5, "u1")
+    stranger = _phrase_at_cosine(first_voice, 0.71, noise_seed=930)
+    assert _cos(first_voice, stranger) < 0.72, "предусловие: ниже порога опознания"
+
+    second = _hear(node, stranger, 4.5, "u2")
+    print("SECOND", second, "SESSION", node._growth_session, "PROFILES", _profiles(node))
+
+    assert second["speaker_id"] != first["speaker_id"], "чужой голос не сел на профиль первого"
+    assert second["source"] == "enroll", "ниже порога — свой безымянный, не опознание чужого"
+    assert second["is_known"] is True and second["name"] is None
+    assert node._db.gallery_size(first["speaker_id"]) == 1, "галерея первого не выросла чужим вектором"
+    profiles = _profiles(node)
+    assert len(profiles) == 2 and {row["name"] for row in profiles} == {""}
+
+
+def test_open_unnamed_growth_session_does_not_absorb_a_different_unnamed_voice(node):
+    """#5019: пустое имя — не имя тёзки. Growth-сессия безымянного не дописывает чужой голос.
+
+    Гейт роста сравнивал имена через casefold: ``"" == ""``, и два разных безымянных
+    профиля считались одним человеком. Чужой голос ниже порога опознания, но выше пола
+    роста (0.65), в открытой сессии первого дописывался в его галерею — max-по-галерее
+    потом узнавал чужого как первого. Имени у безымянного нет, тёзкой он никому не
+    приходится: дописываем только в свой ``speaker_id``.
+    """
+    first_voice = _embedding(31)
+    first = _hear(node, first_voice, 4.5, "u1")
+    node._growth_session = {
+        "speaker_id": first["speaker_id"],
+        "name": "",
+        "last_utterance_at": time.time(),
+        "count": 0,
+    }
+    stranger = _phrase_at_cosine(first_voice, 0.71, noise_seed=931)
+    assert 0.65 <= _cos(first_voice, stranger) < 0.72
+
+    second = _hear(node, stranger, 4.5, "u2")
+
+    assert second["speaker_id"] != first["speaker_id"]
+    assert node._db.gallery_size(first["speaker_id"]) == 1, "чужой вектор не лёг в галерею первого"
+    assert node._growth_session is None, "сессия первого закрыта: это не его голос"
     assert len(_profiles(node)) == 2
 
 

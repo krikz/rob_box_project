@@ -1046,6 +1046,21 @@ WAKE_SLIP_GATES: Tuple[SlipGate, ...] = (
 #: а ``test_knowledge.py`` сверяет её с каталогом: чужого триггера нет, у каждого триггера каталога есть строка здесь или
 #: он назван в ``SOUND_UNNAMED``. «Гудок» и «сигнал» - ближайший звук каталога ``robot_alert`` (предупреждение).
 #: «Мигалка» сюда не входит (#5020): это сцена лица ``police_lights``, не звук. Сирену называет только ``сирен*``.
+#: Оговорки STT целым словом → основа из таблицы ниже (#5020, n903 21.11 и 22.11): Yandex слышит «сирену» как
+#: «сериал» («робот а теперь сериал и мигалку»). Основа ``сирен*`` такое слово не ловит — оно с неё не начинается,
+#: а ``heard.repair`` чинит только начало команды. Форма целиком, нижний регистр, ё → е; не из таблицы — не трогается.
+#: Читает ``siren_ask.misheard_stems`` только рядом с «мигалку»: голое «сериал» звук не заказывает.
+SOUND_MISHEARS_RU: Tuple[Tuple[str, str], ...] = (
+    ("сериал", "сирен"),
+    ("сериалы", "сирен"),
+    ("сериала", "сирен"),
+    ("сериале", "сирен"),
+    ("сериалов", "сирен"),
+    ("сериалом", "сирен"),
+    ("сериалам", "сирен"),
+    ("сериалах", "сирен"),
+    ("сериалами", "сирен"),
+)
 SOUND_ALIASES_RU: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
     (("robot_alert",), ("сирен", "тревог", "сигнализац", "гудок", "гудк", "сигнал")),
     (("ui_bell",), ("звонок", "звонк", "колокол")),
@@ -2008,7 +2023,7 @@ SEARCH_PROMISE_PHRASE = "command.search_promise"
 #: :data:`DONE_CLAIM_HINT`; повтора нет - ложные слова не звучат, код говорит правду: ничего не сделано
 #: (:data:`DONE_CLAIM_PHRASE`).
 VIOLATION_DONE_CLAIM = "done_claim"
-DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «поехал», «говорю"
+DONE_CLAIM_HINT = ("в speech сказано, что действие уже сделано («удалил», «сохранил точку», «запомнил», «поехал», «говорю"
                    " медленнее») или обещано"
                    " («пришлю снимки»), а в actions нет"
                    " тула, что его делает: слова без действия - неправда. Нужно действие - положи тул в actions без"
@@ -2477,6 +2492,10 @@ ANIMATION_ALIASES: Mapping[str, str] = MappingProxyType({
     "счастье": "happy",
     "веселье": "happy",
     "веселое": "happy",
+    # n906: «покажи весёлую анимацию» — форма, которой в словаре не было; та же сцена, что у «веселое»
+    "веселую": "happy",
+    "веселая": "happy",
+    "веселый": "happy",
     "улыбку": "happy",
     "грустный": "sad",
     "грустное": "sad",
@@ -3369,6 +3388,20 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
         near=MUSIC_PROMISES["volume"].near,
         tools=MUSIC_PROMISES["volume"].tools,
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
+    # запись факта (#5128, n206 марафона №3, 22.11: «Запомнил, Борис: ты болеешь за Спартак с девяносто восьмого…»
+    # при actions=[] и пустой voice_facts). Глагол записи в 1-м лице без объекта «точка» и без «голос»/«лицо» —
+    # утверждение о факте; правду из него делает только memory_save, фразу успеха строит код по результату.
+    # Объект в окне с ЛЮБОЙ стороны глагола снимает вид: «точку запомнил» — waypoint_save, «голос запомнил» —
+    # remember_person, «запомнил, тебя зовут» — речь кода знакомства, счёт после глагола — отчёт n211.
+    # unless_before здесь и для alone: «уже запомнил», «не запомнил» — не этот ход. Вопрос («запомнил?») глагола
+    # 1-го лица не несёт.
+    "remember_fact": MusicPromise(
+        alone=("запомнил", "запомнила", "записал", "записала"),
+        with_near=("сохранил", "сохранила"),
+        near=("что", "про", "это"),
+        tools=(MEMORY_SAVE_TOOL,),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE,
+        unless_after=REMEMBER_PERSON_COUNT_AFTER),
     # темп речи (#5007, акт 4 n409, run 44890078495: «Хорошо, говорю медленнее…» при actions=[], set_speed в срезе
     # был, строки ``[set_speed]`` нет). Настоящее и прошедшее об уже сменённой скорости - утверждение о сделанном:
     # честную фразу строит код по результату ``set_speed`` (``speed.slower`` / ``speed.faster``) и говорит её после
@@ -3383,6 +3416,20 @@ DONE_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
         near=("помедленн", "медленнее", "побыстр", "быстрее"),
         tools=("set_speed",),
         unless_before=DONE_CLAIM_UNLESS_BEFORE),
+})
+#: Настоящее время записи факта (#5215). Не в :data:`DONE_CLAIMS`: фраза плана кода «Запоминаю: {items}»
+#: (``chain.plan.save``) звучит ДО шагов и законно (инвариант #4403, ``test_code_plan_claims_nothing_done``).
+#: Речь модели звучит ПОСЛЕ тула, и «Записываю: …» при ``rejected``/``timeout`` выдаёт несделанное за
+#: сделанное. Читает только :mod:`.fact_dictation` (:func:`words.recording_claims`), не валидатор команды.
+#: ``alone`` без восклицания не утверждение (``words._fact_excluded``): голое «Записываю» в чат — не ложь.
+RECORDING_CLAIMS: Mapping[str, MusicPromise] = MappingProxyType({
+    "remember_fact": MusicPromise(
+        alone=("записываю", "запоминаю"),
+        with_near=("сохраняю",),
+        near=("что", "про", "это"),
+        tools=(MEMORY_SAVE_TOOL,),
+        unless_before=DONE_CLAIM_UNLESS_BEFORE,
+        unless_after=REMEMBER_PERSON_COUNT_AFTER),
 })
 #: Причина нарушения «пустая команда»: ни речи, ни вопроса, ни действий, ни выступления, и не ``passed``. Это нарушение
 #: (тот же один повтор с объяснением → ``failed``), а не «тихий первый ответ» v1: иначе ход звал LLM второй раз через
@@ -3918,13 +3965,15 @@ SING_PERFORM_KINDS: Tuple[str, ...] = ("song", "rap")
 class SingForm:
     """Что форма хода делает по пути пения: ``closed_tools`` — тулы вне среза и вне команды (новая музыка мимо
     выступления), ``needs_perform`` — команда обязана петь (``perform``), ``needs_tool`` — команда обязана позвать тул,
-    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все)."""
+    ``kinds`` — допустимые ``perform.kind`` (пусто — вид из id пути), ``backings`` — допустимые подложки (пусто — все),
+    ``tool_actions`` — действие тула, которое форма оставляет в схеме (пусто — enum каталога как есть)."""
 
     closed_tools: Tuple[str, ...] = ()
     needs_perform: bool = False
     needs_tool: str = ""
     kinds: Tuple[str, ...] = ()
     backings: Tuple[str, ...] = ()
+    tool_actions: Tuple[str, ...] = ()
 
 
 #: Стебель, которым реплика называет Химеру. Тот же, что в :data:`SOUND_STEMS` (группа ``sound``): нового списка нет,
@@ -3935,8 +3984,8 @@ CHIMERA_STEM = "химер"
 #: играет («под этот бит зачитай рэп», акт 8 n810): играющее и есть подложка — ``backing`` только ``none``, выступление
 #: идёт поверх, без вопроса «выключить и зачитать?» (``perform.ask_replace_music``) и без второго бита. ``generate``
 #: (генерация и кэш) — песню делает ``generate_music`` (фразу о старте строит код по исходу тула), петь выступлением
-#: (song/rap) нельзя. ``chimera`` — «спой … химерой» (#5074): живое ``perform`` не обязательно, обязателен
-#: ``chimera_perform`` (срез музыки его вытесняет, форму хода — нет).
+#: (song/rap) нельзя. ``chimera`` — «скажи / спой / сыграй … химерой» (#5025, #5074): живое ``perform``
+#: не обязательно, обязателен ``chimera_perform`` (срез музыки его вытесняет, форму хода — нет).
 SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     "live": SingForm(closed_tools=("generate_music", "request_music"), needs_perform=True,
                      backings=tuple(b for b in PERFORM_BACKINGS if b != "none")),
@@ -3946,8 +3995,11 @@ SING_FORMS: Mapping[str, SingForm] = MappingProxyType({
     # правка играющего: заказ нового закрыт, правка обязательна; выступление форма не трогает (любой вид)
     "edit": SingForm(closed_tools=("generate_music", "request_music", "dj_set"), needs_tool=EDIT_TOOL,
                      kinds=PERFORM_KINDS),
-    # «спой химерой»: не живое пение — тул Химеры обязателен, perform не обязателен (#5074, ADR-0148)
-    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False),
+    # «спой химерой»: не живое пение — тул Химеры обязателен, действие sing (#5074, #5152, ADR-0148).
+    # Каталог поставки объявляет только call. Это не вторая таблица клипов: форма сужает action до sing,
+    # существо и вызов из схемы уходят — готовый WAV этим ходом не выбирается.
+    # «скажи» / «сыграй» берут действие из :func:`chimera_form_actions`, не из этой строки.
+    "chimera": SingForm(needs_tool=CHIMERA_TOOL, needs_perform=False, tool_actions=("sing",)),
 })
 #: Голова id пути хода «правка играющего» (``edit:<вид>+…``): музыка играет, а реплика её правит («сделай бит
 #: потяжелее», «ускорь», «добавь баса»; кейс Шифу 27.10 посреди рэпа, марафон n504–n506). Решает хост до модели тем же
@@ -3974,7 +4026,9 @@ def sing_family(route: str, over_music: bool = False, text: str = "") -> str:
     """Путь пения по id кандидата: ``live:*`` — ``live`` (музыка уже играет, ``over_music`` — ``live_over``); правка
     играющего ``edit:*`` (:data:`EDIT_ROUTE`) — ``edit``; иной непустой (``generate:*``, ``cache:*``) — ``generate``;
     «» — не пение. Живое пение, в реплике которого названа Химера (:func:`chimera_named`), — семья ``chimera``:
-    форма требует ``chimera_perform``, а не ``perform`` (#5074)."""
+    форма требует ``chimera_perform``, а не ``perform`` (#5074). Пустой маршрут с тем же стеблем и глаголом
+    «скажи» / «сыграй» (:func:`rob_box_dialog.chimera_offer.verb_action`) — та же семья (#5025): «сыграй» музыкой
+    пением не считается, а схема тула без семьи остаётся ``call``. «Покажи химеру» глагола нет — семья пуста."""
     head = (route or "").split(":", 1)[0]
     if head == EDIT_ROUTE:
         return "edit"
@@ -3982,7 +4036,11 @@ def sing_family(route: str, over_music: bool = False, text: str = "") -> str:
         if chimera_named(text):
             return "chimera"
         return "live_over" if over_music else "live"
-    return "generate" if head else ""
+    if head:
+        return "generate"
+    from rob_box_dialog.chimera_offer import verb_action  # noqa: PLC0415 — offer не тянет knowledge
+
+    return "chimera" if chimera_named(text) and verb_action(text) else ""
 
 
 #: Просьба найти в библиотеке (марафон #3 акт 7 n705, #5093): глагол поиска словом целиком и основа «библиотек».
@@ -4077,6 +4135,62 @@ def sing_kinds(route: str, text: str = "") -> Tuple[str, ...]:
     if form.kinds:
         return form.kinds
     return (kind,) if kind in SING_PERFORM_KINDS else SING_PERFORM_KINDS
+
+
+def chimera_form_actions(text: str, route: str = "") -> Tuple[str, ...]:
+    """Действие ``chimera_perform``, которое форма хода оставляет в схеме (#5025, ADR-0148).
+
+    Живой маршрут — ``sing``, как в :data:`SING_FORMS`: «спой химерой» не становится речью от слова «скажи»
+    рядом. Пустой маршрут — ``speak`` или ``play`` из :func:`rob_box_dialog.chimera_offer.verb_action`.
+    Глагола нет — действие пения: семью без глагола открывает только живой маршрут.
+    """
+    from rob_box_dialog.chimera_offer import verb_action  # noqa: PLC0415 — offer не тянет knowledge
+
+    asked = "" if (route or "").split(":", 1)[0] == "live" else verb_action(text)
+    return (asked or "sing",)
+
+
+def chimera_tool_schema(schema: Mapping[str, Any], form: SingForm) -> Dict[str, Any]:
+    """Схема ``chimera_perform`` на форме семьи ``chimera``.
+
+    Каталог поставки честно объявляет только ``call`` (#5152). Этот ход — живой синтез-маршрут (#5074):
+    действие в схеме — ``tool_actions`` формы, не список файлов. Поля чужих действий уходят той же
+    функцией, что сужает показ модели (``chimera_offer.offered_schema``): существо и вызов клипа
+    при ``sing`` звали бы клип действием пения. Другие формы каталог не трогают.
+    """
+    if form.needs_tool != CHIMERA_TOOL or not form.tool_actions:
+        return dict(schema)
+    out = copy.deepcopy(dict(schema))
+    props = out.get("properties")
+    if not isinstance(props, dict) or "action" not in props:
+        return out
+    props["action"] = dict(props["action"])
+    props["action"]["enum"] = list(form.tool_actions)
+    from rob_box_dialog.chimera_offer import offered_schema
+
+    return offered_schema(out, form.tool_actions)
+
+
+def chimera_model_schema(schema: Mapping[str, Any], form: Optional["SingForm"] = None) -> Dict[str, Any]:
+    """Схема ``chimera_perform``, которую видит модель: enum формы, иначе enum каталога, поля только его.
+
+    Валидатор вне хода эту функцию не зовёт: он судит каталог как есть (#5152).
+    """
+    from rob_box_dialog.chimera_offer import offered_schema
+
+    narrowed = chimera_tool_schema(schema, form) if form is not None and form.tool_actions else dict(schema)
+    actions = ((narrowed.get("properties") or {}).get("action") or {}).get("enum") or ()
+    return offered_schema(narrowed, actions)
+
+
+def chimera_offer_description(actions: Sequence[str]) -> str:
+    """Описание ``chimera_perform`` из того же списка действий, что enum схемы.
+
+    Текст строит ``chimera_offer.perform_description``. Своей копии строк здесь нет (ADR-0148).
+    """
+    from rob_box_dialog.chimera_offer import perform_description
+
+    return perform_description(actions)
 
 
 def with_sing(schema: Mapping[str, Any], route: str, over_music: bool = False, text: str = "") -> Dict[str, Any]:
@@ -4332,24 +4446,10 @@ def prompt_rules(agent: str) -> str:
     return "# RULES\n" + "\n".join(lines) if lines else ""
 
 
-# TEMP(ADR-0148): строка о шуме STT — временная, решение Шифу 26.10 (#4017 шаг A). Удаляет карточка #4127 после шага C
-# #4017: уверенность и альтернативы распознавания приходят в Utterance, переспрос решает код, а не правило в промпте.
-#: Реплика с микрофона — распознанный текст с ошибками: модель действует по смыслу и переспрашивает, только
-#: когда от догадки зависит действие (решение Шифу 26.10). Однозначные искажения команд чинит код до модели
-#: (``heard.repair``, таблица :data:`HEARD_FIXES`).
-STT_NOISE_NOTE = (
-    "Реплика человека с микрофона — текст распознавания речи (STT), в нём бывают ошибки: похожие по звучанию слова,"
-    " склейки, пропуски. Понимай по смыслу и контексту разговора и действуй по лучшей догадке; искажённому слову"
-    " смысл не выдумывай. Переспроси («Я услышал «X» — ты про Y?»), только когда от догадки зависит действие: стоп"
-    " или не стоп, платное или необратимое."
-)
-
-
 def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
     """Фрагмент системного промпта о форме ответа — из тех же таблиц, что схема (не вручную). ``schema`` — схема
     команды этого хода (форма хода закрыла ``passed``/``voice``): строки о полях, которых в ней нет, не пишутся —
-    промпт не предлагает того, чего нет в схеме. ``None`` — полная схема. Первая строка — о шуме распознавания речи
-    (:data:`STT_NOISE_NOTE`): она не зависит от полей схемы.
+    промпт не предлагает того, чего нет в схеме. ``None`` — полная схема.
 
     Об итоге действий говорит код по событию исполнителя (§4.1, PR-7): ``speech`` при действиях — нарушение
     (``VIOLATION_SPEECH_WITH_ACTIONS``), ответ по сути рядом с действиями («включи звук и расскажи шутку») —
@@ -4367,7 +4467,6 @@ def prompt_fragment(schema: Optional[Mapping[str, Any]] = None) -> str:
     kinds = tuple(perform.get("kind", {}).get("enum", PERFORM_KINDS))
     backings = tuple(perform.get("backing", {}).get("enum", PERFORM_BACKINGS))
     lines: List[Tuple[str, str]] = [
-        ("", STT_NOISE_NOTE),
         ("", "Ответ — одна команда (JSON-объект) с полями:"),
         ("speech", f"- speech: реплика человеку, ≤ {SPEECH_MAX_CHARS} символов. С actions speech не пиши (команда"
                    " невалидна): о результате действий скажет код по событию исполнителя; ответ по сути (шутка, стих) —"

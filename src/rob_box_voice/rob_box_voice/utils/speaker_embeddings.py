@@ -917,8 +917,9 @@ class SpeakerDatabase:
         # #3801: рост галереи профиль не переименовывает — имя берётся из БД, а ``name`` (снимок сессии роста,
         # открытой до переименования) — только для профиля, которого ещё нет. Живой робот 21.10: «зови меня
         # Денчик» → Renamed, следующая реплика дописала эмбеддинг под старым именем и вернула «Энджик».
-        self.register(_stored_name(self._conn, speaker_id, name), embedding, speaker_id=speaker_id)
-        return True
+        # #5019: безымянный профиль ``register`` не принимает (пустое имя —
+        # мусор, #2348). Как дописать, не меняя имя, решает функция модуля.
+        return _grow_gallery(self, speaker_id, name, embedding)
 
     def register(
         self,
@@ -1502,6 +1503,36 @@ def _isolated_write(shared: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         tx.close()
+
+
+def _grow_gallery(db: "SpeakerDatabase", speaker_id: str, name: str, embedding: np.ndarray) -> bool:
+    """Дописать эмбеддинг в уже существующий профиль, имя не меняя (#3801, #5019).
+
+    Именованный профиль идёт через ``register`` (имя из БД, не из снимка сессии).
+    Безымянный ``register`` не принимает: пустое имя для него мусор (#2348).
+    Профиля нет — ``False``.
+    """
+    stored = _stored_name(db._conn, speaker_id, name)
+    if stored:
+        db.register(stored, embedding, speaker_id=speaker_id)
+        return True
+    return _append_embedding_row(db._conn, speaker_id, db._ndarray_to_blob(embedding))
+
+
+def _append_embedding_row(conn: Any, speaker_id: str, blob: bytes) -> bool:
+    """Дописать эмбеддинг в уже существующий профиль, имя не трогая (#5019)."""
+    now = time.time()
+    with _isolated_write(conn) as tx:
+        row = tx.execute(
+            "SELECT 1 FROM speakers WHERE speaker_id=?", (speaker_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        tx.execute(
+            "INSERT INTO embeddings (speaker_id, embedding, created_at) VALUES (?, ?, ?)",
+            (speaker_id, blob, now),
+        )
+    return True
 
 
 def _stored_name(conn: Any, speaker_id: str, fallback: str) -> str:

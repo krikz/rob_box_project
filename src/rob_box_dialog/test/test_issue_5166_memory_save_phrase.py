@@ -110,10 +110,51 @@ def test_a_greeting_beside_an_honest_save_is_not_doubled_by_remembered():
     assert all("Запомнил" not in line for line in ports.said)
 
 
-def test_a_rejected_dictation_still_says_the_failure_and_the_model():
-    """Отказ записи — не успех диктовки: отказ говорит код, слова модели остаются."""
+def test_a_rejected_dictation_says_the_failure_not_the_model_claim():
+    """Отказ записи при диктовке: отказ говорит код, а речь модели, утверждающая запись, не звучит (#5215).
+
+    Раньше (#5172) слова модели оставались: живой ход 24.11 показал, что «Записываю: …» при
+    ``rejected{no_person}`` звучит следом за отказом. Реплика, которая записи не утверждает,
+    по-прежнему звучит (``test_issue_5215``).
+    """
     ports = _run(N206, "Запомнил!", outcomes={kn.MEMORY_SAVE_TOOL: ("rejected", {})})
-    assert ports.said == [phrases.text("local.rejected"), "Запомнил!"]
+    assert ports.said == [phrases.text("local.rejected")]
+    assert "Запомнил!" not in ports.said
+
+
+def test_a_claimed_save_that_is_not_a_dictation_is_said_from_the_result():
+    """Не диктовка, но речь утверждает запись и тул отработал: фраза из факта результата, не из речи (#5166)."""
+    heard = "борис болеет за спартак и всегда приносит пиццу"
+    call = ToolCall(kn.MEMORY_SAVE_TOOL, {"fact": heard, "category": "general"})
+    ports = _run(
+        "что ты про меня помнишь",
+        INVENTED,
+        actions=(call,),
+        outcomes={kn.MEMORY_SAVE_TOOL: ("done", {"fact": heard})},
+    )
+    assert ports.said == [phrases.text("memory.saved", fact=heard)]
+    assert INVENTED_YEAR not in " ".join(ports.said)
+
+
+def test_a_claimed_save_without_the_tool_is_not_said():
+    """Утверждение «запомнил» без тула и не диктовка: фраза кода, выдумка модели не звучит (#5128)."""
+    ports = _run("что ты про меня помнишь", INVENTED)
+    assert all(tool != kn.MEMORY_SAVE_TOOL for batch in ports.executed for tool, _args in batch)
+    assert ports.said == [phrases.text(kn.DONE_CLAIM_PHRASE)]
+    assert INVENTED not in ports.said
+
+
+def test_a_rejected_claim_that_is_not_a_dictation_says_the_failure_not_the_lie():
+    """Отказ записи при утверждении «запомнил» и не-диктовке: звучит отказ кода, не ложь модели."""
+    call = ToolCall(kn.MEMORY_SAVE_TOOL, {"fact": "борис болеет за спартак"})
+    ports = _run(
+        "что ты про меня помнишь",
+        INVENTED,
+        actions=(call,),
+        outcomes={kn.MEMORY_SAVE_TOOL: ("rejected", {})},
+    )
+    assert ports.said == [phrases.text("local.rejected")]
+    assert INVENTED not in ports.said
 
 
 def test_saved_is_none_without_a_dictation_or_a_fact_in_the_result():

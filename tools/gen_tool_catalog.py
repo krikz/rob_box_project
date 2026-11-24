@@ -295,7 +295,8 @@ def _collect_module_list_constants(tree: ast.Module) -> dict[str, ast.AST]:
 
 
 #: Tools whose ``description`` property is computed at runtime. Each entry
-#: rebuilds the exact same string from the exact same source literal.
+#: rebuilds the exact same string from the exact same source. Резолвер Химеры
+#: дописывается ниже, рядом с ``_chimera_action_values``: текст берёт тот же список.
 DYNAMIC_DESCRIPTIONS: dict[str, Any] = {}
 
 
@@ -366,6 +367,62 @@ def _set_styles_values() -> list[str]:
     return list(_knowledge().GEN_STYLES)
 
 
+def _chimera_package():
+    """``chimera_package`` из дерева репо. Без ROS и без ``rob_box_music``: каталог их не импортирует."""
+    import importlib.util
+
+    path = REPO_ROOT / "src" / "rob_box_mcp_tools" / "rob_box_mcp_tools" / "chimera_package.py"
+    spec = importlib.util.spec_from_file_location("_chimera_package_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _chimera_delivery_dir() -> str:
+    """Чекаут ``sound_pack/chimera`` — тот же каталог, что деплой монтирует в ``/ws/sound_pack/chimera``."""
+    return str(REPO_ROOT / "sound_pack" / "chimera")
+
+
+def _chimera_offer():
+    """``chimera_offer`` из дерева репо. Без ROS: описание и поля схемы живут в ядре диалога."""
+    import importlib.util
+
+    path = REPO_ROOT / "src" / "rob_box_dialog" / "rob_box_dialog" / "chimera_offer.py"
+    spec = importlib.util.spec_from_file_location("_chimera_offer_for_catalog", path)
+    if spec is None or spec.loader is None:
+        raise ToolSourceError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _chimera_action_values() -> list[str]:
+    """``chimera_perform.action`` — ``enum_values`` поставки, не вторая таблица (ADR-0148, #5152)."""
+    return list(_chimera_package().enum_values(_chimera_delivery_dir())[0])
+
+
+def _chimera_description() -> str:
+    """Текст ``chimera_perform`` из действий поставки — тот же список, что enum ``action``."""
+    return _chimera_offer().perform_description(_chimera_action_values())
+
+
+DYNAMIC_DESCRIPTIONS["chimera_perform"] = _chimera_description  # текст из enum поставки, не вторая копия строки
+
+
+def _chimera_creature_values() -> list[str]:
+    """``chimera_perform.creature`` — существа той же поставки."""
+    return list(_chimera_package().enum_values(_chimera_delivery_dir())[1])
+
+
+def _chimera_call_values() -> list[str]:
+    """``chimera_perform.call`` — вызовы той же поставки."""
+    return list(_chimera_package().enum_values(_chimera_delivery_dir())[2])
+
+
 def _dialog_knowledge() -> Any:
     """``rob_box_dialog.knowledge`` из дерева репо (одна таблица знания диалога), без установки пакета."""
     import importlib.util
@@ -382,8 +439,12 @@ def _dialog_knowledge() -> Any:
 
 def _duration_param() -> dict[str, Any]:
     """``play_animation.duration`` — описание из ``knowledge.FACE_SHOW_DURATION_HINT`` (#4089: одно правило времени)."""
-    return {"name": "duration", "type": "number", "description": _dialog_knowledge().FACE_SHOW_DURATION_HINT,
-            "required": False}
+    return {
+        "name": "duration",
+        "type": "number",
+        "description": _dialog_knowledge().FACE_SHOW_DURATION_HINT,
+        "required": False,
+    }
 
 
 def _face_param() -> dict[str, Any]:
@@ -393,15 +454,32 @@ def _face_param() -> dict[str, Any]:
     """
     schema = _dialog_knowledge().face_schema()
     props: dict[str, Any] = {
-        name: {"name": name, "type": "string", "description": f"Слот лица «{name}»", "required": False,
-               "enum": list(sub["enum"])}
-        for name, sub in schema["properties"].items() if "enum" in sub
+        name: {
+            "name": name,
+            "type": "string",
+            "description": f"Слот лица «{name}»",
+            "required": False,
+            "enum": list(sub["enum"]),
+        }
+        for name, sub in schema["properties"].items()
+        if "enum" in sub
     }
     duration = schema["properties"]["duration_s"]
-    props["duration_s"] = {"name": "duration_s", "type": "number", "description": "Сколько держать сцену, секунды",
-                           "required": False, "minimum": duration["minimum"], "maximum": duration["maximum"]}
-    return {"name": "face", "type": "object", "description": schema["description"], "required": False,
-            "properties": props}
+    props["duration_s"] = {
+        "name": "duration_s",
+        "type": "number",
+        "description": "Сколько держать сцену, секунды",
+        "required": False,
+        "minimum": duration["minimum"],
+        "maximum": duration["maximum"],
+    }
+    return {
+        "name": "face",
+        "type": "object",
+        "description": schema["description"],
+        "required": False,
+        "properties": props,
+    }
 
 
 #: ``(tool_name, param_name)`` → resolver целого параметра-объекта, схема которого строится из таблицы знания.
@@ -432,6 +510,9 @@ DYNAMIC_ENUMS = {
     ("generate_music", "style"): _gen_style_values,
     ("edit_music", "change"): _edit_values,
     ("dj_set", "styles[]"): _set_styles_values,  # ``items`` массива: ключ — имя параметра + «[]»
+    ("chimera_perform", "action"): _chimera_action_values,  # поставка #5152, не литерал speak/sing/play
+    ("chimera_perform", "creature"): _chimera_creature_values,
+    ("chimera_perform", "call"): _chimera_call_values,
 }
 
 
@@ -737,15 +818,18 @@ def extract_tools() -> list[dict[str, Any]]:
                 if isinstance(items, dict) and items.get("enum") is not None and not isinstance(items["enum"], list):
                     item_resolver = DYNAMIC_ENUMS.get((name, f"{param.get('name')}[]"))
                     if item_resolver is None:
-                        raise ToolSourceError(f"{name}.{param.get('name')}[] has a computed enum and no resolver "
-                                              "in DYNAMIC_ENUMS")
+                        raise ToolSourceError(
+                            f"{name}.{param.get('name')}[] has a computed enum and no resolver " "in DYNAMIC_ENUMS"
+                        )
                     items["enum"] = item_resolver()
                 for bound in ("minimum", "maximum"):
                     if param.get(bound) is DYNAMIC:
                         bound_resolver = DYNAMIC_BOUNDS.get((name, param.get("name"), bound))
                         if bound_resolver is None:
-                            raise ToolSourceError(f"{name}.{param.get('name')} has a computed {bound} and no "
-                                                  "resolver in DYNAMIC_BOUNDS")
+                            raise ToolSourceError(
+                                f"{name}.{param.get('name')} has a computed {bound} and no "
+                                "resolver in DYNAMIC_BOUNDS"
+                            )
                         param[bound] = bound_resolver()
 
             entry["parameters"] = _parameters_schema(params)

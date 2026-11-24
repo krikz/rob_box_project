@@ -367,3 +367,37 @@ def test_slide_along_wall_in_odom_is_not_a_failure():
     ]
     assert not any(refused)
     assert WALL_SLIDE_M > PROGRESS_RADIUS_M
+
+
+def test_guard_corridor_wall_is_a_failure_side_touch_strip_is_not():
+    """Команда есть, смещения нет, стена в коридоре защиты, но дальше 0.08 м.
+
+    Защита держит стоп, пока команда толкает в препятствие ближе stop_m
+    (0.20 м, proximity.py). Полоса касания борта (side_stop_m, 0.08 м) перед
+    носом при этом пуста: на develop course_blocked молчит, и отказ не
+    ставится. Стена на 0.12 м — внутри коридора и дальше касания.
+    """
+    from rob_box_teleop.proximity import Thresholds
+    from rob_box_teleop.stuck_against import controller_stuck, reset_controller_state
+
+    stop_m = Thresholds().stop_m
+    assert BLOCK_GAP_M == pytest.approx(stop_m)
+    assert stop_m > Thresholds().side_stop_m
+
+    dist = (Thresholds().side_stop_m + stop_m) / 2  # 0.14 м: дальше 0.08, ближе 0.20
+    wall = _cell(BODY.x_max + dist, 0.0)
+    grid = _grid({wall: LETHAL_COST})
+    assert course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid, vx=0.1)
+    # Дальше коридора — не упор: серая инфляция на ровном месте не стена.
+    beyond = _cell(BODY.x_max + stop_m + RES, 0.0)
+    assert not course_blocked(BODY, ORIGIN, ORIGIN, RES, SIZE, SIZE, _grid({beyond: LETHAL_COST}), vx=0.1)
+
+    reset_controller_state()
+    steps = int(round(STUCK_WINDOW_S / 0.05))
+    commanded_until = int(round(CMD_HOLD_S / 0.05)) + 2
+    refused = []
+    for i in range(steps + 1):
+        vx = 0.1 if i <= commanded_until else 0.0
+        refused.append(controller_stuck(i * 0.05, 0.0, 0.0, vx, 0.0, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid))
+    assert refused[-1] is True
+    assert not any(refused[: commanded_until + 1])

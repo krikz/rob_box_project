@@ -243,8 +243,8 @@ def relative_goal_in_map(
     Nav2 ищет ``base_footprint``→``map`` на штамп цели при каждом
     перепланировании. Цель в ``base_footprint`` старше истории TF падает
     с ``Extrapolation Error`` (живой прогон 23.11: планировщик приступил
-    через 18,4 с). У робота ``tf_buffer_duration`` 30 с
-    (``nav2_params.yaml``). Точка мира от штампа не зависит.
+    через 18,4 с). Кэш TF планировщика — дефолт tf2, 10 с: ключ
+    ``tf_buffer_duration`` в yaml узел не читает (#5151). Точка мира от штампа не зависит.
 
     Возвращает ``(x, y, theta, frame_id)`` в ``map`` или ``MCPToolResult`` отказа.
     Трансформа нет — отказ; цель в ``base_footprint`` «как раньше» не шлётся
@@ -316,6 +316,10 @@ def _drive_to_goal(
     goal = NavigateToPose.Goal()
     goal.pose.header.frame_id = frame_id
     goal.pose.header.stamp = node.get_clock().now().to_msg()
+    # #5160: кадр цели в лог — HIL-вердикт читает эту строку, не угадывает map.
+    node.get_logger().info(
+        f"[navigate_to_pose] цель: frame_id={frame_id} x={x:.3f} y={y:.3f} theta={theta:.3f}"
+    )
     goal.pose.pose.position.x = x
     goal.pose.pose.position.y = y
     goal.pose.pose.position.z = 0.0

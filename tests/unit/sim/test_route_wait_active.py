@@ -62,11 +62,11 @@ def route(monkeypatch):
     sys.modules.pop("route", None)
 
 
-def test_tf_buffer_s_is_the_costmap_constant(route):
-    """30 с — уже принятый tf_buffer_duration local_costmap, не новый таймаут и не TIMEOUT цели."""
-    text = NAV2_PARAMS.read_text(encoding="utf-8")
-    local = text.split("local_costmap:", 1)[1].split("global_costmap:", 1)[0]
-    assert "tf_buffer_duration: 30.0" in local
+def test_tf_buffer_s_is_the_wait_limit_not_the_dead_yaml_key(route):
+    """30 с — предел ожидания кадра до первой цели, не кэш TF и не TIMEOUT цели.
+
+    #5151: ключ tf_buffer_duration в yaml узел не читает. Константа от него не зависит.
+    """
     assert route.TF_BUFFER_S == 30.0
     assert route.TIMEOUT == 200.0
     assert route.ODOM_FRAME == "odom" and route.BASE_FRAME == "base_footprint"

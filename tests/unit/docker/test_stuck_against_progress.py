@@ -67,6 +67,10 @@ def test_patch_names_the_stuck_failure_and_does_not_touch_thresholds():
     # Решение в патче, не в импорте Python-модуля.
     assert "rob_box_teleop.stuck_against" not in added
     assert "reset_controller_state" not in added
+    # Полоса — коридор защиты (stop_m 0.20), не касание борта (0.08): иначе
+    # стена, до которой защита уже держит стоп, отказом не считается.
+    assert "kBlockGapM = 0.20" in added
+    assert "kBlockGapM = 0.08" not in added
     # Чужие пороги патч не двигает: радиус и окно остаются в nav2_params.yaml.
     assert "required_movement_radius:" not in added
     assert "movement_time_allowance" not in added

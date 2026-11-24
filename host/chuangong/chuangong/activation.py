@@ -336,8 +336,32 @@ class ActivationMachine:
             return planned
         return self._executed(planned, release, st.State.ROLLBACK_EXECUTED)
 
+    def _run_executor(
+        self,
+        release: dict[str, Any],
+        node: str,
+        origin: str | None,
+        previous_release: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Один вызов исполнителя. releases_root — корень бандлов, не чекаут (#5202)."""
+        return self.executor(
+            release,
+            node,
+            docker=self.deps.docker,
+            project_dir=self.cfg.legacy_root / "docker" / node,
+            state_dir=self.cfg.state_dir,
+            previous=origin,
+            previous_release=previous_release,
+            releases_root=self.cfg.releases_root,
+        )
+
     def _executed(self, record: dict[str, Any], release: dict[str, Any], state: st.State) -> dict[str, Any]:
-        """Прогнать план через исполнителя роли. Без исполнителя — честный отказ, не ложный успех."""
+        """Прогнать план через исполнителя роли. Без исполнителя — честный отказ, не ложный успех.
+
+        Цепочка продолжается только на точном ``role_switched``. ``blocked``,
+        ``role_rolled_back``, ``rollback_planned``, ``rollback_failed``, ``changed``
+        и пустое состояние — ``blocked`` / ``role_switch_failed`` (#5202).
+        """
         if self.executor is None:
             return _blocked(record, "executor_not_wired", "execute=True без исполнителя роли")
         origin = record["current"]
@@ -349,18 +373,8 @@ class ActivationMachine:
                 return record
         results = []
         for node in ACTIVATION_ORDER:
-            results.append(
-                self.executor(
-                    release,
-                    node,
-                    docker=self.deps.docker,
-                    project_dir=self.cfg.legacy_root / "docker" / node,
-                    state_dir=self.cfg.state_dir,
-                    previous=origin,
-                    previous_release=previous_release,
-                )
-            )
-            if results[-1].get("state") == "blocked":
+            results.append(self._run_executor(release, node, origin, previous_release))
+            if results[-1].get("state") != "role_switched":
                 record["executed"] = results
                 return _blocked(record, "role_switch_failed", results[-1])
         record["executed"] = results
