@@ -63,7 +63,7 @@
  
      last_valid_cmd_time_ = now();
      rclcpp::WallRate loop_rate(controller_frequency_);
-@@ -533,11 +537,175 @@
+@@ -533,11 +537,178 @@
    feedback->distance_to_goal =
      nav2_util::geometry_utils::calculate_path_length(current_path_, find_closest_pose_idx());
    action_server_->publish_feedback(feedback);
@@ -182,6 +182,9 @@
 +  // A gap longer than the command hold cannot establish a continuous observation.
 +  if (!stuck_samples_.empty()) {
 +    const double dt = now_s - stuck_samples_.back().t;
++    if (dt == 0.0) {
++      return false;
++    }
 +    if (dt < 0.0 || dt > kCmdHoldS) {
 +      stuckAgainstReset();
 +    }

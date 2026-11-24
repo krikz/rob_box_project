@@ -117,6 +117,32 @@ def test_gap_in_observations_starts_a_new_window():
         assert checker.update(2.0 + tick / 20, pose, commanded=True) == (tick == 40)
 
 
+def test_paused_clock_does_not_accumulate_samples():
+    state = StuckAgainst()
+    pose = (0.0, 0.0, 0.0)
+    state.update(10.0, pose, commanded=False)
+    for _ in range(100):
+        state.update(10.0, pose, commanded=True)
+    assert len(state._samples) == 1
+
+
+def test_paused_clock_ignores_new_course_and_resumes_on_the_next_tick():
+    from rob_box_teleop.stuck_against import controller_stuck
+
+    state = StuckAgainst()
+    wall = _cell(BODY.x_max + BLOCK_GAP_M / 2, 0.0)
+    grid = _grid({wall: LETHAL_COST})
+
+    def tick(now, vx):
+        return controller_stuck(now, 0.0, 0.0, vx, 0.3, ORIGIN, ORIGIN, RES, SIZE, SIZE, grid, state=state)
+
+    for i in range(41):
+        assert not tick(i / 20, 0.0)
+    assert not tick(2.0, 0.1)
+    assert not tick(2.05, 0.0)  # The ignored command did not leave a course.
+    assert tick(2.10, 0.1)
+
+
 def test_held_command_just_before_cutoff_is_only_a_pose_anchor():
     checker = StuckAgainst()
     pose = (0.0, 0.0, 0.0)
