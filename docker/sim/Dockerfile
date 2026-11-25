@@ -14,9 +14,7 @@
 # Отличия от образов робота (arm64, ghcr.io/krikz/rob_box_base:*):
 #   * rtabmap — бинарь ros-humble-rtabmap-ros из репозитория ROS, а не
 #     introlab3it/rtabmap_ros:humble-latest (docker/base/Dockerfile.rtabmap);
-#   * rmw_zenoh_cpp тот же 0.1.8 (zenoh 1.6.2, как роутер eclipse/zenoh:1.6.2),
-#     .deb amd64 с того же snapshot, что docker/base/Dockerfile.ros2-zenoh
-#     (в docker/base/vendor/ лежат только arm64).
+#   * rmw_zenoh_cpp той же серии 0.1.11 из docker/base/vendor/, сборка amd64.
 FROM ros:humble-ros-base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -49,17 +47,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# rmw_zenoh_cpp 0.1.8 (пин и причина — docker/base/Dockerfile.ros2-zenoh).
+# RMW той же серии, что в docker/base/Dockerfile.ros2-zenoh.
+ARG RMW_ZENOH_VENDOR=true
+COPY docker/base/vendor/. /tmp/rmw-zenoh-vendor/
 RUN set -eux; \
-    snap=http://snapshots.ros.org/humble/2026-03-29/ubuntu/pool/main/r; \
-    curl -fsSL -o /tmp/rmw-zenoh.deb \
-        "$snap/ros-humble-rmw-zenoh-cpp/ros-humble-rmw-zenoh-cpp_0.1.8-1jammy.20260304.205755_amd64.deb"; \
-    curl -fsSL -o /tmp/zenoh-vendor.deb \
-        "$snap/ros-humble-zenoh-cpp-vendor/ros-humble-zenoh-cpp-vendor_0.1.8-1jammy.20260304.075447_amd64.deb"; \
+    arch=amd64; \
+    case "$RMW_ZENOH_VENDOR" in \
+      true) \
+        set -- "/tmp/rmw-zenoh-vendor/ros-humble-rmw-zenoh-cpp_0.1.11-1jammy.20261105.191826_amd64.deb" \
+               "/tmp/rmw-zenoh-vendor/ros-humble-zenoh-cpp-vendor_0.1.11-1jammy.20261031.173316_amd64.deb"; \
+        if [ ! -f "$1" ] || [ ! -f "$2" ]; then \
+          echo "Missing vendored Zenoh .deb for $arch (RMW_ZENOH_VENDOR=false uses ROS APT)" >&2; \
+          exit 1; \
+        fi;; \
+      false) set -- 'ros-humble-rmw-zenoh-cpp=0.1.11-1jammy.*' 'ros-humble-zenoh-cpp-vendor=0.1.11-1jammy.*';; \
+      *) echo "RMW_ZENOH_VENDOR must be true or false" >&2; exit 1;; \
+    esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
-    rm -f /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends "$@"; \
+    rm -rf /tmp/rmw-zenoh-vendor /var/lib/apt/lists/*
 
 # ffmpeg — склейка кадров камер-сенсоров в mp4/gif (docker/sim/record_video.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg     && rm -rf /var/lib/apt/lists/*

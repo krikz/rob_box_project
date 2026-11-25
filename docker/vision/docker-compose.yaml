@@ -8,7 +8,7 @@ services:
   # Zenoh Router - локальный роутер для Vision Pi, подключается к Main Pi
   # Namespace НЕ используется здесь - он добавляется только на Main Pi при отправке в облако
   zenoh-router:
-    image: eclipse/zenoh:1.6.2
+    image: eclipse/zenoh:1.10.2
     container_name: zenoh-router-vision
     # issue #2610 + GH task t_b79d0581: не пытаться рефетчить образ, который
     # уже лежит локально. С `pull_policy: missing`/`always` compose

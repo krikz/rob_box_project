@@ -40,6 +40,7 @@ from chuangong.stage import DockerCli, extract_bundle  # noqa: E402
 from fakes import FakeDocker, FakeTransport, FakeZenoh  # noqa: E402
 
 PREFIX = "10.1.1.249:5000/krikz/rob_box"
+ZENOH_IMAGE = "eclipse/zenoh:1.10.2"
 
 
 def _fake_digest(tag: str) -> str:
@@ -100,12 +101,12 @@ def test_roles_take_images_from_their_compose(built):
         for ext in release["roles"][role]["external_images"]:
             assert rf.is_pinned_ref(ext), ext
         assert any(
-            ext.startswith("eclipse/zenoh:1.6.2@sha256:")
+            ext.startswith(f"{ZENOH_IMAGE}@sha256:")
             for ext in release["roles"][role]["external_images"]
         )
     # *_TAG-сервисы — по SHA-тегу, остальные — по тегу канала (как compose берёт сегодня)
     assert "oak-d-humble-dev-b704404" in asked
-    assert "eclipse/zenoh:1.6.2" in asked  # resolve ключ — полный ref compose
+    assert ZENOH_IMAGE in asked  # resolve ключ — полный ref compose
     assert (
         "supercollider-dev" in asked
         and "teleop-humble-dev-b704404" in asked
@@ -420,7 +421,7 @@ def test_external_image_tag_without_digest_refuses_build():
     """Плавающий сторонний образ без digest в таблице — build_release отказывает."""
 
     def resolve(tag: str) -> str:
-        # сервис-теги без «/»; compose external (eclipse/zenoh:1.6.2, …) — KeyError
+        # сервис-теги без «/»; compose external (eclipse/zenoh, …) — KeyError
         if "/" in tag:
             raise KeyError(tag)
         return _fake_digest(tag)
@@ -544,7 +545,7 @@ def test_cli_resolves_local_tags_and_external_refs(tmp_path, monkeypatch, capsys
             "--out", str(tmp_path), "--resolve-registry", registry,
         ]
     )
-    ref = "eclipse/zenoh:1.6.2"
+    ref = ZENOH_IMAGE
     assert [command[-1] for command in external_commands].count(ref) == 1
     assert all(url.startswith(f"{registry}/v2/{repo}/manifests/") for _, url, _ in transport.calls)
     assert all(":" not in url.rsplit("/", 1)[1] for _, url, _ in transport.calls)

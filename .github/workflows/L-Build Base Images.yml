@@ -25,9 +25,8 @@ name: "L: Build Base Images"
 # Кэширование: registry-кеш buildx (<local>/rob_box_base:<имя>-buildcache,
 # mode=max), как у сервисов. force_rebuild → --no-cache.
 #
-# rmw_zenoh_cpp 0.1.8 вендорится в docker/base/vendor/*.deb (см. ARG
-# RMW_ZENOH_VENDOR в Dockerfile'ах), что устраняет hot-fetch HTTP-only
-# snapshots.ros.org при каждом cold build.
+# Пакеты RMW Zenoh для ARM64 и AMD64 лежат в docker/base/vendor/*.deb.
+# ARG RMW_ZENOH_VENDOR управляет выбором между этими .deb и ROS APT.
 on:
   workflow_dispatch:  # Ручной запуск
     inputs:
