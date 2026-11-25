@@ -43,20 +43,27 @@ RUN set -eux; \
       amd64) rmw_version=0.1.11-1jammy.20261105.191826; vendor_version=0.1.11-1jammy.20261031.173316;; \
       *) echo "unsupported arch: $arch" >&2; exit 1;; \
     esac; \
+    # true: dpkg -i, не apt-get install путей. apt видит тот же пакет в ROS APT
+    # и качает его с CDN вместо локального файла (Hash Sum mismatch, #5245).
+    # Тот же блок — Dockerfile.depthai и Dockerfile.rtabmap.
     case "$RMW_ZENOH_VENDOR" in \
       true) \
-        set -- "/tmp/rmw-zenoh-vendor/ros-humble-rmw-zenoh-cpp_${rmw_version}_${arch}.deb" \
-               "/tmp/rmw-zenoh-vendor/ros-humble-zenoh-cpp-vendor_${vendor_version}_${arch}.deb"; \
-        if [ ! -f "$1" ] || [ ! -f "$2" ]; then \
+        vnd_deb="/tmp/rmw-zenoh-vendor/ros-humble-zenoh-cpp-vendor_${vendor_version}_${arch}.deb"; \
+        rmw_deb="/tmp/rmw-zenoh-vendor/ros-humble-rmw-zenoh-cpp_${rmw_version}_${arch}.deb"; \
+        if [ ! -f "$vnd_deb" ] || [ ! -f "$rmw_deb" ]; then \
           echo "Missing vendored Zenoh .deb for $arch (RMW_ZENOH_VENDOR=false uses ROS APT)" >&2; \
           exit 1; \
-        fi;; \
-      false) set -- 'ros-humble-rmw-zenoh-cpp=0.1.11-1jammy.*' 'ros-humble-zenoh-cpp-vendor=0.1.11-1jammy.*';; \
+        fi; \
+        apt-get update; \
+        apt-get install -y curl ca-certificates; \
+        dpkg -i "$vnd_deb" "$rmw_deb" || apt-get install -y -f; \
+        apt-get install -y git wget python3-pip;; \
+      false) \
+        apt-get update; \
+        apt-get install -y curl ca-certificates; \
+        apt-get install -y 'ros-humble-rmw-zenoh-cpp=0.1.11-1jammy.*' 'ros-humble-zenoh-cpp-vendor=0.1.11-1jammy.*' git wget python3-pip;; \
       *) echo "RMW_ZENOH_VENDOR must be true or false" >&2; exit 1;; \
     esac; \
-    apt-get update; \
-    apt-get install -y curl ca-certificates; \
-    apt-get install -y "$@" git wget python3-pip; \
     rm -rf /tmp/rmw-zenoh-vendor /var/lib/apt/lists/*
 
 # Удаляем APT прокси конфигурацию после установки пакетов
