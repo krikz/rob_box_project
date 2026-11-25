@@ -52,10 +52,12 @@ ARG RMW_ZENOH_VENDOR=true
 COPY docker/base/vendor/. /tmp/rmw-zenoh-vendor/
 RUN set -eux; \
     arch=amd64; \
+    rmw_version=0.1.11-1jammy.20261105.191826; \
+    vendor_version=0.1.11-1jammy.20261031.173316; \
     case "$RMW_ZENOH_VENDOR" in \
       true) \
-        set -- "/tmp/rmw-zenoh-vendor/ros-humble-rmw-zenoh-cpp_0.1.11-1jammy.20261105.191826_amd64.deb" \
-               "/tmp/rmw-zenoh-vendor/ros-humble-zenoh-cpp-vendor_0.1.11-1jammy.20261031.173316_amd64.deb"; \
+        set -- "/tmp/rmw-zenoh-vendor/ros-humble-rmw-zenoh-cpp_${rmw_version}_${arch}.deb" \
+               "/tmp/rmw-zenoh-vendor/ros-humble-zenoh-cpp-vendor_${vendor_version}_${arch}.deb"; \
         if [ ! -f "$1" ] || [ ! -f "$2" ]; then \
           echo "Missing vendored Zenoh .deb for $arch (RMW_ZENOH_VENDOR=false uses ROS APT)" >&2; \
           exit 1; \
@@ -64,6 +66,11 @@ RUN set -eux; \
       *) echo "RMW_ZENOH_VENDOR must be true or false" >&2; exit 1;; \
     esac; \
     apt-get update; \
+    if [ "$RMW_ZENOH_VENDOR" = true ]; then \
+        # Load the bundled archives before APT resolves package dependencies.
+        dpkg --unpack "$2" "$1"; \
+        set -- --fix-broken "ros-humble-zenoh-cpp-vendor=${vendor_version}" "ros-humble-rmw-zenoh-cpp=${rmw_version}"; \
+    fi; \
     apt-get install -y --no-install-recommends "$@"; \
     rm -rf /tmp/rmw-zenoh-vendor /var/lib/apt/lists/*
 
