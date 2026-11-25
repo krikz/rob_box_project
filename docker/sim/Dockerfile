@@ -99,8 +99,20 @@ ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 # doTransform<PoseStamped> зовёт KDL — без -lorocos-kdl dlopen падает на Quaternion.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        patch \
         python3-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Fortress 6.6.4 can return a false obstacle on an Ogre2 LiDAR cubemap edge.
+# Backport the sampler change from gazebosim/gz-rendering#1319 (#5003).
+COPY docker/sim/fortress_gpu_lidar_clamp.patch /tmp/fortress_gpu_lidar_clamp.patch
+RUN material=/usr/share/ignition/ignition-rendering6/ogre2/media/materials/scripts/gpu_rays.material \
+    && lidar_patch=/tmp/fortress_gpu_lidar_clamp.patch \
+    && if ! patch --dry-run --reverse --forward --batch --fuzz=0 "$material" "$lidar_patch" >/dev/null; then \
+        patch --forward --batch --fuzz=0 "$material" "$lidar_patch"; \
+    fi \
+    && rm -f "$lidar_patch"
+
 COPY docker/main/nav2/would_spin_on_stall.cpp docker/main/nav2/turn_in_place_py.hpp /tmp/turn-bt/
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /tmp/turn-bt && \
     g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \
