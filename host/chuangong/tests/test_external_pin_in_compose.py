@@ -16,15 +16,17 @@ import yaml
 from chuangong.stage import compose_digest_env, external_override
 
 
-def test_external_override_pins_every_external_image(tmp_path: Path) -> None:
+def test_external_override_pins_every_external_image() -> None:
+    compose = yaml.safe_load(Path("docker/main/docker-compose.yaml").read_text(encoding="utf-8"))
+    services = compose["services"]
     release = {
         "image_tag": "dev-test",
         "roles": {
             "main": {
                 "images": {"nav2": "reg/rob_box@sha256:" + "a" * 64},
                 "external_images": [
-                    "eclipse/zenoh:1.6.2@sha256:" + "b" * 64,
-                    "grafana/promtail:3.6.11@sha256:" + "c" * 64,
+                    services["zenoh-router"]["image"] + "@sha256:" + "b" * 64,
+                    services["promtail"]["image"] + "@sha256:" + "c" * 64,
                 ],
             }
         },
@@ -43,4 +45,4 @@ def test_compose_env_alone_leaves_external_images_unpinned() -> None:
         image_tag="dev-test",
         service_vars={"nav2": "NAV2_TAG"},
     )
-    assert "eclipse/zenoh:1.6.2" not in env.values()
+    assert set(env) == {"NAV2_TAG"}

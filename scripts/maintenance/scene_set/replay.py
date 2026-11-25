@@ -4,7 +4,7 @@
 Запускается на ХОСТЕ Sound Pi (python3 stdlib + docker CLI). Поднимает
 изолированный граф из отдельных контейнеров:
 
-    router   eclipse/zenoh:1.6.2 — свой роутер, 127.0.0.1:7457, никуда не подключён
+    router   eclipse/zenoh:1.10.2 — свой роутер, 127.0.0.1:7457, никуда не подключён
     face     образ vision-hailo — start_vision_face.sh, FACE_STORE_ROOT=/replay/faces
     voice    образ voice-assistant — speaker_id_node, db_path=/replay/voice/speakers.db
     decoder  образ vision-hailo — сжатые кадры → Image bgr8 / 16UC1 (decoder_node.py)
@@ -47,7 +47,7 @@ REPLAY_DOMAIN_ID = 77
 ROUTER_ENDPOINT = "tcp/127.0.0.1:7457"
 LIVE_METRICS_PORT = 9112
 REPLAY_METRICS_PORT = 19112
-ZENOH_IMAGE = "eclipse/zenoh:1.6.2"
+ZENOH_IMAGE = "eclipse/zenoh:1.10.2"
 CONTAINER_PREFIX = "scene-replay-"
 
 #: Входы сцены (ADR-0144 §2.2), которые проигрываются в граф прогона.

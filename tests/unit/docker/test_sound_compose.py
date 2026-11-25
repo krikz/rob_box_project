@@ -113,7 +113,7 @@ def test_supervisor_dockerfile_copies_script_from_its_new_place() -> None:
 def test_zenoh_router_of_sound_pi() -> None:
     router = _compose(SOUND)["services"]["zenoh-router"]
     assert router["container_name"] == "zenoh-router-sound"
-    assert router["image"] == "eclipse/zenoh:1.6.2"
+    assert router["image"] == "eclipse/zenoh:1.10.2"
     assert router["mem_limit"] == "128m"
     env = _env(router)
     assert env["ZENOH_LISTEN_IP"] == "10.1.1.12"
