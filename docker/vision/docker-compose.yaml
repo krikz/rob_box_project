@@ -137,7 +137,7 @@ services:
       - zenoh-router
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f led_matrix || exit 1"]
+      # Команду проверки наследуем из образа LED Matrix.
       interval: 10s
       timeout: 5s
       start_period: 15s
