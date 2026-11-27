@@ -81,6 +81,8 @@ controller_server:
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
+    # Ускоренный stuck проверяет сдвиг по здоровой scan-одометрии /odom, препятствие — по local costmap.
+    stuck_progress_frame: icp_odom
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
@@ -290,12 +292,11 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner/NavfnPlanner"
-      tolerance: 0.5
+      # R4 Depot: смещение конца пути на 0.15 м позволило завершить цель в 0.34 м от запроса.
+      tolerance: 0.0  # NavFn строит путь до запрошенных XY или сообщает об отказе.
       use_astar: true
-      # true остаётся: false в Humble NavFn режет unknown как lethal и не
-      # дотягивает цель внутри tolerance, если вокруг неё ещё нет свободной
-      # клетки — робот не стартует в ещё не виденное. Сквозь стену, которую
-      # лидар уже пометил (хвост в 255 за cost≥253, или lethal), план не
+      # allow_unknown разрешает план к цели на ещё не обследованной клетке.
+      # Сквозь отмеченную лидаром стену (хвост в 255 за cost≥253, или lethal) план не
       # отдаётся: NavfnPlanner::pathTailBlocked кидает отказ, action ABORT,
       # /plan не публикуется (#4694). track_unknown_space карты не выключать.
       allow_unknown: true

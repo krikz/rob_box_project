@@ -84,14 +84,25 @@ class StuckAgainst:
         self._samples: list[tuple[float, Pose, bool]] = []
         self._cmd_since: Optional[float] = None
         self._last_motion_course: float = 0.0
+        self._last_course_time = -math.inf
 
     def reset(self) -> None:
         self._samples.clear()
         self._cmd_since = None
         self._last_motion_course = 0.0
+        self._last_course_time = -math.inf
 
-    def update(self, now_s: float, pose: Pose, commanded: bool) -> bool:
+    def update(self, now_s: float, pose: Pose, commanded: bool, vx: float = 0.0) -> bool:
         """Один тик контроллера. ``True`` — отказ прогресса засчитан."""
+        if self._samples:
+            dt = now_s - self._samples[-1][0]
+            if dt == 0:
+                return False
+            if dt < 0 or dt > self.cmd_hold_s:
+                self.reset()
+        if abs(vx) > self.cmd_eps:
+            self._last_motion_course = vx
+            self._last_course_time = now_s
         if commanded:
             if self._cmd_since is None:
                 self._cmd_since = now_s
@@ -100,28 +111,32 @@ class StuckAgainst:
         held = commanded and self._cmd_held(now_s)
         self._samples.append((now_s, pose, held))
         cutoff = now_s - self.window_s
-        self._samples = [s for s in self._samples if s[0] >= cutoff]
+        # Keep the last pose at or before the boundary, even between controller ticks.
+        anchor = 0
+        while anchor + 1 < len(self._samples) and self._samples[anchor + 1][0] <= cutoff:
+            anchor += 1
+        del self._samples[:anchor]
         return self.refused()
 
-    def course(self, vx: float) -> float:
+    def course(self, now_s: float) -> float:
         """Курс для карты: знак последней ненулевой ``vx`` в окне.
 
         Ноль на этом тике курс не стирает. DWB при лобовом упоре публикует
         не ноль, а исключение; ноль пишет controller_server в catch. Курс
         берётся из команды, которая была до этого нуля.
         """
-        if abs(vx) > self.cmd_eps:
-            self._last_motion_course = vx
+        if self._last_course_time < now_s - self.window_s:
+            return 0.0
         return self._last_motion_course
 
     def refused(self) -> bool:
         if len(self._samples) < 2:
             return False
         start_t, start_pose, _ = self._samples[0]
-        end_t = self._samples[-1][0]
-        if end_t - start_t < self.window_s:
+        cutoff = self._samples[-1][0] - self.window_s
+        if start_t > cutoff:
             return False
-        if not any(held for _, _, held in self._samples):
+        if not any(held and t >= cutoff for t, _, held in self._samples):
             return False
         if self._moved_enough(start_pose):
             return False
@@ -168,10 +183,11 @@ def controller_stuck(
     """
     held = command_is_motion(vx, wz)
     checker = _CONTROLLER_STATE if state is None else state
-    checker.update(now_s, (x, y, yaw), held)
+    if not checker.update(now_s, (x, y, yaw), held, vx):
+        return False
     # Курс — последняя ненулевая vx в окне, не vx этого тика: после
     # NoLegalTrajectoriesException controller_server пишет ноль.
-    blocked = course_blocked(
+    return course_blocked(
         body,
         origin_x,
         origin_y,
@@ -179,12 +195,11 @@ def controller_stuck(
         size_x,
         size_y,
         costs,
-        checker.course(vx),
+        checker.course(now_s),
         robot_x=x,
         robot_y=y,
         robot_yaw=yaw,
     )
-    return checker.note_blocked(blocked)
 
 
 _CONTROLLER_STATE = StuckAgainst()

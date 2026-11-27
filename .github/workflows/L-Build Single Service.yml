@@ -72,7 +72,7 @@ on:
           - ceiling-camera
           - apriltag
           - vision-hailo
-          # zenoh-router здесь нет: compose берёт готовый eclipse/zenoh:1.6.2,
+          # zenoh-router здесь нет: compose берёт готовый образ eclipse/zenoh,
           # а docker/{main,vision}/zenoh-router/Dockerfile (rmw_zenohd, ни разу
           # не использованный compose) удалены в ADR-0159 PR-2a.
           # Base images

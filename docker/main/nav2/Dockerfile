@@ -79,9 +79,10 @@ RUN apt-get update && apt-get install -y \
 #   than costmap_freshness_tolerance (#5003): the copy is published at 2 Hz,
 #   so a tick within tens of milliseconds of a clear still shows the wall.
 #   Past the skip limit the check fails closed. The decision lives in
-#   behavior_server; BackUp is its own plugin library, so that .so ships too
-#   (ADR-0148).
+#   behavior_server (ADR-0148). Both server executables allocate the patched
+#   classes. Ship them with their cores and all plugins using TimedBehavior.
 COPY controller_goal_tf_fail.patch /tmp/controller_goal_tf_fail.patch
+COPY controller_goal_tf_epoch.patch /tmp/controller_goal_tf_epoch.patch
 COPY controller_progress_abort.patch /tmp/controller_progress_abort.patch
 COPY controller_stuck_against.patch /tmp/controller_stuck_against.patch
 COPY navfn_refuse_unknown_tail.patch /tmp/navfn_refuse_unknown_tail.patch
@@ -101,6 +102,7 @@ RUN apt-get update && apt-get install -y \
     && mv /tmp/nav2-fix/src/navigation2-a097086719c88f781aa59788eca29ac6ca5e56db \
         /tmp/nav2-fix/src/navigation2 \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_goal_tf_fail.patch \
+    && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_goal_tf_epoch.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_progress_abort.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/controller_stuck_against.patch \
     && patch -d /tmp/nav2-fix/src/navigation2 -p1 </tmp/navfn_refuse_unknown_tail.patch \
@@ -113,12 +115,21 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
         --packages-select nav2_controller nav2_navfn_planner nav2_costmap_2d nav2_behaviors --cmake-args -DCMAKE_BUILD_TYPE=Release" \
     && cp /tmp/nav2-fix/install/nav2_controller/lib/libcontroller_server_core.so \
         /opt/ros/${ROS_DISTRO}/lib/libcontroller_server_core.so \
+    && cp /tmp/nav2-fix/install/nav2_controller/lib/nav2_controller/controller_server \
+        /opt/ros/${ROS_DISTRO}/lib/nav2_controller/controller_server \
     && cp /tmp/nav2-fix/install/nav2_navfn_planner/lib/libnav2_navfn_planner.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_navfn_planner.so \
     && cp /tmp/nav2-fix/install/nav2_costmap_2d/lib/libnav2_costmap_2d_core.so \
-        /opt/ros/${ROS_DISTRO}/lib/libnav2_costmap_2d_core.so \
+        /tmp/nav2-fix/install/nav2_costmap_2d/lib/libnav2_costmap_2d_client.so \
+        /opt/ros/${ROS_DISTRO}/lib/ \
     && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libbehavior_server_core.so \
         /opt/ros/${ROS_DISTRO}/lib/libbehavior_server_core.so \
+    && cp /tmp/nav2-fix/install/nav2_behaviors/lib/nav2_behaviors/behavior_server \
+        /opt/ros/${ROS_DISTRO}/lib/nav2_behaviors/behavior_server \
+    && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_spin_behavior.so \
+        /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_wait_behavior.so \
+        /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_assisted_teleop_behavior.so \
+        /opt/ros/${ROS_DISTRO}/lib/ \
     && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_drive_on_heading_behavior.so \
         /opt/ros/${ROS_DISTRO}/lib/libnav2_drive_on_heading_behavior.so \
     && cp /tmp/nav2-fix/install/nav2_behaviors/lib/libnav2_back_up_behavior.so \
@@ -133,10 +144,18 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && cd /tmp/nav2-fix &
            fi; \
          done; \
        done \
-    && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch \
+    && rm -rf /tmp/nav2-fix /tmp/controller_goal_tf_fail.patch /tmp/controller_goal_tf_epoch.patch \
         /tmp/controller_progress_abort.patch /tmp/controller_stuck_against.patch \
         /tmp/navfn_refuse_unknown_tail.patch /tmp/navfn_gradient_origin.patch \
         /tmp/costmap_publish_on_clear.patch /tmp/behavior_costmap_freshness.patch
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
+    for server in nav2_controller/controller_server nav2_behaviors/behavior_server; do \
+        deps=$(LC_ALL=C ldd -r "/opt/ros/${ROS_DISTRO}/lib/$server" 2>&1) || { echo "$deps"; exit 1; }; \
+        echo "$deps"; \
+        if echo "$deps" | grep -Eq 'not found|undefined symbol:'; then exit 1; fi; \
+        core="lib${server#*/}_core.so"; \
+        echo "$deps" | grep -Fq "$core => /opt/ros/${ROS_DISTRO}/lib/$core (" || exit 1; \
+    done
 # #4475: узел дерева WouldSpinOnStall. Угол считает rob_box_teleop.turn_in_place
 # (том compose, PYTHONPATH в start_nav2_direct.sh) — тот файл, что проверяет pytest.
 # doTransform<PoseStamped> в tf2_geometry_msgs.hpp зовёт KDL. Без -lorocos-kdl

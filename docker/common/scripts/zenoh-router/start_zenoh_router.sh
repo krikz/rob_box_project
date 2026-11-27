@@ -1,7 +1,7 @@
 #!/bin/sh
 # Общий старт Zenoh-роутера всех Pi робота (ADR-0159 В4, PR-2a).
 #
-# Образ eclipse/zenoh:1.6.2 — Alpine/busybox: только POSIX sh и busybox sed,
+# Образ eclipse/zenoh — Alpine/busybox: только POSIX sh и busybox sed,
 # bash нет. Compose запускает скрипт как `/bin/sh /scripts/start_zenoh_router.sh`.
 #
 # Шаблон docker/common/config/zenoh_router_config.json5 один на все узлы.

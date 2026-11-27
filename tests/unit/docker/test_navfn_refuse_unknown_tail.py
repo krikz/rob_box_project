@@ -95,6 +95,12 @@ def test_unknown_then_wall_then_unknown_is_refused():
     assert tail_blocked([NO_INFORMATION, FREE, INSCRIBED, NO_INFORMATION])
 
 
+def test_gridbased_requires_the_requested_endpoint():
+    planner = yaml.safe_load(PARAMS.read_text(encoding="utf-8"))["planner_server"]["ros__parameters"]
+    assert planner["planner_plugins"] == ["GridBased"]
+    assert planner["GridBased"]["tolerance"] == 0.0
+
+
 def test_allow_unknown_stays_true_and_costmap_still_tracks_unknown():
     doc = yaml.safe_load(PARAMS.read_text(encoding="utf-8"))
     grid = doc["planner_server"]["ros__parameters"]["GridBased"]

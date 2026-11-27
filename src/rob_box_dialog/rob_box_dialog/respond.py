@@ -152,6 +152,22 @@ def _phrase_reason(result: ActionResult) -> Optional[str]:
     return result.reason
 
 
+def _identity_name_missing(result: ActionResult, key: Optional[str]) -> bool:
+    """#5235: фраза успеха идентичности без записанного имени.
+
+    Каталог ``identity.done*`` подставляет ``{name}`` через ``str.format``. ``name=None``
+    становится словом «None», пустая строка — «Запомнил тебя, .». Это не запись: фразы
+    успеха нет вовсе, даже если событие ошибочно пришло ``done`` (старый тул). Отказ
+    (``identity.rejected``) слота имени не имеет — его не трогаем.
+    """
+    if result.tool != "register_speaker" or not key or not key.startswith("identity.done"):
+        return False
+    name = result.data.get("name")
+    if name is None:
+        return True
+    return str(name).strip().lower() in {"", "none", "null"}
+
+
 def _slots(result: ActionResult) -> Mapping[str, Any]:
     """Слоты фразы: данные события; у фраз библиотеки ``{name}`` - название трека из результата (``title``) в кавычках,
     как у ``media_phrases.library_*_text`` (тексты - один каталог ``ru.yaml``)."""
@@ -183,7 +199,7 @@ def phrase_from_result(result: ActionResult, snapshot: Any = None) -> Optional[U
     наушник для агента оператора, иначе динамики (телеграм-агент берёт из реплики только текст). Фраза кода владельца
     из данных исхода (:func:`_owner_text`) — целиком (``whole``) вместо фразы исхода или перед ней (``note``)."""
     key = phrase_key(result)
-    if key is None:
+    if key is None or _identity_name_missing(result, key):
         return None
     whole, note = _owner_text(result)
     outcome = still_working_phrase(result) or phrases.text(

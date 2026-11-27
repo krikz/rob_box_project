@@ -41,6 +41,10 @@ KLOG_LINE_RE = re.compile(r"^([IWEF])\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+ \S+:\d+\
 # Когда проблема закрыта, строку отсюда нужно удалить — иначе рецидив будет молчать
 # как warning.
 CRITICAL_DEMOTED_TO_WARNING = [
+    # #4484, staging 45414643521: исходный WARN stt_node о таймауте облачного RPC.
+    r"^(?:\[stt_node-\d+\] )?\[WARN\] \[\d+\.\d+\] \[stt_node\]: ⚠️ \[issue 1477\] "
+    r"stream error: StatusCode\.DEADLINE_EXCEEDED Deadline Exceeded "
+    r"\[#2924 phase=\w+ responses=\d+ partials=\d+ eou=\d+ segments=\d+ stream=\[[^\[\]\r\n]*\]\]$",
     # #3659: promtail 2.9.2 (docker_sd) говорит с Docker API 1.42, а Docker 29
     # требует >= 1.44: "component=docker_discovery msg=\"Unable to refresh target
     # groups\" err=\"... client version 1.42 is too old ...\"". Логи контейнеров не

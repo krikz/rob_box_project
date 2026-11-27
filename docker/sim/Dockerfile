@@ -14,9 +14,7 @@
 # Отличия от образов робота (arm64, ghcr.io/krikz/rob_box_base:*):
 #   * rtabmap — бинарь ros-humble-rtabmap-ros из репозитория ROS, а не
 #     introlab3it/rtabmap_ros:humble-latest (docker/base/Dockerfile.rtabmap);
-#   * rmw_zenoh_cpp тот же 0.1.8 (zenoh 1.6.2, как роутер eclipse/zenoh:1.6.2),
-#     .deb amd64 с того же snapshot, что docker/base/Dockerfile.ros2-zenoh
-#     (в docker/base/vendor/ лежат только arm64).
+#   * rmw_zenoh_cpp той же серии 0.1.11 из docker/base/vendor/, сборка amd64.
 FROM ros:humble-ros-base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -49,17 +47,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# rmw_zenoh_cpp 0.1.8 (пин и причина — docker/base/Dockerfile.ros2-zenoh).
+# RMW той же серии, что в docker/base/Dockerfile.ros2-zenoh.
+ARG RMW_ZENOH_VENDOR=true
+COPY docker/base/vendor/. /tmp/rmw-zenoh-vendor/
 RUN set -eux; \
-    snap=http://snapshots.ros.org/humble/2026-03-29/ubuntu/pool/main/r; \
-    curl -fsSL -o /tmp/rmw-zenoh.deb \
-        "$snap/ros-humble-rmw-zenoh-cpp/ros-humble-rmw-zenoh-cpp_0.1.8-1jammy.20260304.205755_amd64.deb"; \
-    curl -fsSL -o /tmp/zenoh-vendor.deb \
-        "$snap/ros-humble-zenoh-cpp-vendor/ros-humble-zenoh-cpp-vendor_0.1.8-1jammy.20260304.075447_amd64.deb"; \
+    arch=amd64; \
+    rmw_version=0.1.11-1jammy.20261105.191826; \
+    vendor_version=0.1.11-1jammy.20261031.173316; \
+    case "$RMW_ZENOH_VENDOR" in \
+      true) \
+        set -- "/tmp/rmw-zenoh-vendor/ros-humble-rmw-zenoh-cpp_${rmw_version}_${arch}.deb" \
+               "/tmp/rmw-zenoh-vendor/ros-humble-zenoh-cpp-vendor_${vendor_version}_${arch}.deb"; \
+        if [ ! -f "$1" ] || [ ! -f "$2" ]; then \
+          echo "Missing vendored Zenoh .deb for $arch (RMW_ZENOH_VENDOR=false uses ROS APT)" >&2; \
+          exit 1; \
+        fi;; \
+      false) set -- 'ros-humble-rmw-zenoh-cpp=0.1.11-1jammy.*' 'ros-humble-zenoh-cpp-vendor=0.1.11-1jammy.*';; \
+      *) echo "RMW_ZENOH_VENDOR must be true or false" >&2; exit 1;; \
+    esac; \
     apt-get update; \
-    apt-get install -y --no-install-recommends /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
-    rm -f /tmp/rmw-zenoh.deb /tmp/zenoh-vendor.deb; \
-    rm -rf /var/lib/apt/lists/*
+    if [ "$RMW_ZENOH_VENDOR" = true ]; then \
+        # Load the bundled archives before APT resolves package dependencies.
+        dpkg --unpack "$2" "$1"; \
+        set -- --fix-broken "ros-humble-zenoh-cpp-vendor=${vendor_version}" "ros-humble-rmw-zenoh-cpp=${rmw_version}"; \
+    fi; \
+    apt-get install -y --no-install-recommends "$@"; \
+    rm -rf /tmp/rmw-zenoh-vendor /var/lib/apt/lists/*
 
 # ffmpeg — склейка кадров камер-сенсоров в mp4/gif (docker/sim/record_video.sh).
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg     && rm -rf /var/lib/apt/lists/*
@@ -86,8 +99,20 @@ ENV RMW_IMPLEMENTATION=rmw_zenoh_cpp
 # doTransform<PoseStamped> зовёт KDL — без -lorocos-kdl dlopen падает на Quaternion.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        patch \
         python3-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Fortress 6.6.4 can return a false obstacle on an Ogre2 LiDAR cubemap edge.
+# Backport the sampler change from gazebosim/gz-rendering#1319 (#5003).
+COPY docker/sim/fortress_gpu_lidar_clamp.patch /tmp/fortress_gpu_lidar_clamp.patch
+RUN material=/usr/share/ignition/ignition-rendering6/ogre2/media/materials/scripts/gpu_rays.material \
+    && lidar_patch=/tmp/fortress_gpu_lidar_clamp.patch \
+    && if ! patch --dry-run --reverse --forward --batch --fuzz=0 "$material" "$lidar_patch" >/dev/null; then \
+        patch --forward --batch --fuzz=0 "$material" "$lidar_patch"; \
+    fi \
+    && rm -f "$lidar_patch"
+
 COPY docker/main/nav2/would_spin_on_stall.cpp docker/main/nav2/turn_in_place_py.hpp /tmp/turn-bt/
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /tmp/turn-bt && \
     g++ -std=c++17 -fPIC -shared -DBT_PLUGIN_EXPORT \

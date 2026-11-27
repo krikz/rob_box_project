@@ -118,7 +118,7 @@ test_zenoh_router() {
     echo "----------------------"
     
     # Свой образ роутера не собирается (ADR-0159 PR-2a): compose берёт eclipse/zenoh.
-    local image="eclipse/zenoh:1.6.2"
+    local image="eclipse/zenoh:1.10.2"
     local container="test-zenoh-router"
     
     test_image_exists "$image"

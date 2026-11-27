@@ -20,7 +20,7 @@ services:
   # остаётся через Main. Откат на «звезду» (вариант А) — убрать второй адрес.
   # Namespace НЕ используется здесь - он добавляется только на Main Pi при отправке в облако
   zenoh-router:
-    image: eclipse/zenoh:1.6.2
+    image: eclipse/zenoh:1.10.2
     container_name: zenoh-router-sound
     # См. комментарий у zenoh-router в docker/vision/docker-compose.yaml:
     # compose при `up -d` без сети не должен рефетчить уже лежащий образ.

@@ -288,9 +288,9 @@ ENV RUST_LOG=zenoh=info
 ENV ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
 ENV ZENOH_CONFIG=/config/shared/zenoh_session_config.json5
 
-# Проверка доступности SPI устройства
+# Точные имена процессов в Linux comm, ограниченном 15 символами.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-    CMD ros2 node list | grep -q led_matrix || exit 1
+    CMD pgrep -x led_matrix_driv >/dev/null && pgrep -x led_matrix_comp >/dev/null
 
 # Точка входа - source ROS и запуск через startup script
 ENTRYPOINT ["/bin/bash", "-c", "source /ws/install/setup.bash && exec \"$@\"", "--"]
